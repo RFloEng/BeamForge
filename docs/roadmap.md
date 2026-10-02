@@ -9,7 +9,7 @@ BeamForge starts from **any BeamNG vehicle** (vanilla or mod) and modifies it fr
 | Base vehicle | Reads the install, the user folder's mods (zips, `repo`, `unpacked`, active ones only) and its own `vehicles/`, the game's way (user folder over mods over install), in the browser. Folders are remembered in Chrome and Edge. Parts tree, tuning, node-and-beam view, `.pc` save |
 | SVJ | Reads an `.svj.json` with its meshes, or a `.zip` bundle. It checks the visual bindings and places the meshes and suspension hardpoints on the base vehicle's front axle and ground. It compares wheelbase, tracks and mass |
 | Geometry edits | Pick a node, a beam or a part, move it with numeric x / y / z (editor only, not written to the game yet) |
-| Mesh | glTF meshes shown as translucent reference geometry |
+| Mesh | The base vehicle's own meshes from the game's `.dae` files (untextured, following its nodes) and wheels. SVJ glTF meshes as translucent reference geometry |
 
 ## Steps
 

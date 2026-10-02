@@ -6,7 +6,7 @@ Start from **any BeamNG.drive vehicle**, vanilla or mod, and modify it from ther
 
 ## What it does today
 
-- **Base vehicle.** Add your BeamNG install and user folder once. Mods (zipped, from the repository or unpacked, active ones only) and your own `vehicles/` are read the game's way: the user folder over mods over the install, shared `vehicles/common` parts from mods included. You get the vehicle list, the parts tree with the alternatives for every slot, the tuning sliders, and the node-and-beam structure in 3D. Save the result as a `.pc` configuration for the game. Only the jbeam, config and info text files are read, in your browser. Nothing is uploaded. Chrome and Edge remember the folders, except under AppData and Program Files (see [docs/beamng-vehicles.md](docs/beamng-vehicles.md#the-editors-base-vehicle)).
+- **Base vehicle.** Add your BeamNG install and user folder once. Mods (zipped, from the repository or unpacked, active ones only) and your own `vehicles/` are read the game's way: the user folder over mods over the install, shared `vehicles/common` parts from mods included. You get the vehicle list, the parts tree with the alternatives for every slot, the tuning sliders, and the vehicle in 3D: its meshes (from the game's `.dae` files, untextured), wheels, nodes and beams, each part in its own colour. Parts can be hidden or locked. Save the result as a `.pc` configuration for the game. Only the jbeam, config and info text files are read, in your browser. Nothing is uploaded. Chrome and Edge remember the folders, except under AppData and Program Files (see [docs/beamng-vehicles.md](docs/beamng-vehicles.md#the-editors-base-vehicle)).
 - **Move nodes, beams and parts.** Click a node or a beam, or pick a part in the tree, and type its x / y / z. The structure and the measurements follow. Moves stay in the editor for now.
 - **SVJ overlay.** Import an `.svj.json` with its meshes, or a `.zip` bundle. Its glTF meshes and suspension hardpoints are placed on the base vehicle's front axle and ground. The visual bindings are checked, and wheelbase, tracks and mass are compared with the base vehicle.
 
@@ -15,10 +15,10 @@ Start from **any BeamNG.drive vehicle**, vanilla or mod, and modify it from ther
 ```bash
 git clone https://github.com/RFloEng/BeamForge.git
 cd BeamForge
-python -m http.server 8000
+python serve.py
 ```
 
-Then open <http://localhost:8000/editor/>. The page runs the Python package in the browser with Pyodide, so it must be served from the repo root.
+Then open <http://localhost:8000/editor/> in Chrome or Edge. The page runs the Python package in the browser with Pyodide, so it must be served from the repo root. `serve.py` is `python -m http.server` that tells the browser not to cache, so an updated editor always loads in full.
 
 Tests (standard library only):
 

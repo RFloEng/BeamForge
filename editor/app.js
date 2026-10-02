@@ -12,6 +12,8 @@
 //   folders, cat     the BeamNG folders (library.js) and the vehicle catalog (vehpy.catalog)
 //   veh, vehEdit     the configured vehicle (vehpy.configure) and the user's slot, tuning and move edits
 //   pick             the selected node, beam or part, moved with numeric x / y / z in the Move panel
+//   partColor, hiddenParts, lockedParts   per part: its colour, and whether it is hidden or locked (cannot be picked)
+//   meshes           the vehicle's flexbody meshes (meshes.js), rebuilt when the parts change, updated on moves
 //   svjDoc           the last imported SVJ bundle (svjpy.load_bundle): document, meshes, bindings, notes
 //
 // Placement: the base vehicle stays where its jbeam puts it. An SVJ (origin at the front-axle centre on
@@ -22,6 +24,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { buildMeshes, forgetMeshes } from './meshes.js';
 import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, rememberedHandles, rememberHandles, access } from './library.js';
 
 // repo files copied into Pyodide's file system under /bf (add new Python modules here)
@@ -76,8 +79,8 @@ scene.add(sun);
 scene.add(new THREE.GridHelper(10, 50, 0xb8c0c8, 0xdde2e7));
 // vehG: the base vehicle's nodes and beams (drawVehicle); meshG: SVJ glTF meshes (loadSvjMeshes);
 // hpG: SVJ hardpoints (drawHardpoints)
-const vehG = new THREE.Group(), meshG = new THREE.Group(), hpG = new THREE.Group();
-scene.add(vehG, meshG, hpG);
+const vehG = new THREE.Group(), meshG = new THREE.Group(), hpG = new THREE.Group(), bodyG = new THREE.Group();
+scene.add(vehG, meshG, hpG, bodyG);
 
 // BeamNG axes (X left, Y rear, Z up) -> three.js (Y up)
 const v3 = (p) => new THREE.Vector3(p[0], p[2], p[1]);
@@ -126,10 +129,29 @@ let cat = null, veh = null, vehError = null, vehBusy = '';
 // the user's edits of the base vehicle: slot choices, tuning values, and moves ({parts|nodes: {name: [dx, dy, dz]}})
 const freshEdit = (model, config) => ({ model, config: config || null, parts: {}, vars: {}, moves: { parts: {}, nodes: {} } });
 let vehEdit = freshEdit(null, null);
+// per part of the open vehicle: a colour (kept while the vehicle is open), hidden, locked
+let partColor = {}, hiddenParts = new Set(), lockedParts = new Set(), colorCount = 0;
+const editable = (part) => !hiddenParts.has(part) && !lockedParts.has(part);
+function colorParts() {                              // new parts take the next hue (golden-ratio steps)
+  const walk = (n) => {
+    if (n.part && !(n.part in partColor)) partColor[n.part] = new THREE.Color().setHSL((colorCount++ * 0.618034) % 1, 0.62, 0.52);
+    n.children.forEach(walk);
+  };
+  walk(veh.tree);
+}
+const colorOf = (part) => $('partcolors').checked && partColor[part] ? partColor[part] : null;
+const hexOf = (part) => '#' + (partColor[part] || new THREE.Color(0x8c959f)).getHexString();
+
 let pick = null;           // { kind: 'node', id }, { kind: 'beam', a, b } (its two node ids) or { kind: 'part', name }
 
 // index of the picked beam in veh.geometry.beams (-1 when it is gone)
 const beamIndex = (g, b) => g.beams.findIndex(([a, c]) => (a === b.a && c === b.b) || (a === b.b && c === b.a));
+// the part the pick belongs to, and whether it may be moved (not hidden, not locked)
+function pickPart() {
+  const g = veh.geometry;
+  return pick.kind === 'part' ? pick.name : pick.kind === 'node' ? g.parts[pick.id] : g.beam_parts[beamIndex(g, pick)];
+}
+const pickEditable = () => editable(pickPart());
 function pickValid() {
   const g = veh.geometry;
   if (pick.kind === 'node') return pick.id in g.nodes;
@@ -160,6 +182,7 @@ async function readResolved(keep, label) {
 async function libraryChanged() {
   cat = null; veh = null; vehError = null; commonLoaded = false;
   vehpy.reset();
+  forgetMeshes(); meshes = null; meshKey = ''; bodyG.clear();
   resolved = JSON.parse(vehpy.resolve(JSON.stringify(allSources().map((s) => ({ name: s.name, kind: s.kind, paths: Object.keys(s.files) })))));
   await scanLibrary();
   redraw();
@@ -184,10 +207,26 @@ async function addFolder(dir, handle) {
   } catch (err) { vehBusy = ''; vehError = pyError(err); redraw(); }
 }
 
-async function pickFolder() {
+// A page cannot open a picker at a path it names. Each picker has its own id, so the browser reopens it where
+// that picker was last used, and it starts in the folder already added for that purpose when there is one.
+// kind: 'game' (the install) or 'mods' (the user folder or a mod folder)
+async function pickFolder(kind) {
+  const prev = folders.find((f) => f.handle && (kind === 'game' ? f.role === 'game' : f.role !== 'game'));
   let h;
-  try { h = await window.showDirectoryPicker({ id: 'beamng', mode: 'read' }); } catch (e) { return; }   // cancelled, or a folder Chrome blocks
+  try {
+    h = await window.showDirectoryPicker({ id: 'beamng-' + kind, mode: 'read', ...(prev ? { startIn: prev.handle } : {}) });
+  } catch (e) { return; }   // cancelled, or a folder Chrome blocks
   await addFolder(handleDir(h), h);
+}
+
+// single zips, with their own remembered place (showOpenFilePicker), else the file input
+async function pickZips() {
+  if (!window.showOpenFilePicker) { $('bngzips').click(); return; }
+  let hs;
+  try {
+    hs = await window.showOpenFilePicker({ id: 'beamng-zips', multiple: true, types: [{ description: 'Vehicle or mod zips', accept: { 'application/zip': ['.zip'] } }] });
+  } catch (e) { return; }
+  await addZips(await Promise.all(hs.map((h) => h.getFile())));
 }
 
 // remembered folders: open the ones still granted; the others wait for a click (reopenFolders)
@@ -254,6 +293,7 @@ async function openVehicle(model, config) {
     }
     vehEdit = freshEdit(model, config);
     pick = null;
+    partColor = {}; hiddenParts = new Set(); lockedParts = new Set(); colorCount = 0;
     vehBusy = '';
     configureVehicle();
     fitCamera();
@@ -269,6 +309,8 @@ function configureVehicle() {
     if (pick && !pickValid()) pick = null;
     vehEdit.config = veh.config;
     vehError = null;
+    colorParts();
+    syncMeshes();
   } catch (err) {
     vehError = pyError(err);
     if (veh && veh.model !== vehEdit.model) veh = null;     // do not leave the previous vehicle on screen
@@ -284,15 +326,38 @@ let nodeIds = [];
 function drawVehicle() {
   vehG.clear();
   if (!veh) return;
-  const g = veh.geometry, pos = [];
-  nodeIds = Object.keys(g.nodes);
-  for (const [a, b] of g.beams) pos.push(...v3(g.nodes[a]).toArray(), ...v3(g.nodes[b]).toArray());
+  const g = veh.geometry, pos = [], col = [];
+  const grey = new THREE.Color(0x8c959f), blue = new THREE.Color(0x2f6fdf);
+  nodeIds = Object.keys(g.nodes).filter((n) => !hiddenParts.has(g.parts[n]));
+  g.beams.forEach(([a, b], i) => {
+    if (hiddenParts.has(g.beam_parts[i])) return;
+    const c = colorOf(g.beam_parts[i]) || grey;
+    pos.push(...v3(g.nodes[a]).toArray(), ...v3(g.nodes[b]).toArray());
+    col.push(c.r, c.g, c.b, c.r, c.g, c.b);
+  });
   const lines = new THREE.BufferGeometry();
   lines.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  vehG.add(new THREE.LineSegments(lines, new THREE.LineBasicMaterial({ color: 0x8c959f, transparent: true, opacity: 0.55 })));
+  lines.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  vehG.add(new THREE.LineSegments(lines, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.7 })));
   const pts = new THREE.BufferGeometry();
-  pts.setAttribute('position', new THREE.Float32BufferAttribute(Object.values(g.nodes).flatMap((p) => v3(p).toArray()), 3));
-  vehG.add(new THREE.Points(pts, new THREE.PointsMaterial({ color: 0x2f6fdf, size: 0.025 })));
+  pts.setAttribute('position', new THREE.Float32BufferAttribute(nodeIds.flatMap((n) => v3(g.nodes[n]).toArray()), 3));
+  pts.setAttribute('color', new THREE.Float32BufferAttribute(nodeIds.flatMap((n) => (colorOf(g.parts[n]) || blue).toArray()), 3));
+  vehG.add(new THREE.Points(pts, new THREE.PointsMaterial({ vertexColors: true, size: 0.025 })));
+  // the wheels the game builds (not in the jbeam): two circles per tyre, at its sides
+  for (const w of veh.wheels) {
+    if (!w.radius) continue;
+    const ax = v3(w.axis).normalize(), c = v3(w.centre), half = (w.width || 0.2) / 2;
+    const u = new THREE.Vector3().crossVectors(ax, Math.abs(ax.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)).normalize();
+    const v = new THREE.Vector3().crossVectors(ax, u);
+    for (const side of [-half, half]) {
+      const ring = [];
+      for (let k = 0; k <= 32; k++) {
+        const t = (k / 32) * Math.PI * 2;
+        ring.push(c.clone().addScaledVector(ax, side).addScaledVector(u, Math.cos(t) * w.radius).addScaledVector(v, Math.sin(t) * w.radius));
+      }
+      vehG.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ring), new THREE.LineBasicMaterial({ color: 0x55595f })));
+    }
+  }
   const part = pick && (pick.kind === 'part' ? pick.name : pick.kind === 'node' ? g.parts[pick.id] : g.beam_parts[beamIndex(g, pick)]);
   if (part) {
     const hp = new THREE.BufferGeometry();
@@ -315,6 +380,54 @@ function drawVehicle() {
   vehG.visible = $('showbeams').checked;
 }
 
+// ---------- the vehicle's meshes (flexbodies, from the game's .dae files; meshes.js) ----------
+let meshes = null, meshKey = '', meshToken = 0, meshNote = '';
+const meshMats = {};
+async function syncMeshes() {
+  if (!veh || !$('showmesh').checked || !resolved) { bodyG.visible = false; return; }
+  bodyG.visible = true;
+  const key = veh.model + '|' + veh.flexbodies.map((f) => f.part + ':' + f.mesh).join(',');
+  if (meshes && key === meshKey) { meshes.update(veh); styleMeshes(); return; }
+  const token = ++meshToken;
+  meshKey = key; meshes = null; bodyG.clear();
+  const src = sourceByName();
+  const read = (path) => src[resolved.files[path]].files[path]();
+  const daePaths = Object.keys(resolved.files).filter((path) => /\.dae$/i.test(path));
+  try {
+    const built = await buildMeshes(veh, daePaths, read, (t) => { if (token === meshToken) { meshNote = t; drawTiming(); } });
+    if (token !== meshToken) return;
+    meshes = built;
+    bodyG.add(built.group);
+    meshes.update(veh);
+    styleMeshes();
+    meshNote = `${built.count} meshes` + (built.missing.length ? `, ${built.missing.length} not found` : '');
+  } catch (err) {
+    if (token === meshToken) { meshNote = 'meshes: ' + (err.message || err); meshKey = ''; }
+  }
+  drawTiming(); showIssues(issues());
+}
+
+// mesh colours and visibility by part: tinted with the part's colour (glass stays clear)
+function styleMeshes() {
+  const mat = (kind, part) => {
+    const c = colorOf(part), k = kind + '|' + (c ? part : '');
+    if (meshMats[k]) return meshMats[k];
+    const base = { body: 0xc9ced6, dark: 0x2b2d31, glass: 0x9fb4c8 }[kind];
+    const color = new THREE.Color(base);
+    if (c && kind !== 'glass') color.lerp(c, kind === 'dark' ? 0.35 : 0.6);
+    return (meshMats[k] = new THREE.MeshStandardMaterial({ color, roughness: kind === 'glass' ? 0.1 : 0.7, metalness: 0.05, side: THREE.DoubleSide,
+      ...(kind === 'glass' ? { transparent: true, opacity: 0.3, depthWrite: false } : {}) }));
+  };
+  bodyG.traverse((m) => {
+    if (!m.isMesh) return;
+    m.visible = !hiddenParts.has(m.userData.part);
+    const kinds = m.userData.kinds;
+    m.material = kinds.length > 1 ? kinds.map((k) => mat(k, m.userData.part)) : mat(kinds[0], m.userData.part);
+  });
+}
+$('showmesh').onchange = () => syncMeshes();
+$('partcolors').onchange = () => { drawVehicle(); styleMeshes(); drawInspector(); };
+
 // click in the view to pick (a drag orbits instead): the node nearest the pointer on screen within 10 px
 // (the nearer to the camera on a tie), else the beam nearest within 6 px; a click on empty space clears the pick
 let downAt = null;
@@ -325,6 +438,7 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   let best = null, bestD = 10, bestZ = Infinity;
   const p = new THREE.Vector3();
   for (const id of nodeIds) {
+    if (!editable(veh.geometry.parts[id])) continue;               // locked parts cannot be picked
     p.copy(v3(veh.geometry.nodes[id])).project(camera);
     if (p.z > 1) continue;                                          // behind the camera
     const d = Math.hypot((p.x + 1) / 2 * r.width - mx, (1 - p.y) / 2 * r.height - my);
@@ -335,6 +449,7 @@ renderer.domElement.addEventListener('pointerup', (e) => {
     const scr = (id) => { p.copy(v3(veh.geometry.nodes[id])).project(camera); return [(p.x + 1) / 2 * r.width, (1 - p.y) / 2 * r.height, p.z]; };
     let bi = -1, bd = 6;
     veh.geometry.beams.forEach(([a, b], i) => {
+      if (!editable(veh.geometry.beam_parts[i])) return;
       const A = scr(a), B = scr(b);
       if (A[2] > 1 || B[2] > 1) return;
       const dx = B[0] - A[0], dy = B[1] - A[1], L = dx * dx + dy * dy;
@@ -360,12 +475,13 @@ function libraryPanel() {
       the user folder over mods over the install. Only jbeam, config and info files are read, in your browser; nothing is uploaded.</p>`}
     ${shadowed ? `<p class="quiet">${shadowed} files are replaced by a mod or the user folder.</p>` : ''}
     ${pending.length ? `<div class="inl"><button id="bngreopen" class="primary">Reopen ${pending.length === 1 ? esc(pending[0].name) : pending.length + ' remembered folders'}</button></div>` : ''}
-    <div class="inl">${canRemember ? '<button id="bngpick" class="primary" title="Remembered for the next sessions (Chrome, Edge)">Add folder…</button>' : ''}
-      <button id="bngpickdir" title="Any folder, AppData included; picked again every session">${canRemember ? 'Add with file dialog…' : 'Add folder…'}</button>
-      <button id="bngpickzips" title="Single vehicle or mod zips">Add zips…</button>
+    <div class="inl">${canRemember ? `<button id="bngpickgame" class="primary" title="The BeamNG.drive install (with content/vehicles); remembered for the next sessions">Game folder…</button>
+      <button id="bngpickmods" title="The user folder (with mods/) or a mod folder; remembered for the next sessions">Mods folder…</button>` : ''}
+      <button id="bngpickdir" title="Any folder, AppData included; picked again every session">${canRemember ? 'With file dialog…' : 'Add folder…'}</button>
+      <button id="bngpickzips" title="Single vehicle or mod zips">Zips…</button>
       ${folders.length || pending.length ? '<button id="bngforget" title="Close the folders and forget the remembered ones">Forget</button>' : ''}</div>
-    ${canRemember && !folders.some((f) => f.role === 'user') ? `<p class="quiet">Chrome does not open folders under AppData or Program Files with <i>Add folder</i>.
-      Use <i>Add with file dialog</i> for them (every session), or move the user folder elsewhere in the BeamNG launcher so it can be remembered.</p>` : ''}`;
+    ${canRemember && !folders.some((f) => f.role === 'user') ? `<p class="quiet">Chrome does not open folders under AppData or Program Files with <i>Mods folder</i> or <i>Game folder</i>.
+      Use <i>With file dialog</i> for them (every session), or move the user folder elsewhere in the BeamNG launcher so it can be remembered.</p>` : ''}`;
 }
 
 function drawVehList() {
@@ -382,9 +498,10 @@ function drawVehList() {
         <span class="q">${esc(v.type || '')} · ${v.configs.length}</span></li>`).join('')}</ul>`;
   }
   el.innerHTML = html;
-  if ($('bngpick')) $('bngpick').onclick = pickFolder;
+  if ($('bngpickgame')) $('bngpickgame').onclick = () => pickFolder('game');
+  if ($('bngpickmods')) $('bngpickmods').onclick = () => pickFolder('mods');
   $('bngpickdir').onclick = () => $('bngdir').click();
-  $('bngpickzips').onclick = () => $('bngzips').click();
+  $('bngpickzips').onclick = pickZips;
   if ($('bngreopen')) $('bngreopen').onclick = reopenFolders;
   if ($('bngforget')) $('bngforget').onclick = forgetFolders;
   if (!cat) return;
@@ -402,9 +519,15 @@ function vehInspector() {
     const sel = `<select data-slot="${esc(n.slot)}">${n.core ? '' : `<option value="" ${n.part ? '' : 'selected'}>(empty)</option>`}
       ${opts.map(([p, t]) => `<option value="${esc(p)}" ${p === n.part ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
     const kids = n.children.filter((c) => c.options.length || c.children.length || c.part);
-    const mv = n.part && Object.values(veh.geometry.parts).includes(n.part)
-      ? `<button class="mini${pick && pick.kind === 'part' && pick.name === n.part ? ' on' : ''}" data-pickpart="${esc(n.part)}" title="Pick this part to move it">move</button>` : '';
-    return `<li style="padding-left:${depth * 10}px"><span class="q">${esc(n.description || n.slot)}${mv}</span>${sel}</li>` +
+    const hasNodes = n.part && Object.values(veh.geometry.parts).includes(n.part);
+    const shown = n.part && (hasNodes || veh.flexbodies.some((f) => f.part === n.part));
+    const mv = hasNodes
+      ? `<button class="mini${pick && pick.kind === 'part' && pick.name === n.part ? ' on' : ''}" data-pickpart="${esc(n.part)}" title="Pick this part to move it"
+          ${editable(n.part) ? '' : 'disabled'}>move</button>` : '';
+    const tools = shown ? `<span class="sw" style="background:${hexOf(n.part)}"></span>${mv}
+      <button class="mini${lockedParts.has(n.part) ? ' on' : ''}" data-lock="${esc(n.part)}" title="Locked: its nodes and beams cannot be picked or moved">lock</button>
+      <button class="mini${hiddenParts.has(n.part) ? ' on' : ''}" data-hide="${esc(n.part)}" title="Hidden: not drawn and cannot be picked">hide</button>` : '';
+    return `<li style="padding-left:${depth * 10}px"><span class="q">${esc(n.description || n.slot)}${tools}</span>${sel}</li>` +
       kids.map((c) => slotRow(c, depth + 1)).join('');
   };
   const cats = {};
@@ -419,7 +542,10 @@ function vehInspector() {
     ${veh.missing.length ? `<p class="bad">Not found in the added folders: ${veh.missing.map((m) => esc(m[1])).join(', ')}</p>` : ''}
     <div class="inl"><button id="vehsave" class="primary">Save configuration (.pc)…</button><button id="vehreset">Reset to the configuration</button></div>
     ${movePanel()}
-    <details open><summary><b>Parts</b> <span class="q">(as the game's Parts menu)</span></summary><ul class="vehparts">${slotRow(veh.tree, 0)}</ul></details>
+    <details open><summary><b>Parts</b> <span class="q">(as the game's Parts menu)</span></summary>
+      ${hiddenParts.size || lockedParts.size ? `<p class="quiet">${hiddenParts.size} hidden, ${lockedParts.size} locked
+        ${hiddenParts.size ? '<button id="showall" class="mini">show all</button>' : ''}${lockedParts.size ? '<button id="unlockall" class="mini">unlock all</button>' : ''}</p>` : ''}
+      <ul class="vehparts">${slotRow(veh.tree, 0)}</ul></details>
     <details><summary><b>Tuning</b> <span class="q">(${veh.variables.length} variables)</span></summary>${tune}</details>`;
 }
 
@@ -437,7 +563,7 @@ function movePanel() {
   let body;
   if (pick.kind === 'node') {
     const part = veh.geometry.parts[pick.id], d = vehEdit.moves.nodes[pick.id];
-    body = `<div class="kv"><span>Node</span><span><b>${esc(pick.id)}</b></span><span>Part</span><span>${esc(part)} <button class="mini" data-pickpart="${esc(part)}">move part</button></span></div>
+    body = `<div class="kv"><span>Node</span><span><b>${esc(pick.id)}</b></span><span>Part</span><span>${esc(part)} <button class="mini" data-pickpart="${esc(part)}" ${editable(part) ? '' : 'disabled'}>move part</button></span></div>
       <p class="quiet">Position:</p>${inputs(veh.geometry.nodes[pick.id], 'node')}
       ${d ? `<p class="quiet">Moved by ${d.map((x) => fmt(x * 1000, 1)).join(' / ')} mm <button id="moveundo" class="mini">Reset node</button></p>` : ''}`;
   } else if (pick.kind === 'beam') {
@@ -446,7 +572,7 @@ function movePanel() {
     const moved = vehEdit.moves.nodes[pick.a] || vehEdit.moves.nodes[pick.b];
     body = `<div class="kv"><span>Beam</span><span><b>${esc(pick.a)} – ${esc(pick.b)}</b> <span class="q">${fmt(Math.hypot(A[0] - B[0], A[1] - B[1], A[2] - B[2]) * 1000, 1)} mm</span></span>
       <span>Nodes</span><span><button class="mini" data-picknode="${esc(pick.a)}">${esc(pick.a)}</button><button class="mini" data-picknode="${esc(pick.b)}">${esc(pick.b)}</button></span>
-      <span>Part</span><span>${esc(part)} <button class="mini" data-pickpart="${esc(part)}">move part</button></span></div>
+      <span>Part</span><span>${esc(part)} <button class="mini" data-pickpart="${esc(part)}" ${editable(part) ? '' : 'disabled'}>move part</button></span></div>
       <p class="quiet">Midpoint (both nodes move):</p>${inputs(mid, 'beam')}
       ${moved ? '<p><button id="moveundo" class="mini">Reset both nodes</button></p>' : ''}`;
   } else {
@@ -468,7 +594,7 @@ function shiftNode(id, axis, by) {
 }
 
 function setMove(kind, axis, value) {
-  if (!Number.isFinite(value)) return;
+  if (!Number.isFinite(value) || !pick || !pickEditable()) return;
   const g = veh.geometry;
   if (kind === 'node') shiftNode(pick.id, axis, value - g.nodes[pick.id][axis]);
   else if (kind === 'beam') {
@@ -487,9 +613,19 @@ function bindVehInspector(el) {
   if (!veh) return;
   el.querySelectorAll('[data-pickpart]').forEach((b) => b.onclick = (e) => {
     e.preventDefault(); e.stopPropagation();
+    if (!editable(b.dataset.pickpart)) return;
     pick = { kind: 'part', name: b.dataset.pickpart }; drawVehicle(); drawInspector();
   });
   el.querySelectorAll('input[data-move]').forEach((i) => i.onchange = () => setMove(i.dataset.move, Number(i.dataset.axis), Number(i.value)));
+  const toggle = (set, part) => {
+    if (set.has(part)) set.delete(part); else set.add(part);
+    if (pick && !pickEditable()) pick = null;
+    drawVehicle(); styleMeshes(); drawInspector();
+  };
+  el.querySelectorAll('[data-lock]').forEach((b) => b.onclick = () => toggle(lockedParts, b.dataset.lock));
+  el.querySelectorAll('[data-hide]').forEach((b) => b.onclick = () => toggle(hiddenParts, b.dataset.hide));
+  if ($('showall')) $('showall').onclick = () => { hiddenParts.clear(); drawVehicle(); styleMeshes(); drawInspector(); };
+  if ($('unlockall')) $('unlockall').onclick = () => { lockedParts.clear(); drawVehicle(); drawInspector(); };
   el.querySelectorAll('[data-picknode]').forEach((b) => b.onclick = () => { pick = { kind: 'node', id: b.dataset.picknode }; drawVehicle(); drawInspector(); });
   if ($('moveclear')) $('moveclear').onclick = (e) => { e.preventDefault(); pick = null; drawVehicle(); drawInspector(); };
   if ($('moveundo')) $('moveundo').onclick = () => {
@@ -523,11 +659,14 @@ $('bngdir').onchange = async (e) => {
   e.target.value = '';
   await addFolder(dir, null);
 };
-// single zips: each one a mod source (a game zip picked this way still works, ranked as a mod)
 $('bngzips').onchange = async (e) => {
   const picked = [...e.target.files];
   e.target.value = '';
-  if (!picked.length) return;
+  if (picked.length) await addZips(picked);
+};
+
+// single zips: each one a mod source (a game zip picked this way still works, ranked as a mod)
+async function addZips(picked) {
   const old = folders.find((x) => x.name === 'picked zips');
   const sources = old ? old.sources.filter((s) => !picked.some((f) => s.name === 'zip/' + f.name)) : [];
   for (const f of picked) {
@@ -537,7 +676,7 @@ $('bngzips').onchange = async (e) => {
   folders = folders.filter((x) => x !== old);
   folders.push({ name: 'picked zips', role: 'mod', sources, notes: [`${sources.length} zips`], handle: null });
   await libraryChanged();
-};
+}
 
 // ---------- SVJ (Standard Vehicle JSON) ----------
 let svjDoc = null;         // svjpy.load_bundle result of the last import (kept in memory)
@@ -686,6 +825,7 @@ function issues() {
   if (vehError) return [{ level: 'ERROR', rule: 'vehicle', message: vehError }];
   if (!veh) return [{ level: 'INFO', rule: 'vehicle', message: 'Add your BeamNG folders, then pick a vehicle to use it as a base.' }];
   const out = veh.missing.map((m) => ({ level: 'WARN', rule: 'vehicle', message: `slot ${m[0]}: part ${m[1]} is not in the added folders (add the game install, and the mod that ships it)` }));
+  if (meshes && meshes.missing.length) out.push({ level: 'INFO', rule: 'meshes', message: `${meshes.missing.length} meshes not found in any .dae (mods may ship only .cdae): ${meshes.missing.slice(0, 8).join(', ')}${meshes.missing.length > 8 ? '…' : ''}` });
   const changed = Object.keys(vehEdit.parts).length + Object.keys(vehEdit.vars).length + moveCount();
   out.push({ level: 'PASS', rule: 'vehicle', message: `${veh.model} · ${veh.config}: ${changed ? changed + ' change(s) from the configuration' : 'as configured'}. Save it as a .pc for BeamNG.` });
   return out;
@@ -701,6 +841,7 @@ function drawTiming() {
   if (timing.pyodide) parts.push(`Python engine ${fmt(timing.pyodide / 1000, 1)} s`);
   if (timing.files) parts.push(`BeamForge code ${fmt(timing.files / 1000, 1)} s`);
   if (timing.configure) parts.push(`last configure ${fmt(timing.configure, 0)} ms`);
+  if (veh && meshNote) parts.push(meshNote);
   $('timing').textContent = parts.join(' · ');
 }
 
@@ -713,6 +854,7 @@ window.beamforge = {
   get folders() { return folders; },
   get catalog() { return cat; },
   get pick() { return pick; },
+  get meshParts() { const o = {}; bodyG.traverse((m) => { if (m.isMesh) { const x = (o[m.userData.part] ||= [0, 0]); x[1]++; if (m.visible) x[0]++; } }); return o; },
   set pick(p) { pick = p; drawVehicle(); drawInspector(); },
   setMove,
   addFolder: (dir) => addFolder(dir, null),     // dir: the library.js directory interface

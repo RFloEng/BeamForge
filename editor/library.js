@@ -12,6 +12,7 @@
 import { ZipReader, BlobReader, TextWriter } from 'zipjs';
 
 export const TEXT_FILE = /\.(jbeam|pc|json)$/i;
+const READ_FILE = /\.(jbeam|pc|json|dae)$/i;      // text files, and the .dae meshes (read only when drawn)
 export const canRemember = typeof window.showDirectoryPicker === 'function';
 
 // ---------- the directory interface: entries() -> Map(lower-case name -> { name, dir } | { name, file }) ----------
@@ -76,14 +77,14 @@ async function* walk(dir, prefix = '') {
 }
 
 // ---------- sources ----------
-// a zip's text files under vehicles/ (the central directory only; entries are read when asked). null: no vehicle files.
+// a zip's text and .dae files under vehicles/ (the central directory only; entries are read when asked). null: no vehicle files.
 // file: a File / Blob, or a zip.js reader (tests read the user's files over HTTP ranges)
 export async function zipSource(file, name, kind) {
   const reader = new ZipReader(file instanceof Blob ? new BlobReader(file) : file);
   const files = {};
   for (const e of await reader.getEntries()) {
     const p = e.filename.replace(/\\/g, '/').replace(/^\.?\//, '');
-    if (!e.directory && /^vehicles\//i.test(p) && TEXT_FILE.test(p)) files[p] = () => e.getData(new TextWriter());
+    if (!e.directory && /^vehicles\//i.test(p) && READ_FILE.test(p)) files[p] = () => e.getData(new TextWriter());
   }
   return Object.keys(files).length ? { name, kind, files } : null;
 }
@@ -92,7 +93,7 @@ export async function zipSource(file, name, kind) {
 async function looseSource(vehDir, name, kind) {
   const files = {};
   for await (const [rel, e] of walk(vehDir)) {
-    if (TEXT_FILE.test(rel)) files['vehicles/' + rel] = async () => (await e.file()).text();
+    if (READ_FILE.test(rel)) files['vehicles/' + rel] = async () => (await e.file()).text();
   }
   return Object.keys(files).length ? { name, kind, files } : null;
 }

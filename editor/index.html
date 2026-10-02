@@ -6,7 +6,7 @@
 <title>BeamForge</title>
 <link rel="stylesheet" href="style.css">
 <!-- Pyodide runs the beamforge Python package in the page; app.js fetches the .py files from the repo root,
-     so serve the repo root over http (python -m http.server) and open /editor/. -->
+     so serve the repo root over http (python serve.py) and open /editor/. -->
 <script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
 <script type="importmap">
 {"imports": {
@@ -40,6 +40,8 @@
     <div id="toolbar"><div id="hint" class="quiet">Drag to orbit, right-drag to pan, wheel to zoom.</div></div>
     <div id="viewtools">
       <label><input type="checkbox" id="showbeams" checked> Nodes + beams</label>
+      <label><input type="checkbox" id="showmesh" checked> Meshes</label>
+      <label><input type="checkbox" id="partcolors" checked> Part colours</label>
       <label id="meshtoggle" hidden><input type="checkbox" id="meshes" checked> SVJ meshes</label>
       <label id="hptoggle" hidden><input type="checkbox" id="hps" checked> SVJ hardpoints</label>
     </div>

@@ -152,6 +152,45 @@ class TestVehicle(unittest.TestCase):
         self.assertEqual([(x["name"], x["title"]) for x in c["configs"]], [("base", "Base"), ("sport", "Sport")])
 
 
+class TestWheelsAndMeshes(unittest.TestCase):
+    """pressureWheels read as one table over the active parts; flexbody rows with their transforms."""
+
+    PARTS = {
+        "tyre": {"part": {"pressureWheels": [["name", "hubGroup", "group", "node1:", "node2:"], {"radius": 0.3}, {"tireWidth": "$=$w"}]}},
+        "rim": {"part": {"pressureWheels": [["name", "hubGroup", "group", "node1:", "node2:"], {"hubRadius": 0.2, "wheelOffset": -0.05}],
+                         "flexbodies": [["mesh", "[group]:", "nonFlexMaterials"],
+                                        ["rim_a", ["wheel_FL", "wheelhub_FL"], [], {"pos": {"x": 0.47, "y": 0, "z": 0}, "rot": {"x": 0, "y": 0, "z": 180}}],
+                                        {"pos": {"x": 0, "y": 0, "z": 0.1}}, ["body_a", ["body"]]]}},
+        "wheeldata": {"part": {"pressureWheels": [["name", "hubGroup", "group", "node1:", "node2:"],
+                                                  ["FL", "wheel_FL", "tire_FL", "w1ll", "w1l"], ["FR", "wheel_FR", "tire_FR", "w1rr", "w1r"]]}},
+    }
+    GEO = {"nodes": {"w1ll": [0.8, -1.0, 0.3], "w1l": [0.6, -1.0, 0.3], "w1rr": [-0.8, -1.0, 0.3], "w1r": [-0.6, -1.0, 0.3]}}
+
+    def test_wheel_properties_carry_over_parts(self):
+        w = bng.wheels(self.PARTS, ["tyre", "rim", "wheeldata"], self.GEO, {"$w": 0.15})
+        self.assertEqual([x["name"] for x in w], ["FL", "FR"])
+        fl = w[0]
+        self.assertEqual((fl["radius"], fl["width"], fl["hubRadius"], fl["group"], fl["hubGroup"]), (0.3, 0.15, 0.2, "tire_FL", "wheel_FL"))
+        self.assertEqual(fl["axis"], [1.0, 0.0, 0.0])                      # inner -> outer axle node
+        self.assertEqual(fl["centre"], [0.75, -1.0, 0.3])                  # outer node moved by wheelOffset
+        self.assertEqual(w[1]["centre"], [-0.75, -1.0, 0.3])
+
+    def test_flexbody_rows(self):
+        f = bng.flexbodies(self.PARTS, ["rim"], {})
+        self.assertEqual([(x["mesh"], x["groups"]) for x in f], [("rim_a", ["wheel_FL", "wheelhub_FL"]), ("body_a", ["body"])])
+        self.assertEqual((f[0]["pos"], f[0]["rot"], f[0]["scale"]), ([0.47, 0, 0], [0, 0, 180], [1.0, 1.0, 1.0]))
+        self.assertEqual(f[1]["pos"], [0, 0, 0.1])                           # from the property row before it
+
+    def test_rest_positions_and_groups(self):
+        bng.reset()
+        bng.add_files(json.dumps(CAR))
+        g = json.loads(bng.configure("toycar", None, None, None, json.dumps({"nodes": {"b1": [0, 0, 0.1]}})))["geometry"]
+        self.assertEqual(g["rest"]["fwhl1l"], [0.31, 0.0, 0.0])              # as written, before slot offsets
+        self.assertEqual(g["rest"]["b1"], [0.5, -1.0, 0.3])                # before the user's move
+        self.assertEqual(g["nodes"]["b1"], [0.5, -1.0, 0.4])
+        self.assertEqual(g["groups"]["b1"], [])
+
+
 class TestSources(unittest.TestCase):
     """The install, mods and the user folder as one file system (resolve, inactive_mods, ranks)."""
 
