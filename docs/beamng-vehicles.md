@@ -8,11 +8,15 @@ BeamForge starts from any BeamNG vehicle (vanilla or mod) and modifies it the wa
 | --- | --- |
 | Vanilla vehicles | `BeamNG.drive/content/vehicles/<model>.zip`, one zip per vehicle or prop |
 | Shared parts | `content/vehicles/common.zip`: wheels, tyres, brakes, seats, cargo and other parts many vehicles use |
-| Mods and saved configs | the user folder, `vehicles/<model>/` (unpacked) or `mods/*.zip` |
+| User folder | `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\` (older versions: `%LOCALAPPDATA%\BeamNG.drive\<version>\`; the launcher can move it). `BeamNG.drive.ini` beside it names the install and a custom user folder |
+| Mods | in the user folder: `mods/*.zip`, `mods/repo/*.zip` (downloaded from the repository) and `mods/unpacked/<mod>/`. `mods/db.json` lists every mod with `active` and `fullpath` (`/mods/repo/x.zip`) |
+| Own files | the user folder's `vehicles/<model>/`: saved configs (`.pc` and their thumbnails), and anything else a player puts there |
+
+The game reads all of them as one file system. When the same path is in several places, the user folder wins over mods and mods over the install. Mods often ship more than one vehicle: a mod zip can add configs or parts to a vanilla vehicle's folder (`vehicles/hatchback/…`), and many ship parts in `vehicles/common/`, which every vehicle can use. The order between two mods that ship the same file is not documented; BeamForge takes them by path (to confirm in-game). Mods switched off in `db.json` are skipped.
 
 A vehicle zip is mostly meshes and textures (`.dae` / `.cdae`, `.dds`, `.jpg`). The editor reads only its text files (`.jbeam`, `.pc`, `.json`): typically 0.5–6 MB per vehicle against 100–800 MB for the whole zip. It reads them entry by entry with zip.js, without loading the archive.
 
-Survey of one 2026 install (122 zips): 28 cars, 10 trucks, 13 trailers, 2 heavy machines and 67 props, with 4,199 jbeam, 1,709 config and 2,548 json files. All of them parse with BeamForge's lenient jbeam reader.
+Survey of one 2026 install (122 zips): 28 cars, 10 trucks, 13 trailers, 2 heavy machines and 67 props, with 4,199 jbeam, 1,709 config and 2,548 json files. All of them parse with BeamForge's lenient jbeam reader. Mods are less tidy: some files end with an extra `}`, which the game accepts, and so does the reader.
 
 ## A vehicle
 
@@ -35,10 +39,12 @@ Survey of one 2026 install (122 zips): 28 cars, 10 trucks, 13 trailers, 2 heavy 
 
 ## The editor's base vehicle
 
-- **Choose vehicles folder:** pick `BeamNG.drive/content/vehicles` (or a mod folder, or single zips). The vehicle list comes from each zip's `info.json` and configs, cars first.
-- **A vehicle:** its configurations, the parts tree with a menu per slot, tuning sliders by category, and its node-and-beam structure in 3D. Shared parts are read from `common.zip` once per session; after that a part or tuning change rebuilds the tree in a few hundredths of a second.
+- **BeamNG folders:** add the install (the folder itself, `content/` or `content/vehicles/`) and the user folder (`BeamNG.drive/`, `current/` or a version folder). The editor tells which one was picked. A single unpacked mod folder (with `vehicles/` inside) or single zips can be added too. The vehicle list comes from every `info.json` and config across them, cars first; vehicles from a mod are tagged.
+- **Remembered folders:** in Chrome and Edge, *Add folder* keeps the folder handles in IndexedDB; the next session reopens them, or asks for one click to confirm access. Chrome refuses folders under AppData and Program Files there, which is where the user folder is by default: *Add with file dialog* reads any folder, but only for the session. Moving the user folder in the BeamNG launcher, or a Steam library outside Program Files, makes them rememberable.
+- **A vehicle:** its configurations, the parts tree with a menu per slot, tuning sliders by category, and its node-and-beam structure in 3D. Shared parts (`vehicles/common` of the install and of every mod) are read once per library; after that a part or tuning change rebuilds the tree in a few hundredths of a second.
+- **Move:** click a node in the view (or *move* beside a part in the tree) and type its x / y / z in metres, BeamNG axes (x left, y rear, z up). A node takes a new position; a part takes an offset of its own nodes (not of the parts in its slots). Moves show in the 3D view and in the measurements (wheelbase, tracks) at once. They are not in the saved `.pc` yet.
 - **Save configuration (.pc):** downloads the config, to be placed in the user folder at `vehicles/<model>/`.
 
-Code: `beamforge/beamng.py` (reading, the parts tree, tuning, geometry, `.pc` writing), the base vehicle section of `editor/app.js` (folder picking, zip reading, panels), tests in `tests/test_beamng.py` (made-up vehicles; set `BEAMNG_VEHICLES` to a `content/vehicles` folder to also build every car of a local install).
+Code: `beamforge/beamng.py` (which source serves each file, reading, the parts tree, tuning, geometry, `.pc` writing), `editor/library.js` (folders, zips, remembered handles), the base vehicle section of `editor/app.js` (panels), tests in `tests/test_beamng.py` (made-up vehicles; set `BEAMNG_VEHICLES` to a `content/vehicles` folder to also build every car of a local install).
 
-Not yet: flexbody meshes (only the node-and-beam structure is drawn), paints, mod zips from the user folder, and remembering the picked folders. See [roadmap.md](roadmap.md).
+Not yet: flexbody meshes (only the node-and-beam structure is drawn), paints, and saving a `.pc` straight into the user folder. See [roadmap.md](roadmap.md).

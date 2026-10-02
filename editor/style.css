@@ -109,3 +109,13 @@ pre.jb { white-space: pre-wrap; word-break: break-all; font: 11px/1.35 ui-monosp
 table.cmp { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 table.cmp th, table.cmp td { padding: 2px 4px; text-align: right; border-bottom: 1px solid var(--line); }
 table.cmp th:first-child, table.cmp td:first-child { text-align: left; color: var(--quiet); }
+
+/* BeamNG folders list: name on one line, what was found below it; not clickable */
+ul.lib li { flex-direction: column; gap: 0; cursor: default; }
+ul.lib li:hover { background: none; }
+ul.lib li .q { white-space: normal; }
+
+/* small inline buttons (move, reset) and the Move panel's number inputs */
+button.mini { font-size: 11px; padding: 0 6px; margin-left: 6px; line-height: 18px; }
+button.mini.on { background: var(--accent-soft); }
+input[type=number][data-move] { width: 7em; }

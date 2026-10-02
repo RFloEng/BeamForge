@@ -4,13 +4,14 @@
 // Map of this file (sections in order):
 //   Python engine     boot() loads Pyodide and FILES, imports beamforge.beamng (vehpy) and beamforge.svj (svjpy)
 //   3D                scene, groups, camera; drawScene() rebuilds the vehicle and SVJ hardpoint groups
-//   base vehicle      library picking (folder, zips, unpacked mods), zip reading, vehicle list, parts and tuning
+//   base vehicle      BeamNG folders (install, user folder, mods; remembered), vehicle list, parts and tuning
 //   SVJ               import (.svj.json + meshes, or .zip bundle), glTF meshes, hardpoints, comparison panel
 //   panels            inspector, budget bar, messages, timing
 //
 // State (module globals):
-//   lib, cat         the picked files and the vehicle catalog (vehpy.catalog)
-//   veh, vehEdit     the configured vehicle (vehpy.configure) and the user's slot and tuning edits
+//   folders, cat     the BeamNG folders (library.js) and the vehicle catalog (vehpy.catalog)
+//   veh, vehEdit     the configured vehicle (vehpy.configure) and the user's slot, tuning and move edits
+//   pick             the selected node or part, moved with numeric x / y / z in the Move panel
 //   svjDoc           the last imported SVJ bundle (svjpy.load_bundle): document, meshes, bindings, notes
 //
 // Placement: the base vehicle stays where its jbeam puts it. An SVJ (origin at the front-axle centre on
@@ -21,7 +22,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { ZipReader, BlobReader, TextWriter } from 'zipjs';   // reads single entries of the game's large vehicle zips
+import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, rememberedHandles, rememberHandles, access } from './library.js';
 
 // repo files copied into Pyodide's file system under /bf (add new Python modules here)
 const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py'];
@@ -56,6 +57,7 @@ async function boot() {
   $('loading').remove();
   redraw();
   fitCamera();
+  await restoreFolders();
 }
 
 // ---------- 3D ----------
@@ -109,102 +111,140 @@ function drawScene() { drawVehicle(); placeSvj(); drawHardpoints(); }
 function redraw() { drawScene(); drawVehList(); drawInspector(); drawBudget(); showIssues(issues()); drawTiming(); }
 
 // ---------- base vehicle: any BeamNG vehicle from the user's own install or mods ----------
-// Nothing from the game ships with BeamForge. The user picks their BeamNG.drive/content/vehicles folder
-// (or zips, or an unpacked mod folder); only the text files inside (.jbeam, .pc, .json) are read,
-// entry by entry with zip.js, and handed to Python (beamforge.beamng). It works like the game's Vehicle
-// Config menu: a parts tree with the alternatives for each slot, tuning sliders by category, and a
-// .pc configuration to save.
-let lib = null, cat = null, veh = null, vehError = null, vehBusy = '';
-let vehEdit = { model: null, config: null, parts: {}, vars: {} };
+// Nothing from the game ships with BeamForge. The user adds their folders once (library.js): the game
+// install, the user folder (mods, unpacked mods and its own vehicles/), single mod folders or zips.
+// Python resolves them into one file system as the game does (user folder over mods over the install),
+// and only the text files (.jbeam, .pc, .json) are read, on demand, and handed to beamforge.beamng.
+// It works like the game's Vehicle Config menu: a parts tree with the alternatives for each slot,
+// tuning sliders by category, and a .pc configuration to save.
+//
+//   folders     picked folders and zips ({ name, role, sources, notes, handle? }), see library.js
+//   resolved    vehpy.resolve over every source: { files: {path: source name}, rank, shadowed }
+//   pending     remembered folder handles still waiting for the user to confirm access
+let folders = [], resolved = null, pending = [];
+let cat = null, veh = null, vehError = null, vehBusy = '';
+// the user's edits of the base vehicle: slot choices, tuning values, and moves ({parts|nodes: {name: [dx, dy, dz]}})
+const freshEdit = (model, config) => ({ model, config: config || null, parts: {}, vars: {}, moves: { parts: {}, nodes: {} } });
+let vehEdit = freshEdit(null, null);
+let pick = null;           // { kind: 'node', id } or { kind: 'part', name }
 let vehFilter = '', commonLoaded = false;
-const TEXT_FILE = /\.(jbeam|pc|json)$/i;
 
-// the picked files: zips by name, and loose files under vehicles/<model>/ (unpacked mods)
-function libraryFrom(fileList) {
-  const zips = {}, loose = {};
-  for (const f of fileList) {
-    const rel = (f.webkitRelativePath || f.name).replace(/\\/g, '/');
-    if (/\.zip$/i.test(f.name)) zips[f.name.replace(/\.zip$/i, '')] = f;
-    else if (TEXT_FILE.test(f.name)) {
-      const i = rel.indexOf('vehicles/');
-      if (i >= 0) loose[rel.slice(i)] = f;
-    }
+const allSources = () => folders.flatMap((f) => f.sources);
+const sourceByName = () => Object.fromEntries(allSources().map((s) => [s.name, s]));
+const inactive = (dbText) => new Set(JSON.parse(vehpy.inactive_mods(dbText)));
+
+// read the resolved files that pass keep(path): {path: text}, and their source ranks
+async function readResolved(keep, label) {
+  const src = sourceByName(), texts = {}, ranks = {};
+  const paths = Object.keys(resolved.files).filter(keep);
+  let i = 0;
+  for (const p of paths) {
+    if (label && ++i % 50 === 0) { vehBusy = `${label}: ${i} of ${paths.length}`; drawVehList(); }
+    const name = resolved.files[p];
+    texts[p] = await src[name].files[p]();
+    ranks[p] = resolved.rank[name];
   }
-  return { zips, loose };
+  return { texts, ranks };
 }
 
-// text entries of one zip that pass keep(path); reads only those entries, not the whole archive
-async function zipTexts(file, keep) {
-  const reader = new ZipReader(new BlobReader(file));
-  const out = {};
+// a folder (or zips) was added: resolve every source again, forget the held files, rebuild the vehicle list
+async function libraryChanged() {
+  cat = null; veh = null; vehError = null; commonLoaded = false;
+  vehpy.reset();
+  resolved = JSON.parse(vehpy.resolve(JSON.stringify(allSources().map((s) => ({ name: s.name, kind: s.kind, paths: Object.keys(s.files) })))));
+  await scanLibrary();
+  redraw();
+}
+
+// add a picked folder (showDirectoryPicker handle, or a webkitdirectory listing); replaces a folder of the same role
+async function addFolder(dir, handle) {
   try {
-    for (const e of await reader.getEntries()) {
-      const name = e.filename.replace(/\\/g, '/');
-      if (!e.directory && keep(name)) out[name] = await e.getData(new TextWriter());
+    vehBusy = `Looking at ${dir.name}…`; drawVehList();
+    const f = await readFolder(dir, inactive, (t) => { vehBusy = t; drawVehList(); });
+    vehBusy = '';
+    if (!f) {
+      showIssues([{ level: 'WARN', rule: 'library', message: `${dir.name}: not a BeamNG install, user folder or mod folder (no content/vehicles/common.zip, mods/ or vehicles/).` }]);
+      drawVehList();
+      return;
     }
-  } finally { await reader.close(); }
-  return out;
+    f.handle = handle || null;
+    folders = folders.filter((x) => !(x.role === f.role && (f.role !== 'mod' || x.name === f.name)));
+    folders.push(f);
+    if (handle) await rememberHandles(folders.map((x) => x.handle).filter(Boolean));
+    await libraryChanged();
+  } catch (err) { vehBusy = ''; vehError = pyError(err); redraw(); }
 }
 
-// the vehicle list: info.json and the configs of every vehicle zip / loose folder
+async function pickFolder() {
+  let h;
+  try { h = await window.showDirectoryPicker({ id: 'beamng', mode: 'read' }); } catch (e) { return; }   // cancelled, or a folder Chrome blocks
+  await addFolder(handleDir(h), h);
+}
+
+// remembered folders: open the ones still granted; the others wait for a click (reopenFolders)
+async function restoreFolders() {
+  for (const h of await rememberedHandles()) {
+    if (await access(h).catch(() => 'denied') === 'granted') await addFolder(handleDir(h), h);
+    else pending.push(h);
+  }
+  drawVehList();
+}
+
+async function reopenFolders() {
+  const hs = pending;
+  pending = [];
+  for (const h of hs) if (await access(h, true).catch(() => 'denied') === 'granted') await addFolder(handleDir(h), h);
+  drawVehList();
+}
+
+async function forgetFolders() {
+  folders = []; pending = []; cat = null; veh = null; resolved = null; commonLoaded = false;
+  vehpy.reset();
+  await rememberHandles([]);
+  redraw();
+}
+
+// the vehicle list: info.json and the configs of every vehicle folder, over every source
 async function scanLibrary() {
-  const entries = {};
-  const zipNames = Object.keys(lib.zips).filter((n) => n.toLowerCase() !== 'common');
-  let done = 0;
-  for (const z of zipNames) {
-    vehBusy = `Reading the vehicle list: ${++done} of ${zipNames.length} (${z})`;
-    drawVehList();
-    try {
-      const texts = await zipTexts(lib.zips[z], (p) => /^vehicles\/[^/]+\/(info[^/]*\.json|[^/]+\.pc)$/i.test(p));
-      for (const [p, t] of Object.entries(texts)) {
-        const m = p.split('/')[1], base = p.split('/').pop();
-        const e = entries[m] || (entries[m] = { info: null, configs: {}, zip: z });
-        if (base.toLowerCase() === 'info.json') e.info = t;
-        else if (/\.pc$/i.test(base)) { const c = base.replace(/\.pc$/i, ''); if (!(c in e.configs)) e.configs[c] = null; }
-        else { const c = base.replace(/^info_/i, '').replace(/\.json$/i, ''); e.configs[c] = t; }
-      }
-    } catch (err) { /* not a vehicle zip */ }
-  }
-  for (const [p, f] of Object.entries(lib.loose)) {             // unpacked mods
+  const isInfo = (p) => /^vehicles\/[^/]+\/info[^/]*\.json$/i.test(p);
+  const entries = {}, src = sourceByName();
+  const { texts } = await readResolved(isInfo, 'Reading the vehicle list');
+  for (const p of Object.keys(resolved.files)) {
+    if (!isInfo(p) && !/^vehicles\/[^/]+\/[^/]+\.pc$/i.test(p)) continue;
     const m = p.split('/')[1], base = p.split('/').pop();
-    if (!/^(info[^/]*\.json|[^/]+\.pc)$/i.test(base) || p.split('/').length !== 3) continue;
-    const e = entries[m] || (entries[m] = { info: null, configs: {}, zip: null });
-    const t = await f.text();
-    if (base.toLowerCase() === 'info.json') e.info = t;
+    if (m.toLowerCase() === 'common') continue;
+    const e = entries[m] || (entries[m] = { info: null, configs: {}, source: '' });
+    if (base.toLowerCase() === 'info.json') { e.info = texts[p]; e.source = src[resolved.files[p]].kind; }
     else if (/\.pc$/i.test(base)) { const c = base.replace(/\.pc$/i, ''); if (!(c in e.configs)) e.configs[c] = null; }
-    else e.configs[base.replace(/^info_/i, '').replace(/\.json$/i, '')] = t;
+    else e.configs[base.replace(/^info_/i, '').replace(/\.json$/i, '')] = texts[p];
   }
-  const keep = {};                                   // what Python needs: {model: {info, configs: {name: info text}}}
-  for (const [m, e] of Object.entries(entries)) keep[m] = { info: e.info, configs: e.configs };
-  cat = JSON.parse(vehpy.catalog(JSON.stringify(keep)));
-  for (const v of cat) v.zip = entries[v.model].zip;
+  // a folder with configs but no parts (saved .pc files of a vehicle that is not installed) is not a vehicle
+  const withParts = new Set(Object.keys(resolved.files).filter((p) => /\.jbeam$/i.test(p)).map((p) => p.split('/')[1]));
+  for (const m of Object.keys(entries)) if (!withParts.has(m)) delete entries[m];
+  cat = JSON.parse(vehpy.catalog(JSON.stringify(entries)));
   vehBusy = '';
 }
 
-// load one vehicle's text files (and vehicles/common the first time) into Python, then configure it
+// load one vehicle's text files (and vehicles/common of every source the first time) into Python, then configure it
 async function openVehicle(model, config) {
   const v = cat.find((x) => x.model === model);
   try {
     vehError = null;
     if (!commonLoaded) {
-      vehBusy = 'Reading the shared parts (vehicles/common): once per session…'; drawVehList();
-      let texts = {};
-      if (lib.zips.common) texts = await zipTexts(lib.zips.common, (p) => /^vehicles\/common\/.*\.jbeam$/i.test(p));
-      for (const [p, f] of Object.entries(lib.loose)) if (p.startsWith('vehicles/common/')) texts[p] = await f.text();
+      const { texts, ranks } = await readResolved((p) => /^vehicles\/common\/.*\.jbeam$/i.test(p), 'Reading the shared parts (vehicles/common), once per library');
       vehBusy = `Parsing ${Object.keys(texts).length} shared part files…`; drawVehList();
       await new Promise((r) => setTimeout(r, 30));
-      vehpy.add_files(JSON.stringify(texts));
+      vehpy.add_files(JSON.stringify(texts), JSON.stringify(ranks));
       commonLoaded = true;
     }
     if (!JSON.parse(vehpy.held_models()).includes(model)) {
       vehBusy = `Reading ${v ? v.name : model}…`; drawVehList();
-      let texts = {};
-      if (v && v.zip) texts = await zipTexts(lib.zips[v.zip], (p) => p.startsWith(`vehicles/${model}/`) && TEXT_FILE.test(p));
-      for (const [p, f] of Object.entries(lib.loose)) if (p.startsWith(`vehicles/${model}/`)) texts[p] = await f.text();
+      const { texts, ranks } = await readResolved((p) => p.startsWith(`vehicles/${model}/`) && TEXT_FILE.test(p));
       await new Promise((r) => setTimeout(r, 30));
-      vehpy.add_files(JSON.stringify(texts));
+      vehpy.add_files(JSON.stringify(texts), JSON.stringify(ranks));
     }
-    vehEdit = { model, config: config || null, parts: {}, vars: {} };
+    vehEdit = freshEdit(model, config);
+    pick = null;
     vehBusy = '';
     configureVehicle();
     fitCamera();
@@ -215,19 +255,27 @@ async function openVehicle(model, config) {
 function configureVehicle() {
   const t = performance.now();
   try {
-    veh = JSON.parse(vehpy.configure(vehEdit.model, vehEdit.config, JSON.stringify(vehEdit.parts), JSON.stringify(vehEdit.vars)));
+    veh = JSON.parse(vehpy.configure(vehEdit.model, vehEdit.config, JSON.stringify(vehEdit.parts), JSON.stringify(vehEdit.vars),
+      JSON.stringify(vehEdit.moves)));
+    if (pick && (pick.kind === 'node' ? !(pick.id in veh.geometry.nodes) : !Object.values(veh.geometry.parts).includes(pick.name))) pick = null;
     vehEdit.config = veh.config;
     vehError = null;
-  } catch (err) { vehError = pyError(err); }
+  } catch (err) {
+    vehError = pyError(err);
+    if (veh && veh.model !== vehEdit.model) veh = null;     // do not leave the previous vehicle on screen
+  }
   timing.configure = performance.now() - t;
   redraw();
 }
 
-// the vehicle's node-and-beam structure: beams as one line set, nodes as points
+// the vehicle's node-and-beam structure: beams as one line set, nodes as points. The picked part's nodes
+// are drawn orange, the picked node as a larger orange point; nodeIds maps a point index to its node id.
+let nodeIds = [];
 function drawVehicle() {
   vehG.clear();
   if (!veh) return;
   const g = veh.geometry, pos = [];
+  nodeIds = Object.keys(g.nodes);
   for (const [a, b] of g.beams) pos.push(...v3(g.nodes[a]).toArray(), ...v3(g.nodes[b]).toArray());
   const lines = new THREE.BufferGeometry();
   lines.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -235,34 +283,83 @@ function drawVehicle() {
   const pts = new THREE.BufferGeometry();
   pts.setAttribute('position', new THREE.Float32BufferAttribute(Object.values(g.nodes).flatMap((p) => v3(p).toArray()), 3));
   vehG.add(new THREE.Points(pts, new THREE.PointsMaterial({ color: 0x2f6fdf, size: 0.025 })));
+  const part = pick && (pick.kind === 'part' ? pick.name : g.parts[pick.id]);
+  if (part) {
+    const hp = new THREE.BufferGeometry();
+    hp.setAttribute('position', new THREE.Float32BufferAttribute(nodeIds.filter((n) => g.parts[n] === part).flatMap((n) => v3(g.nodes[n]).toArray()), 3));
+    vehG.add(new THREE.Points(hp, new THREE.PointsMaterial({ color: 0xe0782a, size: pick.kind === 'part' ? 0.05 : 0.035, depthTest: false })));
+  }
+  if (pick && pick.kind === 'node') {
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.03, 16, 12), new THREE.MeshBasicMaterial({ color: 0xff5a1f, depthTest: false }));
+    dot.position.copy(v3(g.nodes[pick.id]));
+    dot.renderOrder = 2;
+    vehG.add(dot);
+  }
   vehG.visible = $('showbeams').checked;
 }
+
+// click a node in the view to pick it (a drag orbits instead): the node nearest the pointer on screen,
+// within 10 px, the nearer to the camera on a tie; a click on empty space clears the pick
+let downAt = null;
+renderer.domElement.addEventListener('pointerdown', (e) => { downAt = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 4 || e.button !== 0 || !veh || !vehG.visible) return;
+  const r = renderer.domElement.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  let best = null, bestD = 10, bestZ = Infinity;
+  const p = new THREE.Vector3();
+  for (const id of nodeIds) {
+    p.copy(v3(veh.geometry.nodes[id])).project(camera);
+    if (p.z > 1) continue;                                          // behind the camera
+    const d = Math.hypot((p.x + 1) / 2 * r.width - mx, (1 - p.y) / 2 * r.height - my);
+    if (d < bestD - 0.5 || (Math.abs(d - bestD) <= 0.5 && p.z < bestZ)) { best = id; bestD = d; bestZ = p.z; }
+  }
+  pick = best ? { kind: 'node', id: best } : null;
+  drawVehicle(); drawInspector();
+});
 $('showbeams').onchange = () => { vehG.visible = $('showbeams').checked; };
 
-// left panel: pick the install folder, then the vehicle list (cars first)
+// left panel: the BeamNG folders, then the vehicle list (cars first)
+function libraryPanel() {
+  const role = { game: 'Game', user: 'User folder', mod: 'Mod' };
+  const rows = folders.map((f) => `<li><span><b>${role[f.role]}</b> ${esc(f.name)}${f.handle ? '' : ' <span class="q">(this session)</span>'}</span>
+    <span class="q">${esc(f.notes.join('; '))}</span></li>`).join('');
+  const shadowed = resolved ? Object.keys(resolved.shadowed).length : 0;
+  return `<h2>BeamNG folders</h2>
+    ${folders.length ? `<ul class="lib">${rows}</ul>` : `<p class="quiet">Add your BeamNG.drive <b>install</b> (the folder with content/vehicles) and your
+      <b>user folder</b> (with mods/; by default %LOCALAPPDATA%\\BeamNG\\BeamNG.drive). Mods and your own vehicles/ are read the game's way:
+      the user folder over mods over the install. Only jbeam, config and info files are read, in your browser; nothing is uploaded.</p>`}
+    ${shadowed ? `<p class="quiet">${shadowed} files are replaced by a mod or the user folder.</p>` : ''}
+    ${pending.length ? `<div class="inl"><button id="bngreopen" class="primary">Reopen ${pending.length === 1 ? esc(pending[0].name) : pending.length + ' remembered folders'}</button></div>` : ''}
+    <div class="inl">${canRemember ? '<button id="bngpick" class="primary" title="Remembered for the next sessions (Chrome, Edge)">Add folder…</button>' : ''}
+      <button id="bngpickdir" title="Any folder, AppData included; picked again every session">${canRemember ? 'Add with file dialog…' : 'Add folder…'}</button>
+      <button id="bngpickzips" title="Single vehicle or mod zips">Add zips…</button>
+      ${folders.length || pending.length ? '<button id="bngforget" title="Close the folders and forget the remembered ones">Forget</button>' : ''}</div>
+    ${canRemember && !folders.some((f) => f.role === 'user') ? `<p class="quiet">Chrome does not open folders under AppData or Program Files with <i>Add folder</i>.
+      Use <i>Add with file dialog</i> for them (every session), or move the user folder elsewhere in the BeamNG launcher so it can be remembered.</p>` : ''}`;
+}
+
 function drawVehList() {
   const el = $('leftveh');
-  if (!lib) {
-    el.innerHTML = `<h2>Base vehicle</h2>
-      <p class="quiet">Start from any BeamNG vehicle. Pick the <b>content/vehicles</b> folder of your BeamNG.drive install
-      (or a mod's unpacked folder, or single vehicle zips). Only its jbeam, config and info files are read, in your browser; nothing is uploaded.</p>
-      <div class="inl"><button id="bngpick" class="primary">Choose vehicles folder…</button><button id="bngpickzips">Pick zips…</button></div>`;
-    $('bngpick').onclick = () => $('bngdir').click();
-    $('bngpickzips').onclick = () => $('bngzips').click();
-    return;
+  if (vehBusy) { el.innerHTML = `<h2>BeamNG folders</h2><p class="quiet">${esc(vehBusy)}</p>`; return; }
+  let html = libraryPanel();
+  if (cat) {
+    const f = vehFilter.toLowerCase();
+    const list = cat.filter((v) => !f || `${v.name} ${v.brand} ${v.model} ${v.type} ${v.source}`.toLowerCase().includes(f));
+    html += `<h2>Vehicles <span class="q">(${cat.length})</span></h2>
+      <div class="inl"><input id="vehfilter" placeholder="Filter" value="${esc(vehFilter)}"></div>
+      <ul>${list.map((v) => `<li data-m="${esc(v.model)}" class="${veh && veh.model === v.model ? 'sel' : ''}">
+        <span>${esc(v.brand ? v.brand + ' ' : '')}${esc(v.name)}${v.source && v.source !== 'vanilla' ? ` <span class="tag">${esc(v.source)}</span>` : ''}</span>
+        <span class="q">${esc(v.type || '')} · ${v.configs.length}</span></li>`).join('')}</ul>`;
   }
-  if (vehBusy || !cat) { el.innerHTML = `<h2>Base vehicle</h2><p class="quiet">${esc(vehBusy || 'Reading…')}</p>`; return; }
-  const f = vehFilter.toLowerCase();
-  const list = cat.filter((v) => !f || `${v.name} ${v.brand} ${v.model} ${v.type}`.toLowerCase().includes(f));
-  el.innerHTML = `<h2>Vehicles <span class="q">(${cat.length})</span></h2>
-    <div class="inl"><input id="vehfilter" placeholder="Filter" value="${esc(vehFilter)}"></div>
-    <ul>${list.map((v) => `<li data-m="${esc(v.model)}" class="${veh && veh.model === v.model ? 'sel' : ''}">
-      <span>${esc(v.brand ? v.brand + ' ' : '')}${esc(v.name)}</span><span class="q">${esc(v.type || '')} · ${v.configs.length}</span></li>`).join('')}</ul>
-    <div class="inl"><button id="bngagain">Choose another folder…</button><button id="bngmore">Add zips…</button></div>`;
+  el.innerHTML = html;
+  if ($('bngpick')) $('bngpick').onclick = pickFolder;
+  $('bngpickdir').onclick = () => $('bngdir').click();
+  $('bngpickzips').onclick = () => $('bngzips').click();
+  if ($('bngreopen')) $('bngreopen').onclick = reopenFolders;
+  if ($('bngforget')) $('bngforget').onclick = forgetFolders;
+  if (!cat) return;
   $('vehfilter').oninput = (e) => { vehFilter = e.target.value; drawVehList(); $('vehfilter').focus(); $('vehfilter').setSelectionRange(vehFilter.length, vehFilter.length); };
   el.querySelectorAll('li[data-m]').forEach((li) => li.onclick = () => openVehicle(li.dataset.m));
-  $('bngagain').onclick = () => $('bngdir').click();
-  $('bngmore').onclick = () => $('bngzips').click();
 }
 
 // right panel, vehicle part: configuration, parts tree (a select per slot) and tuning sliders by category
@@ -275,7 +372,9 @@ function vehInspector() {
     const sel = `<select data-slot="${esc(n.slot)}">${n.core ? '' : `<option value="" ${n.part ? '' : 'selected'}>(empty)</option>`}
       ${opts.map(([p, t]) => `<option value="${esc(p)}" ${p === n.part ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
     const kids = n.children.filter((c) => c.options.length || c.children.length || c.part);
-    return `<li style="padding-left:${depth * 10}px"><span class="q">${esc(n.description || n.slot)}</span>${sel}</li>` +
+    const mv = n.part && Object.values(veh.geometry.parts).includes(n.part)
+      ? `<button class="mini${pick && pick.kind === 'part' && pick.name === n.part ? ' on' : ''}" data-pickpart="${esc(n.part)}" title="Pick this part to move it">move</button>` : '';
+    return `<li style="padding-left:${depth * 10}px"><span class="q">${esc(n.description || n.slot)}${mv}</span>${sel}</li>` +
       kids.map((c) => slotRow(c, depth + 1)).join('');
   };
   const cats = {};
@@ -287,21 +386,75 @@ function vehInspector() {
   }).join('')}</div>`).join('');
   return `<h2>${esc(v ? (v.brand ? v.brand + ' ' : '') + v.name : veh.model)}</h2>
     <div class="kv"><span>Configuration</span><span><select id="vehcfg">${veh.configs.map((c) => `<option value="${esc(c)}" ${c === veh.config ? 'selected' : ''}>${esc(cfgTitle(c))}</option>`).join('')}</select></span></div>
-    ${veh.missing.length ? `<p class="bad">Not found in the picked files: ${veh.missing.map((m) => esc(m[1])).join(', ')}</p>` : ''}
+    ${veh.missing.length ? `<p class="bad">Not found in the added folders: ${veh.missing.map((m) => esc(m[1])).join(', ')}</p>` : ''}
     <div class="inl"><button id="vehsave" class="primary">Save configuration (.pc)…</button><button id="vehreset">Reset to the configuration</button></div>
+    ${movePanel()}
     <details open><summary><b>Parts</b> <span class="q">(as the game's Parts menu)</span></summary><ul class="vehparts">${slotRow(veh.tree, 0)}</ul></details>
     <details><summary><b>Tuning</b> <span class="q">(${veh.variables.length} variables)</span></summary>${tune}</details>`;
 }
 
+// the Move panel: the picked node (its position) or part (its offset), as numbers in m, BeamNG axes
+const AXES = [['x', 'left +'], ['y', 'rear +'], ['z', 'up +']];
+const moveCount = () => Object.keys(vehEdit.moves.parts).length + Object.keys(vehEdit.moves.nodes).length;
+function movePanel() {
+  const moved = moveCount();
+  const all = moved ? `<p class="quiet">${moved} moved (${Object.keys(vehEdit.moves.parts).length} parts, ${Object.keys(vehEdit.moves.nodes).length} nodes).
+    <button id="movereset" class="mini">Reset all moves</button> Moves are not saved in the .pc: writing them into a generated part comes later (roadmap step 3).</p>` : '';
+  if (!pick) return `<details open><summary><b>Move</b></summary><p class="quiet">Click a node in the view, or <i>move</i> beside a part, to move it with numbers.</p>${all}</details>`;
+  const inputs = (vals, kind) => `<div class="kv">${AXES.map(([a, hint], i) => `<span>${a} <span class="q">${hint}</span></span>
+    <span><input type="number" step="0.001" data-move="${kind}" data-axis="${i}" value="${Number(vals[i]).toFixed(4)}"> m</span>`).join('')}</div>`;
+  let body;
+  if (pick.kind === 'node') {
+    const part = veh.geometry.parts[pick.id], d = vehEdit.moves.nodes[pick.id];
+    body = `<div class="kv"><span>Node</span><span><b>${esc(pick.id)}</b></span><span>Part</span><span>${esc(part)} <button class="mini" data-pickpart="${esc(part)}">move part</button></span></div>
+      <p class="quiet">Position:</p>${inputs(veh.geometry.nodes[pick.id], 'node')}
+      ${d ? `<p class="quiet">Moved by ${d.map((x) => fmt(x * 1000, 1)).join(' / ')} mm <button id="moveundo" class="mini">Reset node</button></p>` : ''}`;
+  } else {
+    const d = vehEdit.moves.parts[pick.name] || [0, 0, 0];
+    const n = Object.values(veh.geometry.parts).filter((p) => p === pick.name).length;
+    body = `<div class="kv"><span>Part</span><span><b>${esc(pick.name)}</b> <span class="q">${n} nodes</span></span></div>
+      <p class="quiet">Offset of its own nodes (not of the parts in its slots):</p>${inputs(d, 'part')}
+      ${vehEdit.moves.parts[pick.name] ? '<p><button id="moveundo" class="mini">Reset part</button></p>' : ''}`;
+  }
+  return `<details open><summary><b>Move</b> <button id="moveclear" class="mini">clear pick</button></summary>${body}${all}</details>`;
+}
+
+// a typed value: a node's new position becomes a delta (added to its move); a part's value is its offset
+function setMove(kind, axis, value) {
+  if (!Number.isFinite(value)) return;
+  if (kind === 'node') {
+    const d = [...(vehEdit.moves.nodes[pick.id] || [0, 0, 0])];
+    d[axis] += value - veh.geometry.nodes[pick.id][axis];
+    vehEdit.moves.nodes[pick.id] = d.map((x) => Math.round(x * 1e4) / 1e4);
+    if (vehEdit.moves.nodes[pick.id].every((x) => x === 0)) delete vehEdit.moves.nodes[pick.id];
+  } else {
+    const d = [...(vehEdit.moves.parts[pick.name] || [0, 0, 0])];
+    d[axis] = value;
+    if (d.every((x) => x === 0)) delete vehEdit.moves.parts[pick.name]; else vehEdit.moves.parts[pick.name] = d;
+  }
+  configureVehicle();
+}
+
 function bindVehInspector(el) {
   if (!veh) return;
-  $('vehcfg').onchange = (e) => { vehEdit = { model: veh.model, config: e.target.value, parts: {}, vars: {} }; configureVehicle(); };
+  el.querySelectorAll('[data-pickpart]').forEach((b) => b.onclick = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    pick = { kind: 'part', name: b.dataset.pickpart }; drawVehicle(); drawInspector();
+  });
+  el.querySelectorAll('input[data-move]').forEach((i) => i.onchange = () => setMove(i.dataset.move, Number(i.dataset.axis), Number(i.value)));
+  if ($('moveclear')) $('moveclear').onclick = (e) => { e.preventDefault(); pick = null; drawVehicle(); drawInspector(); };
+  if ($('moveundo')) $('moveundo').onclick = () => {
+    if (pick.kind === 'node') delete vehEdit.moves.nodes[pick.id]; else delete vehEdit.moves.parts[pick.name];
+    configureVehicle();
+  };
+  if ($('movereset')) $('movereset').onclick = () => { vehEdit.moves = { parts: {}, nodes: {} }; configureVehicle(); };
+  $('vehcfg').onchange = (e) => { vehEdit = { ...freshEdit(veh.model, e.target.value), moves: vehEdit.moves }; configureVehicle(); };
   el.querySelectorAll('select[data-slot]').forEach((s) => s.onchange = () => { vehEdit.parts[s.dataset.slot] = s.value; configureVehicle(); });
   el.querySelectorAll('input[data-var]').forEach((r) => {
     r.oninput = () => { r.nextElementSibling.textContent = fmt(Number(r.value), Number(r.step) < 0.01 ? 3 : Number(r.step) < 1 ? 2 : 0); };
     r.onchange = () => { vehEdit.vars[r.dataset.var] = Number(r.value); configureVehicle(); };
   });
-  $('vehreset').onclick = () => { vehEdit = { model: veh.model, config: veh.config, parts: {}, vars: {} }; configureVehicle(); };
+  $('vehreset').onclick = () => { vehEdit = freshEdit(veh.model, veh.config); pick = null; configureVehicle(); };
   $('vehsave').onclick = () => {
     const name = prompt('Name of the configuration (saved as <name>.pc; put it in your BeamNG user folder, vehicles/' + veh.model + '/)', 'beamforge_' + veh.config);
     if (!name) return;
@@ -315,16 +468,24 @@ function bindVehInspector(el) {
 
 $('bngdir').onchange = async (e) => {
   if (!e.target.files.length) return;
-  lib = libraryFrom(e.target.files); cat = null; veh = null; commonLoaded = false;
+  const dir = listDir(e.target.files);
   e.target.value = '';
-  await scanLibrary(); redraw();
+  await addFolder(dir, null);
 };
+// single zips: each one a mod source (a game zip picked this way still works, ranked as a mod)
 $('bngzips').onchange = async (e) => {
-  if (!e.target.files.length) return;
-  const more = libraryFrom(e.target.files);
-  lib = lib ? { zips: { ...lib.zips, ...more.zips }, loose: { ...lib.loose, ...more.loose } } : more;
+  const picked = [...e.target.files];
   e.target.value = '';
-  await scanLibrary(); redraw();
+  if (!picked.length) return;
+  const old = folders.find((x) => x.name === 'picked zips');
+  const sources = old ? old.sources.filter((s) => !picked.some((f) => s.name === 'zip/' + f.name)) : [];
+  for (const f of picked) {
+    try { const s = await zipSource(f, 'zip/' + f.name, 'mod'); if (s) sources.push(s); } catch (err) { /* not a zip */ }
+  }
+  if (!sources.length) { showIssues([{ level: 'WARN', rule: 'library', message: 'No vehicle files (vehicles/…) in the picked zips.' }]); return; }
+  folders = folders.filter((x) => x !== old);
+  folders.push({ name: 'picked zips', role: 'mod', sources, notes: [`${sources.length} zips`], handle: null });
+  await libraryChanged();
 };
 
 // ---------- SVJ (Standard Vehicle JSON) ----------
@@ -466,14 +627,15 @@ function drawBudget() {
     <div><span>Parts</span><b>${count(veh.tree)}</b></div>
     <div><span>Nodes / beams</span><b>${Object.keys(veh.geometry.nodes).length} / ${veh.geometry.beams.length}</b></div>
     <div><span>Wheelbase</span><b>${m.wheelbase ? fmt(m.wheelbase * 1000, 0) + ' mm' : '–'}</b></div>
-    <div><span>Tuning variables</span><b>${veh.variables.length}</b> <span>${Object.keys(vehEdit.vars).length} changed</span></div>`;
+    <div><span>Tuning variables</span><b>${veh.variables.length}</b> <span>${Object.keys(vehEdit.vars).length} changed</span></div>
+    <div><span>Moved</span><b>${moveCount()}</b> <span>parts and nodes</span></div>`;
 }
 
 function issues() {
   if (vehError) return [{ level: 'ERROR', rule: 'vehicle', message: vehError }];
-  if (!veh) return [{ level: 'INFO', rule: 'vehicle', message: 'Pick your BeamNG vehicles folder, then a vehicle, to use it as a base.' }];
-  const out = veh.missing.map((m) => ({ level: 'WARN', rule: 'vehicle', message: `slot ${m[0]}: part ${m[1]} is not in the picked files (pick the whole content/vehicles folder, common.zip included)` }));
-  const changed = Object.keys(vehEdit.parts).length + Object.keys(vehEdit.vars).length;
+  if (!veh) return [{ level: 'INFO', rule: 'vehicle', message: 'Add your BeamNG folders, then pick a vehicle to use it as a base.' }];
+  const out = veh.missing.map((m) => ({ level: 'WARN', rule: 'vehicle', message: `slot ${m[0]}: part ${m[1]} is not in the added folders (add the game install, and the mod that ships it)` }));
+  const changed = Object.keys(vehEdit.parts).length + Object.keys(vehEdit.vars).length + moveCount();
   out.push({ level: 'PASS', rule: 'vehicle', message: `${veh.model} · ${veh.config}: ${changed ? changed + ' change(s) from the configuration' : 'as configured'}. Save it as a .pc for BeamNG.` });
   return out;
 }
@@ -497,6 +659,13 @@ window.beamforge = {
   get svj() { return svjDoc; },
   get hardpoints() { return svjHp; },
   get meshCount() { let n = 0; meshG.traverse((o) => { if (o.isMesh) n++; }); return n; },
+  get folders() { return folders; },
+  get catalog() { return cat; },
+  get pick() { return pick; },
+  set pick(p) { pick = p; drawVehicle(); drawInspector(); },
+  setMove,
+  addFolder: (dir) => addFolder(dir, null),     // dir: the library.js directory interface
+  openVehicle,
 };
 
 // start; a failure replaces the loading message

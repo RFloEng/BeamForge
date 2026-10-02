@@ -113,6 +113,13 @@ class TestVehicle(unittest.TestCase):
         g3 = self.cfg(vars_={"$trackwidth": 0.4})["geometry"]["nodes"]     # not declared by any part: ignored, as in game
         self.assertEqual(g3["fwhl1l"][0], 0.56)
 
+    def test_moved_part_and_node(self):
+        moves = {"parts": {"steel_wheel_F": [0.0, 0.1, 0.0]}, "nodes": {"fwhl1l": [0.02, 0.0, -0.05], "b1": "bad"}}
+        g = json.loads(bng.configure("toycar", None, None, None, json.dumps(moves)))["geometry"]["nodes"]
+        self.assertEqual(g["fwhl1l"], [0.58, -1.1, 0.25])                 # part move + node move
+        self.assertEqual(g["fwhl1r"], [-0.56, -1.1, 0.3])                 # part move only
+        self.assertEqual(g["b1"], [0.5, -1.0, 0.3])                     # a bad move is ignored
+
     def test_tuning_and_saved_config(self):
         v = self.cfg()
         rev = next(x for x in v["variables"] if x["name"] == "$revLimiter")
@@ -138,6 +145,45 @@ class TestVehicle(unittest.TestCase):
         c = json.loads(bng.catalog(json.dumps(entries)))[0]
         self.assertEqual((c["name"], c["brand"], c["type"]), ("Toycar", "Toyco", "Car"))   # translation key -> readable id
         self.assertEqual([(x["name"], x["title"]) for x in c["configs"]], [("base", "Base"), ("sport", "Sport")])
+
+
+class TestSources(unittest.TestCase):
+    """The install, mods and the user folder as one file system (resolve, inactive_mods, ranks)."""
+
+    def test_user_over_mods_over_install(self):
+        r = json.loads(bng.resolve(json.dumps([
+            {"name": "/vehicles", "kind": "user", "paths": ["vehicles/toycar/base.pc"]},
+            {"name": "/mods/b.zip", "kind": "mod", "paths": ["vehicles/toycar/base.pc", "vehicles/common/extra.jbeam"]},
+            {"name": "/mods/a.zip", "kind": "mod", "paths": ["vehicles/common/extra.jbeam"]},
+            {"name": "game/toycar.zip", "kind": "vanilla", "paths": ["vehicles/toycar/base.pc", "Vehicles/Toycar/Info.json"]},
+        ])))
+        self.assertEqual(r["order"], ["game/toycar.zip", "/mods/a.zip", "/mods/b.zip", "/vehicles"])
+        self.assertEqual(r["files"]["vehicles/toycar/base.pc"], "/vehicles")
+        self.assertEqual(r["shadowed"]["vehicles/toycar/base.pc"], ["game/toycar.zip", "/mods/b.zip"])
+        self.assertEqual(r["files"]["vehicles/common/extra.jbeam"], "/mods/b.zip")   # mods: by path
+        self.assertEqual(r["files"]["Vehicles/Toycar/Info.json"], "game/toycar.zip")
+        self.assertEqual(r["rank"]["/vehicles"], 3)
+
+    def test_inactive_mods(self):
+        db = json.dumps({"header": {}, "mods": {
+            "a": {"active": True, "fullpath": "/mods/repo/a.zip"},
+            "b": {"active": False, "fullpath": "/mods/repo/B.zip"},
+            "c": {"active": False, "fullpath": "/mods/unpacked/c/"}}})
+        self.assertEqual(json.loads(bng.inactive_mods(db)), ["/mods/repo/b.zip", "/mods/unpacked/c"])
+        self.assertEqual(json.loads(bng.inactive_mods("not json {")), [])
+
+    def test_common_part_from_a_mod(self):
+        """A mod's vehicles/common part that redefines a common part wins over the install's."""
+        bng.reset()
+        mod_wheels = {"steel_wheel_F": {"slotType": "wheel_F_4", "information": {"name": "Mod steel wheels"},
+                                        "nodes": [["id", "posX", "posY", "posZ"], ["fwhl1l", 0.41, 0, 0], ["fwhl1r", -0.41, 0, 0]]}}
+        files = dict(CAR, **{"vehicles/common/mod_wheels.jbeam": json.dumps(mod_wheels)})
+        bng.add_files(json.dumps(files), json.dumps({"vehicles/common/mod_wheels.jbeam": 1}))
+        v = json.loads(bng.configure("toycar"))
+        self.assertEqual(find(v["tree"], "wheel_F_4")["title"], "Mod steel wheels")
+        self.assertEqual(v["geometry"]["nodes"]["fwhl1l"][0], 0.66)
+        bng.reset()
+        self.assertEqual(json.loads(bng.held_models()), [])
 
 
 @unittest.skipUnless(os.environ.get("BEAMNG_VEHICLES"), "set BEAMNG_VEHICLES to a BeamNG content/vehicles folder")

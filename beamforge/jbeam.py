@@ -138,11 +138,16 @@ class _Parser:
 def parse(text, source="<jbeam>"):
     """Parse jbeam text into Python values; source names the file in error messages.
 
-    Raises JBeamError on a syntax error or on content after the top-level value.
+    Raises JBeamError on a syntax error or on content after the top-level value. Stray closing
+    braces, brackets and commas after it are ignored: mods ship files with an extra "}" at the
+    end, and the game loads them.
     """
     p = _Parser(text, source)
     v = p.value()
     p.skip()
+    while p.i < len(p.s) and p.s[p.i] in "}],":
+        p.i += 1
+        p.skip()
     if p.i != len(p.s):
         p.error("trailing content after top-level value")
     return v

@@ -18,6 +18,11 @@ class TestJBeamParser(unittest.TestCase):
     def test_leading_plus_sign(self):
         self.assertEqual(jbeam.parse('[+0.5, +2, -1, 1e+3]'), [0.5, 2, -1, 1000.0])
 
+    def test_stray_closing_brace_at_the_end(self):
+        self.assertEqual(jbeam.parse('{"a": {"b": 1,},\n}\n}\n'), {"a": {"b": 1}})   # as some mods ship, and the game loads
+        with self.assertRaises(jbeam.JBeamError):
+            jbeam.parse('{"a": 1} {"b": 2}')
+
     def test_hostile_and_non_numeric_values_are_unresolved(self):
         with self.assertRaises(jbeam.UnresolvedValue):
             jbeam.resolve("$=9**9**9**9", {})                       # would hang eval()

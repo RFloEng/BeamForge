@@ -7,4 +7,4 @@ Pure Python, standard library only, so the same modules run natively and in the 
   gltf     minimal glTF 2.0 reader / writer
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

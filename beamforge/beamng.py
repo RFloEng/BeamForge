@@ -24,7 +24,11 @@ How BeamNG puts a vehicle together (what the game's Vehicle Config menu edits):
               info_<config>.json per configuration (Configuration, Power, Torque, Weight, Value,
               Drivetrain, Transmission ...).
   shared      parts used by many vehicles (wheels, tyres, brakes, seats ...) live in
-              vehicles/common (common.zip in the install).
+              vehicles/common (common.zip in the install, and in any mod that ships some).
+  sources     the game reads one virtual file system made of the install (content/vehicles/*.zip),
+              the mods of the user folder (mods/**/*.zip and mods/unpacked/<mod>/, active ones per
+              mods/db.json) and the user folder's own vehicles/. The same path in several sources:
+              the user folder wins over mods, mods over the install (see resolve()).
 
 Paths are as inside the zips: "vehicles/<model>/<file>". Positions: BeamNG axes, X left,
 Y rear, Z up, metres.
@@ -246,11 +250,26 @@ def _num(v, vars_, default=0.0):
         return default
 
 
-def geometry(parts, tree, vars_):
+def _delta(v):
+    """[dx, dy, dz] from a user move (missing or bad values count as 0)."""
+    try:
+        return [float(v[i]) for i in range(3)]
+    except (TypeError, ValueError, IndexError):
+        return [0.0, 0.0, 0.0]
+
+
+def geometry(parts, tree, vars_, moves=None):
     """Nodes and beams of the configured vehicle, for drawing: {"nodes": {id: [x, y, z]}, "beams": [[a, b]],
     "parts": {node id: part}}. Slot nodeOffset / nodeMove are applied to the part in the slot and its
     children (nodeOffset x mirrored by each node's side, as the game does). Expressions that cannot be
-    evaluated offline count as 0."""
+    evaluated offline count as 0.
+
+    moves: the user's edits, {"parts": {part: [dx, dy, dz]}, "nodes": {node id: [dx, dy, dz]}} in m,
+    added after everything else: a part move shifts that part's own nodes (not its children), a node
+    move one node.
+    """
+    moves = moves or {}
+    part_moves, node_moves = moves.get("parts") or {}, moves.get("nodes") or {}
     nodes, owner, beams = {}, {}, []
 
     def walk(node, off, move):
@@ -271,8 +290,10 @@ def geometry(parts, tree, vars_):
             y += off[1] + _num(o.get("y", 0), vars_) + move[1]
             z += off[2] + _num(o.get("z", 0), vars_) + move[2]
             x += move[0]
-            nodes[str(r["id"])] = [round(x, 4), round(y, 4), round(z, 4)]
-            owner[str(r["id"])] = name
+            nid = str(r["id"])
+            d = [a + b for a, b in zip(_delta(part_moves.get(name)), _delta(node_moves.get(nid)))]
+            nodes[nid] = [round(x + d[0], 4), round(y + d[1], 4), round(z + d[2], 4)]
+            owner[nid] = name
         rows = part.get("beams") or []
         if rows and isinstance(rows[0], list):
             for r in jbeam.expand_table(rows):
@@ -356,13 +377,62 @@ def measure(parts, active, geo):
     return out
 
 
+# ---------------------------------------------------------------- sources: install, mods, user folder
+
+KINDS = ("vanilla", "mod", "user")   # lowest priority first
+
+
+def source_order(sources):
+    """Sources from lowest to highest priority: the install, then mods by path, then the user folder.
+
+    The order among mods that ship the same file is not documented by the game: by path here
+    (to confirm in-game).
+    """
+    return sorted(sources, key=lambda s: (KINDS.index(s.get("kind", "mod")), str(s.get("name", "")).lower()))
+
+
+def resolve(sources_json):
+    """Which source serves each file, as the game's virtual file system does.
+
+    sources_json: [{"name", "kind": "vanilla" | "mod" | "user", "paths": ["vehicles/..."]}]. Paths
+    compare without case (the game runs on Windows). Returns JSON {"order": [names, lowest
+    priority first], "files": {path: source name}, "shadowed": {path: [names it hides]}, "rank":
+    {source name: rank}}, the path being the winner's own spelling.
+    """
+    order = source_order(json.loads(sources_json))
+    files, shadowed = {}, {}
+    for s in order:
+        for p in s.get("paths") or []:
+            key = p.replace("\\", "/").lower()
+            if key in files:
+                shadowed.setdefault(key, []).append(files[key][1])
+            files[key] = (p.replace("\\", "/"), s["name"])
+    return json.dumps({"order": [s["name"] for s in order],
+                       "files": {p: n for p, n in files.values()},
+                       "shadowed": {files[k][0]: v for k, v in shadowed.items()},
+                       "rank": {s["name"]: i for i, s in enumerate(order)}})
+
+
+def inactive_mods(db_text):
+    """Mods switched off in the game's mods/db.json, as JSON [paths], lower case without trailing
+    slash ("/mods/repo/x.zip", "/mods/unpacked/x"). A file that does not parse gives []."""
+    db = _parse(db_text or "", "mods/db.json")
+    mods = db.get("mods") if isinstance(db, dict) else None
+    out = []
+    for m in (mods or {}).values():
+        if isinstance(m, dict) and m.get("active") is False and m.get("fullpath"):
+            out.append(str(m["fullpath"]).replace("\\", "/").rstrip("/").lower())
+    return json.dumps(sorted(out))
+
+
 # ---------------------------------------------------------------- the API the editor calls
 
 def catalog(entries_json):
-    """Vehicles of a library: entries {model: {"info": text or None, "configs": {name: info text or None}}} (JSON).
+    """Vehicles of a library: entries {model: {"info": text or None, "configs": {name: info text or None},
+    "source"?: kind of the source of its info.json}} (JSON).
 
-    Returns [{"model", "name", "brand", "type", "body", "default_pc", "configs": [{"name", "title",
-    "power", "torque", "weight", "drivetrain", "value"}]}], cars first, sorted by name.
+    Returns [{"model", "name", "brand", "type", "body", "default_pc", "source", "configs": [{"name",
+    "title", "power", "torque", "weight", "drivetrain", "value"}]}], cars first, sorted by name.
     """
     out = []
     for model, e in json.loads(entries_json).items():
@@ -375,7 +445,7 @@ def catalog(entries_json):
                          "value": ci.get("Value"), "type": ci.get("Config Type")})
         out.append({"model": model, "name": _text(info.get("Name")) or pretty(model), "brand": _text(info.get("Brand")),
                     "type": info.get("Type") or "", "body": info.get("Body Style") or "",
-                    "default_pc": info.get("default_pc") or "", "configs": cfgs})
+                    "default_pc": info.get("default_pc") or "", "source": e.get("source") or "", "configs": cfgs})
     order = {"Car": 0, "Truck": 1}
     return json.dumps(sorted(out, key=lambda v: (order.get(v["type"], 2), v["name"].lower())))
 
@@ -384,15 +454,26 @@ def catalog(entries_json):
 # tuning change only rebuilds the tree. {path: parsed document or None}.
 _DOCS = {}
 _TEXT = {}
+_RANK = {}     # {path: rank of its source} (resolve()); a part defined in two files keeps the higher rank
 
 
-def add_files(files_json):
-    """Parse and keep the files in {path: text} (paths already held are replaced).
+def reset():
+    """Forget every held file (a new library was picked)."""
+    _DOCS.clear()
+    _TEXT.clear()
+    _RANK.clear()
+
+
+def add_files(files_json, ranks_json=None):
+    """Parse and keep the files in {path: text} (paths already held are replaced). ranks_json:
+    {path: source rank} from resolve(), for parts defined twice (missing paths rank 0).
     Returns {"files": total held, "added": n, "problems": [...]} (problems: files that do not parse)."""
     files = json.loads(files_json)
+    ranks = json.loads(ranks_json) if ranks_json else {}
     problems = []
     for path, text in files.items():
         _TEXT[path] = text
+        _RANK[path] = ranks.get(path, 0)
         _DOCS[path] = _parse(text, path) if path.lower().endswith((".jbeam", ".pc", ".json")) else None
         if _DOCS[path] is None and path.lower().endswith(".jbeam"):
             problems.append(f"{path}: does not parse")
@@ -405,9 +486,10 @@ def held_models():
 
 
 def _parts_held(model):
-    """Parts of one vehicle plus vehicles/common from the held files (the vehicle's own win)."""
+    """Parts of one vehicle plus vehicles/common from the held files. A part defined twice: the
+    vehicle's own over common, then the higher source rank (a mod over the install)."""
     parts = {}
-    for path in sorted(_DOCS, key=lambda p: (model_of(p) == "common", p)):
+    for path in sorted(_DOCS, key=lambda p: (model_of(p) == "common", -_RANK.get(p, 0), p)):
         if model_of(path) not in (model, "common") or not path.lower().endswith(".jbeam"):
             continue
         doc = _DOCS[path]
@@ -418,12 +500,12 @@ def _parts_held(model):
     return parts
 
 
-def configure(model, config=None, selection_json=None, values_json=None):
+def configure(model, config=None, selection_json=None, values_json=None, moves_json=None):
     """The configured vehicle from the held files (see add_files).
 
     config: a .pc name of the vehicle (its info.json default_pc when None). selection_json /
     values_json override the .pc's "parts" and "vars" (the user's edits in the parts tree and the
-    tuning sliders). Returns {"model", "main", "config", "configs": [names], "tree", "variables",
+    tuning sliders). moves_json: parts and nodes moved by the user (see geometry()). Returns {"model", "main", "config", "configs": [names], "tree", "variables",
     "geometry", "measure" (wheels and size, see measure()), "missing", "pc"}, "pc" being the .pc a
     save would write.
     """
@@ -446,7 +528,7 @@ def configure(model, config=None, selection_json=None, values_json=None):
     t = build_tree(parts, main, selection, by_type)
     var_list = variables(parts, t["active"], values)
     vars_ = {v["name"]: v["value"] for v in var_list if isinstance(v["value"], (int, float))}
-    geo = geometry(parts, t["tree"], vars_)
+    geo = geometry(parts, t["tree"], vars_, json.loads(moves_json) if moves_json else None)
     out_pc = {"format": 2, "model": model, "mainPartName": main, "parts": selection,
               "vars": {v["name"]: v["value"] for v in var_list if v["value"] != v["default"]}}
     for k in ("paints", "licenseName"):
@@ -458,10 +540,10 @@ def configure(model, config=None, selection_json=None, values_json=None):
                        "missing": [list(m) for m in t["missing"]], "pc": out_pc})
 
 
-def open_vehicle(files_json, model, config=None, selection_json=None, values_json=None):
+def open_vehicle(files_json, model, config=None, selection_json=None, values_json=None, moves_json=None):
     """add_files + configure in one call (tests, scripts)."""
     add_files(files_json)
-    return configure(model, config, selection_json, values_json)
+    return configure(model, config, selection_json, values_json, moves_json)
 
 
 def write_pc(pc_json):
