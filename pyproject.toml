@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "beamforge"
+version = "0.1.0"
+description = "Start from any BeamNG.drive vehicle, modify it, and bring SVJ geometry and meshes onto it"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [{ name = "RFloEng" }]
+requires-python = ">=3.10"
+dependencies = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Games/Entertainment :: Simulation",
+]
+
+[project.urls]
+Homepage = "https://github.com/RFloEng/BeamForge"
+Issues = "https://github.com/RFloEng/BeamForge/issues"
+
+[tool.setuptools]
+packages = ["beamforge"]

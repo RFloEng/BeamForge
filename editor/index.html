@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BeamForge</title>
+<link rel="stylesheet" href="style.css">
+<!-- Pyodide runs the beamforge Python package in the page; app.js fetches the .py files from the repo root,
+     so serve the repo root over http (python -m http.server) and open /editor/. -->
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+<script type="importmap">
+{"imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+  "zipjs": "https://cdn.jsdelivr.net/npm/@zip.js/zip.js@2.7.52/index.min.js"
+}}
+</script>
+</head>
+<body>
+<!-- Every id below is looked up by app.js ($(id)). -->
+<header>
+  <div class="brand">BeamForge <span class="tag">prototype</span></div>
+  <div class="spaces"></div>
+  <div class="files">
+    <button id="svjin" title="Load a Standard Vehicle JSON (.svj.json with its meshes, or a .zip bundle) onto the base vehicle">Import SVJ</button>
+    <input type="file" id="svjfile" accept=".json,.zip,.glb,.gltf,.bin" multiple hidden>
+    <!-- base vehicle: the user's BeamNG content/vehicles folder (or a mod folder), or single vehicle zips -->
+    <input type="file" id="bngdir" webkitdirectory multiple hidden>
+    <input type="file" id="bngzips" accept=".zip" multiple hidden>
+  </div>
+</header>
+
+<main>
+  <aside id="left">
+    <div id="leftveh"></div>   <!-- filled by drawVehList -->
+  </aside>
+
+  <section id="viewwrap">
+    <div id="view"></div>   <!-- three.js canvas -->
+    <div id="toolbar"><div id="hint" class="quiet">Drag to orbit, right-drag to pan, wheel to zoom.</div></div>
+    <div id="viewtools">
+      <label><input type="checkbox" id="showbeams" checked> Nodes + beams</label>
+      <label id="meshtoggle" hidden><input type="checkbox" id="meshes" checked> SVJ meshes</label>
+      <label id="hptoggle" hidden><input type="checkbox" id="hps" checked> SVJ hardpoints</label>
+    </div>
+    <div id="loading">Loading Python engine…</div>   <!-- removed by boot() once Python is ready -->
+  </section>
+
+  <aside id="right">
+    <div id="inspector"></div>   <!-- drawInspector: vehicle parts and tuning, then the SVJ panel -->
+  </aside>
+</main>
+
+<!-- Footer: key numbers (drawBudget), messages (showIssues) and timings (drawTiming). -->
+<footer>
+  <div id="budget"></div>
+  <div id="issues"></div>
+  <div id="timing" class="quiet"></div>
+</footer>
+<script type="module" src="app.js"></script>
+</body>
+</html>

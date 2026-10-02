@@ -1,0 +1,33 @@
+# BeamNG game files: never commit (copyrighted, and many GB)
+beamngcars/
+donor/
+*.dae
+*.cdae
+*.dds
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+.claude/
+
+# Synology Drive
+@eaDir/
+*.SynologyWorkingDirectory
+
+# Private drafts (Reddit post, notes) and Claude handoff notes: keep local
+*reddit*
+drafts/
+private/
+HANDOFF.md
