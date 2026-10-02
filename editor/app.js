@@ -11,7 +11,7 @@
 // State (module globals):
 //   folders, cat     the BeamNG folders (library.js) and the vehicle catalog (vehpy.catalog)
 //   veh, vehEdit     the configured vehicle (vehpy.configure) and the user's slot, tuning and move edits
-//   pick             the selected node or part, moved with numeric x / y / z in the Move panel
+//   pick             the selected node, beam or part, moved with numeric x / y / z in the Move panel
 //   svjDoc           the last imported SVJ bundle (svjpy.load_bundle): document, meshes, bindings, notes
 //
 // Placement: the base vehicle stays where its jbeam puts it. An SVJ (origin at the front-axle centre on
@@ -126,7 +126,16 @@ let cat = null, veh = null, vehError = null, vehBusy = '';
 // the user's edits of the base vehicle: slot choices, tuning values, and moves ({parts|nodes: {name: [dx, dy, dz]}})
 const freshEdit = (model, config) => ({ model, config: config || null, parts: {}, vars: {}, moves: { parts: {}, nodes: {} } });
 let vehEdit = freshEdit(null, null);
-let pick = null;           // { kind: 'node', id } or { kind: 'part', name }
+let pick = null;           // { kind: 'node', id }, { kind: 'beam', a, b } (its two node ids) or { kind: 'part', name }
+
+// index of the picked beam in veh.geometry.beams (-1 when it is gone)
+const beamIndex = (g, b) => g.beams.findIndex(([a, c]) => (a === b.a && c === b.b) || (a === b.b && c === b.a));
+function pickValid() {
+  const g = veh.geometry;
+  if (pick.kind === 'node') return pick.id in g.nodes;
+  if (pick.kind === 'beam') return beamIndex(g, pick) >= 0;
+  return Object.values(g.parts).includes(pick.name);
+}
 let vehFilter = '', commonLoaded = false;
 
 const allSources = () => folders.flatMap((f) => f.sources);
@@ -257,7 +266,7 @@ function configureVehicle() {
   try {
     veh = JSON.parse(vehpy.configure(vehEdit.model, vehEdit.config, JSON.stringify(vehEdit.parts), JSON.stringify(vehEdit.vars),
       JSON.stringify(vehEdit.moves)));
-    if (pick && (pick.kind === 'node' ? !(pick.id in veh.geometry.nodes) : !Object.values(veh.geometry.parts).includes(pick.name))) pick = null;
+    if (pick && !pickValid()) pick = null;
     vehEdit.config = veh.config;
     vehError = null;
   } catch (err) {
@@ -269,7 +278,8 @@ function configureVehicle() {
 }
 
 // the vehicle's node-and-beam structure: beams as one line set, nodes as points. The picked part's nodes
-// are drawn orange, the picked node as a larger orange point; nodeIds maps a point index to its node id.
+// are drawn orange, the picked node (or the two nodes of the picked beam) as orange dots and the picked
+// beam as an orange line, on top of everything; nodeIds lists the node ids in drawing order.
 let nodeIds = [];
 function drawVehicle() {
   vehG.clear();
@@ -283,23 +293,30 @@ function drawVehicle() {
   const pts = new THREE.BufferGeometry();
   pts.setAttribute('position', new THREE.Float32BufferAttribute(Object.values(g.nodes).flatMap((p) => v3(p).toArray()), 3));
   vehG.add(new THREE.Points(pts, new THREE.PointsMaterial({ color: 0x2f6fdf, size: 0.025 })));
-  const part = pick && (pick.kind === 'part' ? pick.name : g.parts[pick.id]);
+  const part = pick && (pick.kind === 'part' ? pick.name : pick.kind === 'node' ? g.parts[pick.id] : g.beam_parts[beamIndex(g, pick)]);
   if (part) {
     const hp = new THREE.BufferGeometry();
     hp.setAttribute('position', new THREE.Float32BufferAttribute(nodeIds.filter((n) => g.parts[n] === part).flatMap((n) => v3(g.nodes[n]).toArray()), 3));
     vehG.add(new THREE.Points(hp, new THREE.PointsMaterial({ color: 0xe0782a, size: pick.kind === 'part' ? 0.05 : 0.035, depthTest: false })));
   }
-  if (pick && pick.kind === 'node') {
-    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.03, 16, 12), new THREE.MeshBasicMaterial({ color: 0xff5a1f, depthTest: false }));
-    dot.position.copy(v3(g.nodes[pick.id]));
+  const dots = !pick ? [] : pick.kind === 'node' ? [pick.id] : pick.kind === 'beam' ? [pick.a, pick.b] : [];
+  for (const id of dots) {
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(pick.kind === 'node' ? 0.03 : 0.02, 16, 12), new THREE.MeshBasicMaterial({ color: 0xff5a1f, depthTest: false }));
+    dot.position.copy(v3(g.nodes[id]));
     dot.renderOrder = 2;
     vehG.add(dot);
+  }
+  if (pick && pick.kind === 'beam') {
+    const bl = new THREE.BufferGeometry().setFromPoints([v3(g.nodes[pick.a]), v3(g.nodes[pick.b])]);
+    const line = new THREE.Line(bl, new THREE.LineBasicMaterial({ color: 0xff5a1f, depthTest: false }));
+    line.renderOrder = 2;
+    vehG.add(line);
   }
   vehG.visible = $('showbeams').checked;
 }
 
-// click a node in the view to pick it (a drag orbits instead): the node nearest the pointer on screen,
-// within 10 px, the nearer to the camera on a tie; a click on empty space clears the pick
+// click in the view to pick (a drag orbits instead): the node nearest the pointer on screen within 10 px
+// (the nearer to the camera on a tie), else the beam nearest within 6 px; a click on empty space clears the pick
 let downAt = null;
 renderer.domElement.addEventListener('pointerdown', (e) => { downAt = [e.clientX, e.clientY]; });
 renderer.domElement.addEventListener('pointerup', (e) => {
@@ -313,7 +330,20 @@ renderer.domElement.addEventListener('pointerup', (e) => {
     const d = Math.hypot((p.x + 1) / 2 * r.width - mx, (1 - p.y) / 2 * r.height - my);
     if (d < bestD - 0.5 || (Math.abs(d - bestD) <= 0.5 && p.z < bestZ)) { best = id; bestD = d; bestZ = p.z; }
   }
-  pick = best ? { kind: 'node', id: best } : null;
+  if (best) pick = { kind: 'node', id: best };
+  else {
+    const scr = (id) => { p.copy(v3(veh.geometry.nodes[id])).project(camera); return [(p.x + 1) / 2 * r.width, (1 - p.y) / 2 * r.height, p.z]; };
+    let bi = -1, bd = 6;
+    veh.geometry.beams.forEach(([a, b], i) => {
+      const A = scr(a), B = scr(b);
+      if (A[2] > 1 || B[2] > 1) return;
+      const dx = B[0] - A[0], dy = B[1] - A[1], L = dx * dx + dy * dy;
+      const t = L ? Math.max(0, Math.min(1, ((mx - A[0]) * dx + (my - A[1]) * dy) / L)) : 0;
+      const d = Math.hypot(A[0] + t * dx - mx, A[1] + t * dy - my);
+      if (d < bd) { bd = d; bi = i; }
+    });
+    pick = bi >= 0 ? { kind: 'beam', a: veh.geometry.beams[bi][0], b: veh.geometry.beams[bi][1] } : null;
+  }
   drawVehicle(); drawInspector();
 });
 $('showbeams').onchange = () => { vehG.visible = $('showbeams').checked; };
@@ -393,14 +423,15 @@ function vehInspector() {
     <details><summary><b>Tuning</b> <span class="q">(${veh.variables.length} variables)</span></summary>${tune}</details>`;
 }
 
-// the Move panel: the picked node (its position) or part (its offset), as numbers in m, BeamNG axes
+// the Move panel: the picked node (its position), beam (its midpoint: both nodes move) or part (its offset),
+// as numbers in m, BeamNG axes
 const AXES = [['x', 'left +'], ['y', 'rear +'], ['z', 'up +']];
 const moveCount = () => Object.keys(vehEdit.moves.parts).length + Object.keys(vehEdit.moves.nodes).length;
 function movePanel() {
   const moved = moveCount();
   const all = moved ? `<p class="quiet">${moved} moved (${Object.keys(vehEdit.moves.parts).length} parts, ${Object.keys(vehEdit.moves.nodes).length} nodes).
     <button id="movereset" class="mini">Reset all moves</button> Moves are not saved in the .pc: writing them into a generated part comes later (roadmap step 3).</p>` : '';
-  if (!pick) return `<details open><summary><b>Move</b></summary><p class="quiet">Click a node in the view, or <i>move</i> beside a part, to move it with numbers.</p>${all}</details>`;
+  if (!pick) return `<details open><summary><b>Move</b></summary><p class="quiet">Click a node or a beam in the view, or <i>move</i> beside a part, to move it with numbers.</p>${all}</details>`;
   const inputs = (vals, kind) => `<div class="kv">${AXES.map(([a, hint], i) => `<span>${a} <span class="q">${hint}</span></span>
     <span><input type="number" step="0.001" data-move="${kind}" data-axis="${i}" value="${Number(vals[i]).toFixed(4)}"> m</span>`).join('')}</div>`;
   let body;
@@ -409,24 +440,41 @@ function movePanel() {
     body = `<div class="kv"><span>Node</span><span><b>${esc(pick.id)}</b></span><span>Part</span><span>${esc(part)} <button class="mini" data-pickpart="${esc(part)}">move part</button></span></div>
       <p class="quiet">Position:</p>${inputs(veh.geometry.nodes[pick.id], 'node')}
       ${d ? `<p class="quiet">Moved by ${d.map((x) => fmt(x * 1000, 1)).join(' / ')} mm <button id="moveundo" class="mini">Reset node</button></p>` : ''}`;
+  } else if (pick.kind === 'beam') {
+    const g = veh.geometry, A = g.nodes[pick.a], B = g.nodes[pick.b], part = g.beam_parts[beamIndex(g, pick)];
+    const mid = [0, 1, 2].map((i) => (A[i] + B[i]) / 2);
+    const moved = vehEdit.moves.nodes[pick.a] || vehEdit.moves.nodes[pick.b];
+    body = `<div class="kv"><span>Beam</span><span><b>${esc(pick.a)} – ${esc(pick.b)}</b> <span class="q">${fmt(Math.hypot(A[0] - B[0], A[1] - B[1], A[2] - B[2]) * 1000, 1)} mm</span></span>
+      <span>Nodes</span><span><button class="mini" data-picknode="${esc(pick.a)}">${esc(pick.a)}</button><button class="mini" data-picknode="${esc(pick.b)}">${esc(pick.b)}</button></span>
+      <span>Part</span><span>${esc(part)} <button class="mini" data-pickpart="${esc(part)}">move part</button></span></div>
+      <p class="quiet">Midpoint (both nodes move):</p>${inputs(mid, 'beam')}
+      ${moved ? '<p><button id="moveundo" class="mini">Reset both nodes</button></p>' : ''}`;
   } else {
     const d = vehEdit.moves.parts[pick.name] || [0, 0, 0];
     const n = Object.values(veh.geometry.parts).filter((p) => p === pick.name).length;
     body = `<div class="kv"><span>Part</span><span><b>${esc(pick.name)}</b> <span class="q">${n} nodes</span></span></div>
-      <p class="quiet">Offset of its own nodes (not of the parts in its slots):</p>${inputs(d, 'part')}
+      <p class="quiet">Offset of its nodes and of the parts in its slots (as a slot nodeMove in the game):</p>${inputs(d, 'part')}
       ${vehEdit.moves.parts[pick.name] ? '<p><button id="moveundo" class="mini">Reset part</button></p>' : ''}`;
   }
   return `<details open><summary><b>Move</b> <button id="moveclear" class="mini">clear pick</button></summary>${body}${all}</details>`;
 }
 
-// a typed value: a node's new position becomes a delta (added to its move); a part's value is its offset
+// a typed value: a node's new position, or a beam's new midpoint, becomes a delta added to the node moves;
+// a part's value is its offset
+function shiftNode(id, axis, by) {
+  const d = [...(vehEdit.moves.nodes[id] || [0, 0, 0])];
+  d[axis] = Math.round((d[axis] + by) * 1e4) / 1e4;
+  if (d.every((x) => x === 0)) delete vehEdit.moves.nodes[id]; else vehEdit.moves.nodes[id] = d;
+}
+
 function setMove(kind, axis, value) {
   if (!Number.isFinite(value)) return;
-  if (kind === 'node') {
-    const d = [...(vehEdit.moves.nodes[pick.id] || [0, 0, 0])];
-    d[axis] += value - veh.geometry.nodes[pick.id][axis];
-    vehEdit.moves.nodes[pick.id] = d.map((x) => Math.round(x * 1e4) / 1e4);
-    if (vehEdit.moves.nodes[pick.id].every((x) => x === 0)) delete vehEdit.moves.nodes[pick.id];
+  const g = veh.geometry;
+  if (kind === 'node') shiftNode(pick.id, axis, value - g.nodes[pick.id][axis]);
+  else if (kind === 'beam') {
+    const by = value - (g.nodes[pick.a][axis] + g.nodes[pick.b][axis]) / 2;
+    shiftNode(pick.a, axis, by);
+    shiftNode(pick.b, axis, by);
   } else {
     const d = [...(vehEdit.moves.parts[pick.name] || [0, 0, 0])];
     d[axis] = value;
@@ -442,9 +490,12 @@ function bindVehInspector(el) {
     pick = { kind: 'part', name: b.dataset.pickpart }; drawVehicle(); drawInspector();
   });
   el.querySelectorAll('input[data-move]').forEach((i) => i.onchange = () => setMove(i.dataset.move, Number(i.dataset.axis), Number(i.value)));
+  el.querySelectorAll('[data-picknode]').forEach((b) => b.onclick = () => { pick = { kind: 'node', id: b.dataset.picknode }; drawVehicle(); drawInspector(); });
   if ($('moveclear')) $('moveclear').onclick = (e) => { e.preventDefault(); pick = null; drawVehicle(); drawInspector(); };
   if ($('moveundo')) $('moveundo').onclick = () => {
-    if (pick.kind === 'node') delete vehEdit.moves.nodes[pick.id]; else delete vehEdit.moves.parts[pick.name];
+    if (pick.kind === 'node') delete vehEdit.moves.nodes[pick.id];
+    else if (pick.kind === 'beam') { delete vehEdit.moves.nodes[pick.a]; delete vehEdit.moves.nodes[pick.b]; }
+    else delete vehEdit.moves.parts[pick.name];
     configureVehicle();
   };
   if ($('movereset')) $('movereset').onclick = () => { vehEdit.moves = { parts: {}, nodes: {} }; configureVehicle(); };

@@ -119,6 +119,11 @@ class TestVehicle(unittest.TestCase):
         self.assertEqual(g["fwhl1l"], [0.58, -1.1, 0.25])                 # part move + node move
         self.assertEqual(g["fwhl1r"], [-0.56, -1.1, 0.3])                 # part move only
         self.assertEqual(g["b1"], [0.5, -1.0, 0.3])                     # a bad move is ignored
+        g2 = json.loads(bng.configure("toycar", None, None, None, json.dumps({"parts": {"toycar_hub_F": [0.0, 0.0, 0.1]}})))["geometry"]
+        self.assertEqual(g2["nodes"]["fwhl1l"], [0.56, -1.2, 0.4])          # the wheel in the hub's slot moves with it
+        self.assertEqual(g2["nodes"]["fwhl1r"], [-0.56, -1.2, 0.4])         # a plain shift: x not mirrored
+        self.assertEqual(g2["nodes"]["b1"], [0.5, -1.0, 0.3])
+        self.assertEqual(g2["beam_parts"], ["toycar"])
 
     def test_tuning_and_saved_config(self):
         v = self.cfg()

@@ -260,23 +260,25 @@ def _delta(v):
 
 def geometry(parts, tree, vars_, moves=None):
     """Nodes and beams of the configured vehicle, for drawing: {"nodes": {id: [x, y, z]}, "beams": [[a, b]],
-    "parts": {node id: part}}. Slot nodeOffset / nodeMove are applied to the part in the slot and its
+    "parts": {node id: part}, "beam_parts": [part of each beam]}. Slot nodeOffset / nodeMove are applied to the part in the slot and its
     children (nodeOffset x mirrored by each node's side, as the game does). Expressions that cannot be
     evaluated offline count as 0.
 
     moves: the user's edits, {"parts": {part: [dx, dy, dz]}, "nodes": {node id: [dx, dy, dz]}} in m,
-    added after everything else: a part move shifts that part's own nodes (not its children), a node
-    move one node.
+    added after everything else: a part move shifts that part's nodes and the parts in its slots, as a
+    slot nodeMove does in the game (a plain shift, x not mirrored); a node move shifts one node. A beam
+    is moved by moving its two nodes.
     """
     moves = moves or {}
     part_moves, node_moves = moves.get("parts") or {}, moves.get("nodes") or {}
-    nodes, owner, beams = {}, {}, []
+    nodes, owner, beams, beam_parts = {}, {}, [], []
 
-    def walk(node, off, move):
+    def walk(node, off, move, user):
         name = node["part"]
         if name not in parts or not name:
             return
         part = parts[name]["part"]
+        user = [a + b for a, b in zip(user, _delta(part_moves.get(name)))]
         for r in jbeam.expand_table(part.get("nodes") or []):
             try:
                 x, y, z = (_num(r.get(k), vars_) for k in ("posX", "posY", "posZ"))
@@ -291,7 +293,7 @@ def geometry(parts, tree, vars_, moves=None):
             z += off[2] + _num(o.get("z", 0), vars_) + move[2]
             x += move[0]
             nid = str(r["id"])
-            d = [a + b for a, b in zip(_delta(part_moves.get(name)), _delta(node_moves.get(nid)))]
+            d = [a + b for a, b in zip(user, _delta(node_moves.get(nid)))]
             nodes[nid] = [round(x + d[0], 4), round(y + d[1], 4), round(z + d[2], 4)]
             owner[nid] = name
         rows = part.get("beams") or []
@@ -300,17 +302,19 @@ def geometry(parts, tree, vars_, moves=None):
                 a, b = r.get("id1"), r.get("id2")
                 if isinstance(a, str) and isinstance(b, str):
                     beams.append([a, b])
+                    beam_parts.append(name)
         slots = {s["name"]: s for s in slot_rows(part)}
         for child in node["children"]:
             s = slots.get(child["slot"], {"options": {}})
             no = s["options"].get("nodeOffset") or {}
             nm = s["options"].get("nodeMove") or {}
             walk(child, [off[0] + _num(no.get("x", 0), vars_), off[1] + _num(no.get("y", 0), vars_), off[2] + _num(no.get("z", 0), vars_)],
-                 [move[0] + _num(nm.get("x", 0), vars_), move[1] + _num(nm.get("y", 0), vars_), move[2] + _num(nm.get("z", 0), vars_)])
+                 [move[0] + _num(nm.get("x", 0), vars_), move[1] + _num(nm.get("y", 0), vars_), move[2] + _num(nm.get("z", 0), vars_)],
+                 user)
 
-    walk(tree, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
-    beams = [b for b in beams if b[0] in nodes and b[1] in nodes]
-    return {"nodes": nodes, "beams": beams, "parts": owner}
+    walk(tree, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+    keep = [i for i, b in enumerate(beams) if b[0] in nodes and b[1] in nodes]
+    return {"nodes": nodes, "beams": [beams[i] for i in keep], "parts": owner, "beam_parts": [beam_parts[i] for i in keep]}
 
 
 def measure(parts, active, geo):
