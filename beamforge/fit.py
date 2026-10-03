@@ -422,6 +422,11 @@ def map_hardpoints(nodes, beams, beam_parts, parts, wheels, hps, overrides=None)
     """
     overrides = overrides or {}
     rows, used = [], set()
+    twins = _twins(nodes)
+
+    def use(n):                                            # a node, and the nodes at the same place
+        used.add(n)
+        used.update(twins.get(n, ()))
     for corner in sorted({h["corner"] for h in hps}):
         mine = [h for h in hps if h["corner"] == corner]
         wc = next((h for h in mine if h["name"] == "wheel_center"), None)
@@ -449,7 +454,7 @@ def map_hardpoints(nodes, beams, beam_parts, parts, wheels, hps, overrides=None)
                 n = overrides[key]
                 rows.append({"corner": corner, "name": h["name"], "kind": h["kind"], "nodes": [n], "target": h["pos"],
                              "distance": round(math.dist(nodes[n], h["pos"]), 4), "by": "user"})
-                used.add(n)
+                use(n)
                 continue
             if h["kind"] == "upright":
                 free_up.append(h)
@@ -463,7 +468,7 @@ def map_hardpoints(nodes, beams, beam_parts, parts, wheels, hps, overrides=None)
         for h, n in best:
             rows.append({"corner": corner, "name": h["name"], "kind": h["kind"], "nodes": [n], "target": h["pos"],
                          "distance": round(math.dist(nodes[n], h["pos"]), 4), "by": "guess"})
-            used.add(n)
+            use(n)
         pairs.sort()
         done = {r["name"] for r in rows if r["corner"] == corner}
         for d, name, n in pairs:
@@ -473,7 +478,7 @@ def map_hardpoints(nodes, beams, beam_parts, parts, wheels, hps, overrides=None)
             rows.append({"corner": corner, "name": name, "kind": h["kind"], "nodes": [n], "target": h["pos"],
                          "distance": round(d, 4), "by": "guess"})
             done.add(name)
-            used.add(n)
+            use(n)
         for h in todo:
             if h["name"] not in done:
                 rows.append({"corner": corner, "name": h["name"], "kind": h["kind"], "nodes": [], "target": h["pos"],
@@ -515,6 +520,24 @@ def _shape_assignment(nodes, wheel, wc, hps, hub, limit=20000):
     return list(zip(hps, best))
 
 
+TWIN = 0.002   # m: nodes this close are one physical point (BeamNG often puts two nodes at one place)
+
+
+def _twins(nodes, tol=TWIN):
+    """{node: [other nodes within tol]} for the nodes that share a place, by a grid of tol cells."""
+    cells = {}
+    for n, p in nodes.items():
+        cells.setdefault(tuple(int(math.floor(c / tol)) for c in p), []).append(n)
+    out = {}
+    for (i, j, k), ns in cells.items():
+        near = [m for di in (-1, 0, 1) for dj in (-1, 0, 1) for dk in (-1, 0, 1) for m in cells.get((i + di, j + dj, k + dk), ())]
+        for n in ns:
+            t = [m for m in near if m != n and math.dist(nodes[n], nodes[m]) <= tol]
+            if t:
+                out[n] = t
+    return out
+
+
 def _wendland(r, radius):
     q = r / radius
     return (1 - q) ** 4 * (4 * q + 1) if q < 1 else 0.0
@@ -548,6 +571,16 @@ def pickup_field(nodes, targets, radius=None):
     ids = list(targets)
     if not ids:
         return {k: list(v) for k, v in nodes.items()}
+    # nodes at one place are one centre: the first one's target moves them all (two different targets
+    # for one point cannot both be met; they stay together rather than tear apart)
+    lead, centres = {}, []
+    for n in ids:
+        same = next((c for c in centres if math.dist(nodes[c], nodes[n]) < TWIN / 2), None)
+        if same is None:
+            centres.append(n)
+        else:
+            lead[n] = same
+    ids = centres
     D = [[targets[n][i] - nodes[n][i] for i in range(3)] for n in ids]
     big = max(math.sqrt(sum(x * x for x in d)) for d in D)
     radius = radius or min(1.0, max(0.4, 3 * big))
@@ -564,6 +597,8 @@ def pickup_field(nodes, targets, radius=None):
         out[n] = [p[i] + d[i] for i in range(3)]
     for n in ids:                                          # exact, whatever the rounding
         out[n] = list(targets[n])
+    for n, c in lead.items():                              # the others at that place: moved with it
+        out[n] = [nodes[n][i] + targets[c][i] - nodes[c][i] for i in range(3)]
     return out
 
 

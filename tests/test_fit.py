@@ -146,6 +146,15 @@ class TestPickups(unittest.TestCase):
         u2 = next(x for x in r2["uprights"] if x["corner"] == "FL")
         self.assertEqual((u2["camber_deg"], u2["toe_deg"]), (0.0, 0.0))     # no alignment in the file: the base axis
 
+    def test_nodes_at_one_place(self):
+        """Two nodes at one place (as BeamNG often has): tied once, moved together, no failure."""
+        nodes = {"a": [0.0, 0.0, 0.0], "a2": [0.0, 0.0, 0.0005], "b": [1.0, 0.0, 0.0], "far": [3.0, 0.0, 0.0]}
+        self.assertEqual(fit._twins(nodes), {"a": ["a2"], "a2": ["a"]})
+        out = fit.pickup_field(nodes, {"a": [0.0, 0.1, 0.0], "a2": [0.0, -0.1, 0.0], "b": [1.0, 0.0, 0.05]})
+        self.assertEqual(out["a"], [0.0, 0.1, 0.0])
+        self.assertAlmostEqual(out["a2"][1], 0.1)                            # with its twin, not torn apart
+        self.assertEqual(out["far"], [3.0, 0.0, 0.0])
+
     def test_rigid_fit_and_distortion(self):
         src = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]
         dst = [[2 - p[1], 3 + p[0], 4 + p[2]] for p in src]                 # 90 degrees about z, then a shift
