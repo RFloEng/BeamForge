@@ -4,15 +4,16 @@ Pure Python, standard library only (runs in Pyodide). Each value is read on both
 vehicle (its active parts, as configured) and the SVJ, per axle, and written into the new vehicle by
 export.build when the user takes it.
 
-  springs   SVJ spring.rate is the wheel rate (SVJ spec); the coil rate is wheel rate / MR^2, MR the
-            spring's motion ratio (spring.motion_ratio, else the SVJ corner's static motion ratio from
-            the suspension study, else 1). BeamNG's coil spring is a |NORMAL beam with a
-            precompressionRange between the hub and the body; its beamSpring (N/m) takes the coil rate.
-  dampers   SVJ bump_curve / rebound_curve are [velocity m/s, force N]. BeamNG's damper is a |BOUNDED
-            beam: beamDamp / beamDampRebound take the slope of the first segment (N/(m/s)),
-            beamDampFast / beamDampReboundFast the slope after it, beamDampVelocitySplit its end.
-            Velocities are taken as at the damper (the SVJ damper motion_ratio, if given, converts
-            wheel velocities to the damper: force slopes are divided by MR^2).
+  springs   SVJ spring.rate is the wheel rate (SVJ spec). BeamNG's coil spring is a beam with a
+            precompressionRange between the hub side and the body; its beamSpring (N/m) is the wheel
+            rate / MR^2, MR the motion ratio of that beam in the base vehicle as fitted, measured on its
+            beams (kinematics.py). Without one: the SVJ's own coil rate (wheel rate / the SVJ spring's
+            motion_ratio^2, else the study's static motion ratio, else 1).
+  dampers   SVJ bump_curve / rebound_curve are [velocity m/s, force N] at the damper (SVJ spec), with
+            damper.motion_ratio (damper / wheel, default 1). BeamNG's damper is a |BOUNDED beam:
+            beamDamp / beamDampRebound take the slow slope, beamDampFast / beamDampReboundFast the fast
+            one, beamDampVelocitySplit where it changes (_slopes). The damping at the wheel is slope x
+            MR_svj^2, so the beam takes slope x (MR_svj / MR_base)^2, MR_base measured like the spring's.
   tyres     pressureWheels radius (unloaded; the SVJ loaded radius plus a 10 mm deflection when the
             file gives no unloaded radius) and tireWidth.
   aero      the SVJ drag area (Cd x frontal area): every drag triangle's dragCoef scaled so the base's
@@ -72,11 +73,12 @@ def _slopes(curve):
     return round(slow, 3), round(max(fast, 0.0), 3), vs
 
 
-def svj_values(svj, study=None):
+def svj_values(svj, study=None, base_mr=None):
     """Per axle ("front", "rear"): {"wheel_rate", "spring_mr", "coil_rate", "damp_bump", "damp_bump_fast",
     "damp_rebound", "damp_rebound_fast", "damp_split", "tyre_radius", "tyre_width"} from the SVJ's FL / RL
     corners (FR / RR when the left one is missing); None where the file has no value. study: the
-    suspension study (suspension.study_svj) for motion ratios the file does not give."""
+    suspension study (suspension.study_svj) for motion ratios the file does not give; base_mr: the base
+    vehicle's measured ratios ({axle: {"spring", "damper"}}, kinematics.motion_ratios)."""
     out = {}
     susp = svj.get("suspension") or {}
     for axle, (L, R) in (("front", ("FL", "FR")), ("rear", ("RL", "RR"))):
@@ -87,12 +89,18 @@ def svj_values(svj, study=None):
         st = ((study or {}).get("corners") or {}).get(axle, {}).get("static") or {}
         mr = spring.get("motion_ratio") or st.get("motion_ratio") or 1.0
         rate = spring.get("rate") if isinstance(spring.get("rate"), (int, float)) else None
-        v = {"wheel_rate": rate, "spring_mr": round(mr, 3), "coil_rate": round(rate / (mr * mr)) if rate else None}
+        bm = (base_mr or {}).get(axle) or {}
+        smr = bm.get("spring") if (bm.get("spring") or 0) > 0.05 else mr      # the beam's ratio in the base
+        v = {"wheel_rate": rate, "spring_mr": round(smr, 3), "spring_mr_from": "base" if smr is not mr else "svj",
+             "coil_rate": round(rate / (smr * smr)) if rate else None}
         dmr = damper.get("motion_ratio") or 1.0
+        bdm = bm.get("damper") if (bm.get("damper") or 0) > 0.05 else dmr
+        k = (dmr / bdm) ** 2                              # slope at the damper -> the base's damper beam
+        v["damper_mr"] = round(bdm, 3)
         for key, curve in (("bump", damper.get("bump_curve")), ("rebound", damper.get("rebound_curve"))):
             s = _slopes(curve)
-            v[f"damp_{key}"] = round(s[0] / (dmr * dmr)) if s else None
-            v[f"damp_{key}_fast"] = round(s[1] / (dmr * dmr)) if s else None
+            v[f"damp_{key}"] = round(s[0] * k) if s else None
+            v[f"damp_{key}_fast"] = round(s[1] * k) if s else None
             v["damp_split"] = round(s[2], 3) if s else v.get("damp_split")
         tire = c.get("tire") or {}
         unloaded = tire.get("unloaded_radius") or wheel.get("unloaded_radius")
@@ -152,8 +160,8 @@ def springs_and_dampers(model, configured):
                 continue
             bt = str(rec.get("beamType", ""))
             kind = None
-            if "NORMAL" in bt and "precompressionRange" in rec and rec.get("beamSpring") not in (0, None):
-                kind = "spring"
+            if "precompressionRange" in rec and rec.get("beamSpring") not in (0, None, "0"):
+                kind = "spring"                           # |NORMAL, or |BOUNDED with its bump stop (small hatchback)
             elif "BOUNDED" in bt and rec.get("beamDampRebound") is not None:
                 kind = "damper"
             if not kind:
@@ -197,7 +205,8 @@ def tyres(model, configured):
 def table(model, configured_json, svj_json, study_json=None):
     """The rows of the "values from the SVJ" table: [{"key", "label", "unit", "axle", "base", "svj"}]."""
     configured, svj = json.loads(configured_json), json.loads(svj_json)
-    sv = svj_values(svj, json.loads(study_json) if study_json else None)
+    from beamforge import kinematics
+    sv = svj_values(svj, json.loads(study_json) if study_json else None, kinematics.motion_ratios(model, configured)[0])
     sd = springs_and_dampers(model, configured)
     ty = tyres(model, configured)
     vars_ = {x["name"]: x["value"] for x in configured["variables"]}
@@ -383,7 +392,8 @@ def apply(model, configured, svj, take, study=None, length_factors=None):
     """What taking values changes: ({part: {row index: {property: value}}} for beams, {part: {"radius",
     "tireWidth", "scale"}} for tyres, {"$var": value} for the configuration, {part: {row index: kg}} for
     node weights). take: {row key: True}."""
-    sv = svj_values(svj, study)
+    from beamforge import kinematics
+    sv = svj_values(svj, study, kinematics.motion_ratios(model, configured)[0])
     beams, tyre, pcvars = {}, {}, {}
     for r in springs_and_dampers(model, configured):
         s = sv.get(r["axle"]) or {}
