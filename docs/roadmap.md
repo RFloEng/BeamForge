@@ -10,6 +10,7 @@ BeamForge starts from **any BeamNG vehicle** (vanilla or mod) and modifies it fr
 | SVJ | Reads an `.svj.json` with its meshes, or a `.zip` bundle. It checks the visual bindings and places the meshes and suspension hardpoints on the base vehicle's front axle and ground. It compares wheelbase, tracks and mass |
 | Geometry edits | Pick a node, a beam or a part, move it with numeric x / y / z. Fit to the SVJ: wheelbase, body to the mesh, and the pickup points onto the SVJ hardpoints with a checkable hardpoint-to-node table ([fitting.md](fitting.md)). Editor only, not written to the game yet |
 | Suspension | The SVJ's corners solved over wheel travel (kinematics from FBeam): static geometry and curves, linkage in 3D |
+| New vehicle | The edited vehicle exported as a new vehicle mod: named, parts with the edits, copied or reused per choice, the game untouched |
 | Mesh | The base vehicle's own meshes from the game's `.dae` files (untextured, following its nodes) and wheels. SVJ glTF meshes as translucent reference geometry |
 
 ## Steps

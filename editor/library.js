@@ -2,14 +2,16 @@
 // vehicles/), single mod folders and picked zips. Only the paths and readers are gathered here; which
 // source wins a path is decided in Python (beamforge.beamng.resolve), and files are read on demand.
 //
-//   source   { name, kind: 'vanilla' | 'mod' | 'user', files: { 'vehicles/...': () => Promise<text> } }
+//   source   { name, kind: 'vanilla' | 'mod' | 'user', files: { 'vehicles/...': () => Promise<text> },
+//              blobs: { 'vehicles/...': () => Promise<Blob> } }   blobs: every file under vehicles/ (any type),
+//              for copying a vehicle's meshes, materials and Lua into a new one (export)
 //   folder   { name, role: 'game' | 'user' | 'mod', sources, notes, handle? }   one picked folder
 //
 // Folders come from two pickers, wrapped as the same small directory interface (entries()):
 //   showDirectoryPicker   Chrome / Edge. The handle is kept in IndexedDB, so a later session only
 //                         confirms access. Chrome refuses folders under AppData and Program Files.
 //   <input webkitdirectory>  any browser and any folder, picked again every session.
-import { ZipReader, BlobReader, TextWriter } from 'zipjs';
+import { ZipReader, BlobReader, TextWriter, BlobWriter } from 'zipjs';
 
 export const TEXT_FILE = /\.(jbeam|pc|json)$/i;
 const READ_FILE = /\.(jbeam|pc|json|dae)$/i;      // text files, and the .dae meshes (read only when drawn)
@@ -81,21 +83,24 @@ async function* walk(dir, prefix = '') {
 // file: a File / Blob, or a zip.js reader (tests read the user's files over HTTP ranges)
 export async function zipSource(file, name, kind) {
   const reader = new ZipReader(file instanceof Blob ? new BlobReader(file) : file);
-  const files = {};
+  const files = {}, blobs = {};
   for (const e of await reader.getEntries()) {
     const p = e.filename.replace(/\\/g, '/').replace(/^\.?\//, '');
-    if (!e.directory && /^vehicles\//i.test(p) && READ_FILE.test(p)) files[p] = () => e.getData(new TextWriter());
+    if (e.directory || !/^vehicles\//i.test(p)) continue;
+    if (READ_FILE.test(p)) files[p] = () => e.getData(new TextWriter());
+    blobs[p] = () => e.getData(new BlobWriter());
   }
-  return Object.keys(files).length ? { name, kind, files } : null;
+  return Object.keys(files).length ? { name, kind, files, blobs } : null;
 }
 
 // loose text files of a folder's vehicles/ subfolder
 async function looseSource(vehDir, name, kind) {
-  const files = {};
+  const files = {}, blobs = {};
   for await (const [rel, e] of walk(vehDir)) {
     if (READ_FILE.test(rel)) files['vehicles/' + rel] = async () => (await e.file()).text();
+    blobs['vehicles/' + rel] = async () => e.file();
   }
-  return Object.keys(files).length ? { name, kind, files } : null;
+  return Object.keys(files).length ? { name, kind, files, blobs } : null;
 }
 
 // the install's vehicle zips: the folder picked may be the install, content/ or content/vehicles/

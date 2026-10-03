@@ -25,11 +25,12 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { buildMeshes, forgetMeshes } from './meshes.js';
+import { ZipWriter, BlobWriter, TextReader, BlobReader } from 'zipjs';
 import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, rememberedHandles, rememberHandles, access } from './library.js';
 
 // repo files copied into Pyodide's file system under /bf (add new Python modules here)
 const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py',
-  'beamforge/fit.py', 'beamforge/suspension.py'];
+  'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py'];
 const REPO = new URL('../', import.meta.url);
 
 const $ = (id) => document.getElementById(id);
@@ -39,7 +40,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 // last line of a Python traceback, without the exception class
 const pyError = (e) => String(e.message || e).trim().split('\n').pop().replace(/^\w+Error: /, '');
 
-let py, vehpy, svjpy, fitpy, suspy;
+let py, vehpy, svjpy, fitpy, suspy, exppy;
 const timing = {};         // ms per step, shown in the footer by drawTiming
 
 // ---------- Python engine ----------
@@ -59,6 +60,7 @@ async function boot() {
   svjpy = py.pyimport('beamforge.svj');
   fitpy = py.pyimport('beamforge.fit');
   suspy = py.pyimport('beamforge.suspension');
+  exppy = py.pyimport('beamforge.export');
   timing.files = performance.now() - t1;
   $('loading').remove();
   redraw();
@@ -309,6 +311,7 @@ async function openVehicle(model, config) {
     vehEdit = freshEdit(model, config);
     pick = null;
     partColor = {}; hiddenParts = new Set(); lockedParts = new Set(); colorCount = 0;
+    exportForm = { id: '', name: '', brand: '', choices: {} }; exportNote = '';
     vehBusy = '';
     configureVehicle();
     fitCamera();
@@ -565,7 +568,8 @@ function vehInspector() {
       ${hiddenParts.size || lockedParts.size ? `<p class="quiet">${hiddenParts.size} hidden, ${lockedParts.size} locked
         ${hiddenParts.size ? '<button id="showall" class="mini">show all</button>' : ''}${lockedParts.size ? '<button id="unlockall" class="mini">unlock all</button>' : ''}</p>` : ''}
       <ul class="vehparts">${slotRow(veh.tree, 0)}</ul></details>
-    <details><summary><b>Tuning</b> <span class="q">(${veh.variables.length} variables)</span></summary>${tune}</details>`;
+    <details><summary><b>Tuning</b> <span class="q">(${veh.variables.length} variables)</span></summary>${tune}</details>
+    ${exportPanel()}`;
 }
 
 // the Move panel: the picked node (its position), beam (its midpoint: both nodes move) or part (its offset),
@@ -1028,11 +1032,104 @@ function bindSuspPanel() {
   r.onchange = () => { drawInspector(); };
 }
 
+// ---------- a new vehicle from the edited one, as a mod (beamforge/export.py) ----------
+// exportForm: the new vehicle's id (folder), name, brand and the per-part choices ({part: 'reuse' | 'copy' |
+// 'fit'}; parts not set take the proposal of exppy.plan); exportOpen keeps the section open across redraws.
+let exportForm = { id: '', name: '', brand: '', choices: {} }, exportNote = '', exportOpen = false;
+const CHOICE = { fit: 'with the edits', copy: 'as it is', reuse: 'reuse (not copied)' };
+
+function exportPanel() {
+  if (!veh) return '';
+  let plan = [];
+  try { plan = JSON.parse(exppy.plan(veh.model, JSON.stringify(veh))); } catch (err) { return `<p class="bad">${esc(pyError(err))}</p>`; }
+  const v = cat && cat.find((x) => x.model === veh.model);
+  const id = exportForm.id || `${veh.model}_bf`, name = exportForm.name || `${v ? v.name : veh.model} BeamForge`;
+  const choice = (p) => exportForm.choices[p.part] || p.choice;
+  const fromVeh = plan.filter((p) => p.origin === 'vehicle'), shared = plan.filter((p) => p.origin === 'common');
+  const row = (p) => `<tr><td title="${esc(p.file)}">${esc(p.part)}</td><td>${p.moved_mm ? fmt(p.moved_mm, 0) + ' mm' : '–'}</td>
+    <td><select data-expchoice="${esc(p.part)}">${p.choices.map((c) => `<option value="${c}" ${c === choice(p) ? 'selected' : ''}>${CHOICE[c]}</option>`).join('')}</select></td></tr>`;
+  const count = (k) => plan.filter((p) => choice(p) === k).length;
+  return `<details id="exportsec" ${exportOpen ? 'open' : ''}><summary><b>Make a new vehicle (mod)</b></summary>
+    <p class="quiet">A new vehicle with its own folder, made from this one with its edits: the game and ${esc(veh.model)} are not changed.
+      Put the zip in your user folder's <i>mods</i> folder.</p>
+    <div class="kv">
+      <span>Id (folder)</span><span><input id="expid" value="${esc(id)}" spellcheck="false"></span>
+      <span>Name</span><span><input id="expname" value="${esc(name)}"></span>
+      <span>Brand</span><span><input id="expbrand" value="${esc(exportForm.brand)}" placeholder="${esc(v?.brand || '')}"></span></div>
+    <p class="quiet">${count('fit')} parts with the edits, ${count('copy')} copied as they are, ${count('reuse')} shared parts reused from the game.</p>
+    <div class="inl"><button id="expall" title="Every part copied into the new vehicle with the edits, shared ones under new names: fully self-contained">Regenerate all</button>
+      <button id="expreset">Proposed choices</button><button id="exprun" class="primary">Export mod (.zip)…</button></div>
+    ${exportNote ? `<p class="quiet">${exportNote}</p>` : ''}
+    <details><summary>Parts of ${esc(veh.model)} <span class="q">(${fromVeh.length}: always copied, the game cannot see them from a new folder)</span></summary>
+      <table class="cmp"><tr><th>Part</th><th>Moved</th><th>Write</th></tr>${fromVeh.map(row).join('')}</table></details>
+    <details><summary>Shared parts <span class="q">(${shared.length}, vehicles/common: reused, or regenerated under a new name)</span></summary>
+      <table class="cmp"><tr><th>Part</th><th>Moved</th><th>Write</th></tr>${shared.map(row).join('')}</table></details>
+  </details>`;
+}
+
+function bindExport() {
+  if (!$('exportsec')) return;
+  $('exportsec').ontoggle = (e) => { exportOpen = e.target.open; };
+  $('expid').onchange = (e) => { exportForm.id = e.target.value.trim(); };
+  $('expname').onchange = (e) => { exportForm.name = e.target.value.trim(); };
+  $('expbrand').onchange = (e) => { exportForm.brand = e.target.value.trim(); };
+  document.querySelectorAll('[data-expchoice]').forEach((sel) => sel.onchange = () => { exportForm.choices[sel.dataset.expchoice] = sel.value; drawInspector(); });
+  $('expall').onclick = () => {
+    for (const p of JSON.parse(exppy.plan(veh.model, JSON.stringify(veh)))) exportForm.choices[p.part] = 'fit';
+    drawInspector();
+  };
+  $('expreset').onclick = () => { exportForm.choices = {}; drawInspector(); };
+  $('exprun').onclick = runExport;
+}
+
+// the winning blob getter of a path over every source, highest priority first (user folder, mods, game)
+function blobOf(path) {
+  const src = sourceByName();
+  for (const n of [...resolved.order].reverse()) if (src[n] && src[n].blobs && src[n].blobs[path]) return src[n].blobs[path];
+  return null;
+}
+
+async function runExport() {
+  const id = ($('expid').value || '').trim(), name = ($('expname').value || '').trim() || id, brand = ($('expbrand').value || '').trim();
+  exportForm.id = id; exportForm.name = name; exportForm.brand = brand;
+  const problems = JSON.parse(exppy.check_id_json(id, veh.model));
+  if (problems.length) { exportNote = `<span class="bad">${problems.map(esc).join('; ')}</span>`; drawInspector(); return; }
+  const say = (t) => { exportNote = esc(t); drawInspector(); };
+  try {
+    say('Writing the parts…');
+    await new Promise((r) => setTimeout(r, 20));
+    const out = JSON.parse(exppy.build(veh.model, id, name, JSON.stringify(veh), JSON.stringify(exportForm.choices), brand || null));
+    const all = new Set();
+    for (const s of allSources()) for (const p of Object.keys(s.blobs || {})) if (p.startsWith(`vehicles/${veh.model}/`)) all.add(p);
+    const copies = JSON.parse(exppy.assets(veh.model, id, JSON.stringify([...all])));
+    const zw = new ZipWriter(new BlobWriter('application/zip'));   // default level: zip.js 2.7 flags entries as encrypted below level 4
+    for (const [p, text] of Object.entries(out.files)) await zw.add(p, new TextReader(text));
+    let i = 0;
+    const n = Object.keys(copies).length;
+    for (const [src, dst] of Object.entries(copies)) {
+      say(`Copying ${++i} of ${n}: ${src.split('/').pop()}`);
+      const get = blobOf(src);
+      if (get) await zw.add(dst, new BlobReader(await get()));
+    }
+    say('Packing the zip…');
+    const blob = await zw.close();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${id}.zip`;
+    a.click();
+    const c = out.counts;
+    exportNote = `${esc(id)}.zip: ${c.fitted} parts with the edits (${c.nodes} nodes), ${c.copied} copied, ${c.regenerated} shared parts regenerated, ${c.reused} reused, ${n} meshes, materials and other files copied (${fmt(blob.size / 1e6, 1)} MB). Put it in your user folder's mods folder; the new vehicle is "${esc(name)}".`
+      + (out.notes.length ? ` <span class="bad">${out.notes.map(esc).join(' ')}</span>` : '');
+  } catch (err) { exportNote = `<span class="bad">Export failed: ${esc(pyError(err))}</span>`; }
+  drawInspector();
+}
+
 // ---------- panels ----------
 function drawInspector() {
   const el = $('inspector');
   el.innerHTML = vehInspector() + svjInspector();
   bindVehInspector(el);
+  bindExport();
   bindFitPanel();
   bindSuspPanel();
 }

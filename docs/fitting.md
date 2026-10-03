@@ -114,5 +114,5 @@ Uprights: the RWD saloon's front hub is 32 mm (rms) off the E30 upright after st
 
 1. ~~`beamforge/fit.py` with stages 1 and 2, and the editor's Fit section.~~ Done.
 2. ~~Stage 3: the role-based hardpoint-to-node mapping, the hardpoint table with click-to-retie, and the local displacement field.~~ Done.
-3. Writing the fitted parts into a local mod (roadmap step 3), and the ties saved per suspension part.
+3. ~~Writing the fitted parts into the game~~: done as a new vehicle mod (see beamng-vehicles.md, *Make a new vehicle*). Still to do: the ties saved per suspension part.
 4. The base vehicle's own suspension studied with the solver, from its tied nodes.
