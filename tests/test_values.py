@@ -83,6 +83,11 @@ class TestValues(unittest.TestCase):
         self.assertEqual((part["mainEngine"]["idleRPM"], part["gearbox"]["gearRatios"]), (750, [-3.3, 0, 3.83]))
         self.assertEqual(part["powertrain"][1][-1]["gearRatio"], 3.73)
 
+    def test_steering_turns(self):
+        self.assertEqual(values.svj_steering({"steering": {"lock_to_lock_turns": 3.5, "overall_ratio": 20.5}}), (3.5, 20.5))
+        self.assertEqual(values.svj_steering({"steering": {"lock_to_lock": 21.991}})[0], 3.5)      # radians of wheel
+        self.assertEqual(values.svj_steering({}), (None, None))
+
     def test_slopes(self):
         self.assertEqual(values._slopes([[0, 0], [0.1, 1000]]), (10000.0, 10000.0, 0.1))
         self.assertIsNone(values._slopes([[0, 0]]))

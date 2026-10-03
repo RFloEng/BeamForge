@@ -291,6 +291,8 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     if opt and opt.get("take"):
         taken_beams, taken_tyres, taken_vars, taken_weights = values.apply(model, v, opt["svj"], opt["take"], opt.get("study"))
         taken_pt = values.powertrain_changes(model, v, opt["svj"], opt["take"])
+        for part, ch in values.steering_changes(model, v, opt["svj"], opt["take"]).items():
+            taken_pt.setdefault(part, {}).update(ch)
         for n in list(taken_beams) + list(taken_tyres) + list(taken_weights) + list(taken_pt):   # a part that takes values must be written
             if choices.get(n) == "reuse":
                 choices[n] = "copy"

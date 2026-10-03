@@ -15,6 +15,8 @@ export.build when the user takes it.
             wheel velocities to the damper: force slopes are divided by MR^2).
   tyres     pressureWheels radius (unloaded; the SVJ loaded radius plus a 10 mm deflection when the
             file gives no unloaded radius) and tireWidth.
+  steering  the SVJ's turns lock to lock into the steering hydros' steeringWheelLock (degrees each way);
+            the road-wheel lock (the hydros' factor and the steering arms) is kept.
   mass, CG  the base's mass is its node weights (default 25 kg) plus the wheels the game builds
             (2 numRays tyre nodes and 2 numRays hub nodes per wheel); its CG the weighted node
             position. SVJ chassis.mass_total and center_of_gravity (SAE, from the front-axle centre on
@@ -217,6 +219,12 @@ def table(model, configured_json, svj_json, study_json=None):
              {"key": "gears", "label": "Gear ratios", "unit": "", "axle": None, "base": ratios(pb.get("ratios")), "svj": ratios(sp["ratios"])},
              {"key": "final_drive", "label": f"Final drive ({sp['driven'] or 'driven'} axle)", "unit": "", "axle": None,
               "base": pb.get("final_drive"), "svj": sp["final_drive"]}]
+    _, bturns = steering_base(model, configured)
+    sturns, sratio = svj_steering(svj)
+    rows.append({"key": "steering", "label": "Steering wheel turns, lock to lock", "unit": "", "axle": None,
+                 "base": bturns, "svj": sturns,
+                 "note": (f"the SVJ's overall ratio is {sratio}:1; the base's road-wheel lock (its steering arms) is kept, "
+                          "so the overall ratio follows the turns" if sratio else "")})
     mc, (sm, sy, sz) = mass_and_cg(model, configured), svj_mass(svj)
     rows += [{"key": "mass", "label": "Total mass", "unit": "kg", "axle": None, "base": mc["mass"], "svj": sm},
              {"key": "cg_y", "label": "CG behind the front axle", "unit": "m", "axle": None, "base": mc["cg_behind_front_axle"], "svj": sy},
@@ -582,3 +590,42 @@ def apply_powertrain(name, part, changes):
         section, prop = key.split(".", 1)
         if isinstance(part.get(section), dict):
             part[section][prop] = value
+
+
+# ---------------------------------------------------------------- steering
+
+def steering_base(model, configured):
+    """The base vehicle's steering hydros with a steeringWheelLock: ([(part, row index, degrees)], turns
+    lock to lock). steeringWheelLock is the steering wheel's angle at full lock, each way."""
+    parts = beamng._parts_held(model)
+    rows = []
+    for name in _active(configured):
+        hy = (parts.get(name) or {}).get("part", {}).get("hydros")
+        if not (isinstance(hy, list) and hy and isinstance(hy[0], list)):
+            continue
+        for i, row in enumerate(hy[1:], 1):
+            if isinstance(row, list) and row and isinstance(row[-1], dict) and isinstance(row[-1].get("steeringWheelLock"), (int, float)):
+                rows.append((name, i, row[-1]["steeringWheelLock"]))
+    return rows, (round(2 * rows[0][2] / 360, 2) if rows else None)
+
+
+def svj_steering(svj):
+    """(turns lock to lock, overall ratio) of the SVJ steering; None where it has no value."""
+    st = svj.get("steering") or {}
+    turns = st.get("lock_to_lock_turns")
+    if turns is None and isinstance(st.get("lock_to_lock"), (int, float)):
+        turns = st["lock_to_lock"] / (2 * math.pi)       # radians of steering wheel, lock to lock
+    return (round(turns, 2) if isinstance(turns, (int, float)) else None,
+            st.get("overall_ratio") if isinstance(st.get("overall_ratio"), (int, float)) else None)
+
+
+def steering_changes(model, configured, svj, take):
+    """{part: {("hydros", row): {"steeringWheelLock": degrees}}} for the SVJ's turns lock to lock."""
+    turns, _ = svj_steering(svj)
+    if not take.get("steering") or not turns:
+        return {}
+    rows, _ = steering_base(model, configured)
+    out = {}
+    for part, i, _ in rows:
+        out.setdefault(part, {})[("hydros", i)] = {"steeringWheelLock": round(turns * 180, 1)}
+    return out
