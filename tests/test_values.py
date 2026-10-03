@@ -66,6 +66,23 @@ class TestValues(unittest.TestCase):
         w = values.weight_changes("toycar", v, cg_y=0.25)                    # the mass as it is: no rescale
         self.assertTrue(all(kg >= 25.0 * values.MIN_FACTOR - 1e-6 for part in w.values() for kg in part.values()))
 
+    def test_powertrain(self):
+        svj = {"powertrain": {"layout": "FR", "engine": {"idle_rpm": 750, "max_rpm": 6350,
+                                                         "torque_curve": [[1000, 140], [4000, 226], [6350, 190]]},
+                              "gearbox": {"type": "manual", "ratios": [3.83, 2.2, 1.4, 1.0, 0.81]},
+                              "differentials": [{"location": "rear", "type": "open", "final_drive": 3.73}]}}
+        sp = values.svj_powertrain(svj)
+        self.assertEqual((sp["driven"], sp["turbo"], sp["final_drive"]), ("rear", False, 3.73))
+        self.assertEqual(values._peak(sp["torque"]), (226, 126.3))          # peak power: 190 Nm at 6350 rpm
+        self.assertEqual(values._interp([[0, 0], [1000, -10]], 500), -5)
+        part = {"mainEngine": {"torque": [["rpm", "torque"], [0, 0]], "idleRPM": 650},
+                "gearbox": {"gearRatios": [-3.3, 0, 4.7, 3.1]},
+                "powertrain": [["type", "name"], ["differential", "differential_R", {"gearRatio": 3.07}]]}
+        values.apply_powertrain("e", part, {"e": {"mainEngine.idleRPM": 750, "gearbox.gearRatios": [-3.3, 0, 3.83],
+                                                  ("powertrain", 1): {"gearRatio": 3.73}}})
+        self.assertEqual((part["mainEngine"]["idleRPM"], part["gearbox"]["gearRatios"]), (750, [-3.3, 0, 3.83]))
+        self.assertEqual(part["powertrain"][1][-1]["gearRatio"], 3.73)
+
     def test_slopes(self):
         self.assertEqual(values._slopes([[0, 0], [0.1, 1000]]), (10000.0, 10000.0, 0.1))
         self.assertIsNone(values._slopes([[0, 0]]))

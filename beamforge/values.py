@@ -27,6 +27,7 @@ new configuration instead, so the tuning menu keeps working.
 """
 
 import json
+import math
 import re
 
 from beamforge import beamng, jbeam
@@ -205,6 +206,17 @@ def table(model, configured_json, svj_json, study_json=None):
             {"key": f"tyre_radius_{axle}", "label": f"{axle.capitalize()} tyre radius", "unit": "m", "axle": axle,
              "base": (ty.get(axle) or {}).get("radius"), "svj": s.get("tyre_radius")},
         ]
+    sp = svj_powertrain(svj)
+    pb = powertrain_base(model, configured, sp["driven"] if sp["driven"] in ("front", "rear") else None)
+    (bt, bp_), (st, sp_) = _peak(pb.get("torque") and [[r, t + _interp(pb.get("exhaust_mod") or [], r)] for r, t in pb["torque"]]), _peak(sp["torque"])
+    ratios = lambda r: " ".join(f"{x:g}" for x in r if isinstance(x, (int, float)) and x > 0) if r else None  # noqa: E731
+    rows += [{"key": "engine", "label": "Peak torque (curve, idle and max rpm)", "unit": "Nm", "axle": None, "base": bt, "svj": st,
+              "note": f"base {pb.get('idle_rpm')}-{pb.get('max_rpm')} rpm, SVJ {sp['idle_rpm']}-{sp['max_rpm']} rpm"
+                      + (f"; the base's {pb['turbo']} adds boost on top" if pb.get("turbo") else "")},
+             {"key": "engine_power", "label": "Peak power", "unit": "kW", "axle": None, "base": bp_, "svj": sp_, "info": True},
+             {"key": "gears", "label": "Gear ratios", "unit": "", "axle": None, "base": ratios(pb.get("ratios")), "svj": ratios(sp["ratios"])},
+             {"key": "final_drive", "label": f"Final drive ({sp['driven'] or 'driven'} axle)", "unit": "", "axle": None,
+              "base": pb.get("final_drive"), "svj": sp["final_drive"]}]
     mc, (sm, sy, sz) = mass_and_cg(model, configured), svj_mass(svj)
     rows += [{"key": "mass", "label": "Total mass", "unit": "kg", "axle": None, "base": mc["mass"], "svj": sm},
              {"key": "cg_y", "label": "CG behind the front axle", "unit": "m", "axle": None, "base": mc["cg_behind_front_axle"], "svj": sy},
@@ -400,3 +412,173 @@ def apply_to_part(name, part, beams, tyre, weights=None):
                     row.append({"scale": new})
                 else:
                     inline["scale"] = new
+
+
+# ---------------------------------------------------------------- powertrain
+
+def _interp(table, x):
+    """Linear interpolation in [[x, y], ...] (held flat beyond the ends)."""
+    if not table:
+        return 0.0
+    if x <= table[0][0]:
+        return table[0][1]
+    for (x0, y0), (x1, y1) in zip(table, table[1:]):
+        if x <= x1:
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0) if x1 > x0 else y1
+    return table[-1][1]
+
+
+def _rows(t):
+    """[[rpm, value], ...] from a jbeam [["rpm", "torque"], [0, 0], ...] table."""
+    return [list(r[:2]) for r in (t or [])[1:] if isinstance(r, list) and len(r) >= 2
+            and all(isinstance(x, (int, float)) for x in r[:2])]
+
+
+def powertrain_base(model, configured, driven=None):
+    """The base vehicle's powertrain values and where they live: {"engine": part, "torque": [[rpm, Nm]],
+    "exhaust_mod": [[rpm, Nm]], "idle_rpm", "max_rpm", "ecu": part, "rev_limiter", "gearbox": part,
+    "ratios": [...], "differential": (part, row index) of the driven axle ("front" / "rear", else the
+    first), "final_drive", "turbo": part or None, "automatic": bool}."""
+    parts = beamng._parts_held(model)
+    out = {"turbo": None}
+    for name in _active(configured):
+        p = (parts.get(name) or {}).get("part", {})
+        me = p.get("mainEngine") if isinstance(p.get("mainEngine"), dict) else {}
+        if me.get("torque"):
+            out.update(engine=name, torque=_rows(me["torque"]), idle_rpm=me.get("idleRPM"), max_rpm=me.get("maxRPM"))
+        if me.get("torqueModExhaust"):
+            out["exhaust_mod"] = _rows(me["torqueModExhaust"])
+        if "revLimiterRPM" in me:
+            out.update(ecu=name, rev_limiter=me["revLimiterRPM"])
+        if me.get("turbocharger") or me.get("supercharger"):
+            out["turbo"] = name
+        gb = p.get("gearbox") if isinstance(p.get("gearbox"), dict) else {}
+        if isinstance(gb.get("gearRatios"), list):
+            out.update(gearbox=name, ratios=gb["gearRatios"])
+        pt = p.get("powertrain")
+        if isinstance(pt, list) and pt and isinstance(pt[0], list):
+            head = [str(h) for h in pt[0]]
+            for i, row in enumerate(pt[1:], 1):
+                if not isinstance(row, list) or not row:
+                    continue
+                rec = dict(zip(head, row))
+                inline = row[-1] if isinstance(row[-1], dict) else {}
+                if "automaticGearbox" in str(rec.get("type")) or "dctGearbox" in str(rec.get("type")):
+                    out["automatic"] = True
+                if rec.get("type") == "differential" and "gearRatio" in inline:
+                    axle = "rear" if re.search(r"_R(\b|$)|rear", str(rec.get("name")), re.I) else \
+                        "front" if re.search(r"_F(\b|$)|front", str(rec.get("name")), re.I) else None
+                    if "differential" not in out or (driven and axle == driven):
+                        out.update(differential=(name, i), final_drive=inline["gearRatio"], diff_axle=axle)
+    return out
+
+
+def svj_powertrain(svj):
+    """{"layout", "torque": [[rpm, Nm]], "idle_rpm", "max_rpm", "ratios": [forward], "final_drive",
+    "gearbox_type", "driven": "front" | "rear" | "both", "turbo": bool, "diff_type"} of the SVJ."""
+    pt = svj.get("powertrain") or {}
+    eng, gb = pt.get("engine") or {}, pt.get("gearbox") or {}
+    layout = str(pt.get("layout") or "").upper()
+    driven = "rear" if layout in ("FR", "MR", "RR") else "front" if layout in ("FF",) else "both" if layout else None
+    diffs = pt.get("differentials") or []
+    diff = next((d for d in diffs if d.get("location") == driven), diffs[0] if diffs else {})
+    text = json.dumps(eng).lower()
+    return {"layout": layout or None, "torque": [list(x) for x in eng.get("torque_curve") or [] if isinstance(x, list) and len(x) == 2],
+            "idle_rpm": eng.get("idle_rpm"), "max_rpm": eng.get("max_rpm"), "ratios": gb.get("ratios"),
+            "final_drive": diff.get("final_drive"), "gearbox_type": gb.get("type"), "driven": driven,
+            "turbo": "turbo" in text or "supercharg" in text, "diff_type": diff.get("type")}
+
+
+def _peak(torque):
+    """(peak torque Nm, peak power kW) of a [[rpm, Nm]] curve."""
+    if not torque:
+        return None, None
+    return max(t for _, t in torque), round(max(r * t for r, t in torque) * 2 * math.pi / 60 / 1000, 1)
+
+
+def suggest_parts(model, configured_json, svj_json):
+    """Parts of the base vehicle closer to the SVJ's powertrain: [{"slot", "current", "suggested",
+    "why"}], from the alternatives of the intake, gearbox, transfer case and differential slots."""
+    configured, svj = json.loads(configured_json), json.loads(svj_json)
+    sp = svj_powertrain(svj)
+    out = []
+
+    def walk(n):
+        opts = [o[0] for o in n.get("options") or []]
+        cur, slot = n.get("part") or "", n.get("slot") or ""
+        pick, why = None, ""
+        text = (slot + " " + cur).lower()
+        if "intake" in text and opts:
+            want_turbo = sp["turbo"]
+            same = [o for o in opts if (("turbo" in o or "supercharg" in o) == want_turbo)
+                    and ("diesel" in o) == ("diesel" in cur)]
+            if same and (("turbo" in cur or "supercharg" in cur) != want_turbo):
+                pick, why = min(same, key=len), "naturally aspirated, as the SVJ" if not want_turbo else "forced induction, as the SVJ"
+        elif "transmission" in text and opts and sp["gearbox_type"]:
+            kind = {"manual": r"\d+M", "automatic": r"\d+A", "dct": r"DCT"}.get(str(sp["gearbox_type"]).lower())
+            if kind and not re.search(kind + r"(_|$)", cur):
+                same = [o for o in opts if re.search(kind + r"(_|$)", o) and ("diesel" in o) == ("diesel" in cur)]
+                if same:
+                    pick, why = min(same, key=len), f"{sp['gearbox_type']} gearbox, as the SVJ"
+        elif "transfer" in text and opts and sp["driven"]:
+            want = {"rear": "RWD", "front": "FWD", "both": "AWD"}[sp["driven"]]
+            if want not in cur:
+                same = [o for o in opts if want in o]
+                if same:
+                    pick, why = min(same, key=len), f"{sp['layout']} layout: {want}"
+        elif "differential" in text and opts and sp["diff_type"] == "open" and re.search(r"lsd|locker|welded|bias|active", cur, re.I):
+            same = [o for o in opts if not re.search(r"lsd|locker|welded|bias|active|race", o, re.I)]
+            if same:
+                pick, why = min(same, key=len), "open differential, as the SVJ"
+        if pick and pick != cur:
+            out.append({"slot": slot, "current": cur, "suggested": pick, "why": why})
+        for c in n.get("children", []):
+            walk(c)
+    walk(configured["tree"])
+    return json.dumps(out)
+
+
+def powertrain_changes(model, configured, svj, take):
+    """{part: {"mainEngine.torque" | "mainEngine.idleRPM" | "mainEngine.maxRPM" | "mainEngine.revLimiterRPM"
+    | "gearbox.gearRatios" | ("powertrain", row): value}} for the taken powertrain values."""
+    sp = svj_powertrain(svj)
+    base = powertrain_base(model, configured, sp["driven"] if sp["driven"] in ("front", "rear") else None)
+    ch = {}
+    if take.get("engine") and sp["torque"] and base.get("engine"):
+        mod = base.get("exhaust_mod") or []
+        curve = sorted(sp["torque"])
+        rows = [["rpm", "torque"], [0, 0]]
+        idle = sp["idle_rpm"] or curve[0][0]
+        if curve[0][0] > idle:                            # below the first point: towards zero at standstill
+            rows.append([idle, round(curve[0][1] * idle / curve[0][0], 1)])
+        rows += [[r, round(t - _interp(mod, r), 1)] for r, t in curve]   # the exhaust's change added back
+        e = ch.setdefault(base["engine"], {})
+        e["mainEngine.torque"] = rows
+        if sp["idle_rpm"]:
+            e["mainEngine.idleRPM"] = sp["idle_rpm"]
+        if sp["max_rpm"]:
+            e["mainEngine.maxRPM"] = sp["max_rpm"]
+            if base.get("ecu"):
+                ch.setdefault(base["ecu"], {})["mainEngine.revLimiterRPM"] = sp["max_rpm"]
+    if take.get("gears") and sp["ratios"] and base.get("gearbox"):
+        old = base["ratios"]
+        lead = [r for r in old[:2] if isinstance(r, (int, float)) and r <= 0]   # reverse and neutral, as they were
+        ch.setdefault(base["gearbox"], {})["gearbox.gearRatios"] = lead + list(sp["ratios"])
+    if take.get("final_drive") and sp["final_drive"] and base.get("differential"):
+        part, row = base["differential"]
+        ch.setdefault(part, {})[("powertrain", row)] = {"gearRatio": sp["final_drive"]}
+    return ch
+
+
+def apply_powertrain(name, part, changes):
+    """Write powertrain changes into a part (in place)."""
+    for key, value in (changes.get(name) or {}).items():
+        if isinstance(key, tuple):
+            table, row = key
+            rows = part.get(table)
+            if isinstance(rows, list) and 0 < row < len(rows) and isinstance(rows[row], list):
+                _set_inline(rows[row], value)
+            continue
+        section, prop = key.split(".", 1)
+        if isinstance(part.get(section), dict):
+            part[section][prop] = value

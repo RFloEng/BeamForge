@@ -977,15 +977,25 @@ function valuesPanel() {
   try { rows = JSON.parse(valpy.table(veh.model, JSON.stringify(veh), JSON.stringify(svjDoc.svj), JSON.stringify({ corners: svjSusp?.corners || {} }))); }
   catch (err) { return `<p class="bad">${esc(pyError(err))}</p>`; }
   if (!rows.length) return '';
-  const v = (x, u) => x === null || x === undefined ? '–' : fmt(x, u === 'm' ? 3 : 0);
-  return `<h2>Values from the SVJ</h2>
+  const v = (x, u) => x === null || x === undefined ? '–' : typeof x === 'string' ? esc(x) : fmt(x, u === 'm' ? 3 : u === 'kW' || u === '' ? 2 : 0);
+  let sugg = [];
+  try { sugg = JSON.parse(valpy.suggest_parts(veh.model, JSON.stringify(veh), JSON.stringify(svjDoc.svj))); } catch (err) { sugg = []; }
+  const suggestions = sugg.length ? `<p class="quiet">Parts of ${esc(veh.model)} closer to the SVJ:</p>
+    <table class="cmp"><tr><th>Slot</th><th>Now</th><th>Closer</th></tr>${sugg.map((x) => `<tr title="${esc(x.why)}"><td>${esc(x.slot)}</td><td>${esc(x.current)}</td><td>${esc(x.suggested)}</td></tr>`).join('')}</table>
+    <div class="inl"><button id="usesugg" title="Choose these parts (the fit is run again if there is one)">Use these parts</button></div>` : '';
+  return `<h2>Values from the SVJ</h2>${suggestions}
     <table class="cmp"><tr><th></th><th>Base</th><th>SVJ</th><th>Take</th></tr>
     ${rows.map((r) => `<tr title="${esc(r.note || '')}"><td>${esc(r.label)} <span class="q">${esc(r.unit)}</span></td><td>${v(r.base, r.unit)}</td><td>${v(r.svj, r.unit)}</td>
-      <td>${r.svj === null || r.svj === undefined ? '' : `<input type="checkbox" data-take="${esc(r.key)}" ${takeValues[r.key] !== false ? 'checked' : ''}>`}</td></tr>`).join('')}</table>
-    <p class="quiet">Taken values go into the new vehicle (Make a new vehicle): spring rates into the coil spring beams (the SVJ wheel rate over the spring's motion ratio squared), damping into the damper beams (slopes of the SVJ curves), tyre radius into the tyre parts. Hover a spring row for its wheel rate and motion ratio.</p>`;
+      <td>${r.svj === null || r.svj === undefined || r.info ? '' : `<input type="checkbox" data-take="${esc(r.key)}" ${takeValues[r.key] !== false ? 'checked' : ''}>`}</td></tr>`).join('')}</table>
+    <p class="quiet">Taken values go into the new vehicle (Make a new vehicle): spring rates into the coil spring beams (the SVJ wheel rate over the spring's motion ratio squared), damping into the damper beams (slopes of the SVJ curves), tyre radius into the tyre parts, mass and CG as node weights, the torque curve into the engine (the exhaust's own change added back), gear ratios into the gearbox (reverse kept) and the final drive into the driven axle's differential. Hover a row for details.</p>`;
 }
 
 function bindFitPanel() {
+  if ($('usesugg')) $('usesugg').onclick = () => {
+    for (const x of JSON.parse(valpy.suggest_parts(veh.model, JSON.stringify(veh), JSON.stringify(svjDoc.svj)))) vehEdit.parts[x.slot] = x.suggested;
+    configureVehicle();
+    if (Object.keys(vehEdit.fit || {}).length) runFit();
+  };
   document.querySelectorAll('[data-take]').forEach((c) => c.onchange = () => { takeValues[c.dataset.take] = c.checked; });
   document.querySelectorAll('[data-retie]').forEach((b) => b.onclick = () => { retie = { key: b.dataset.retie, label: b.dataset.label }; drawInspector(); });
   document.querySelectorAll('[data-untie]').forEach((b) => b.onclick = () => {

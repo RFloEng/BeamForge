@@ -13,7 +13,7 @@ Pure Python, standard library only (runs in Pyodide). The game builds a vehicle 
   configurations       every configuration of the base vehicle, pointing at the new model, plus
                        "beamforge" (the edited configuration), the new default.
   info.json            the base's, with the new name.
-  SVJ values           (optional) springs, dampers, tyres, mass and CG taken from the SVJ (beamforge/values.py),
+  SVJ values           (optional) springs, dampers, tyres, mass, CG and powertrain taken from the SVJ (values.py),
                        written into the copied parts; a tyre part reused from the game is regenerated
                        to take its new radius; a value driven by a tuning variable is set in the
                        configuration instead.
@@ -287,10 +287,11 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     for p in json.loads(plan(model, configured_json)):
         choices.setdefault(p["part"], p["choice"])
     opt = json.loads(svj_json) if svj_json else None
-    taken_beams, taken_tyres, taken_vars, taken_weights = ({}, {}, {}, {})
+    taken_beams, taken_tyres, taken_vars, taken_weights, taken_pt = ({}, {}, {}, {}, {})
     if opt and opt.get("take"):
         taken_beams, taken_tyres, taken_vars, taken_weights = values.apply(model, v, opt["svj"], opt["take"], opt.get("study"))
-        for n in list(taken_beams) + list(taken_tyres) + list(taken_weights):   # a part that takes values must be written
+        taken_pt = values.powertrain_changes(model, v, opt["svj"], opt["take"])
+        for n in list(taken_beams) + list(taken_tyres) + list(taken_weights) + list(taken_pt):   # a part that takes values must be written
             if choices.get(n) == "reuse":
                 choices[n] = "copy"
     geo = v["geometry"]
@@ -329,8 +330,9 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
             counts["nodes"] += _fit_nodes(part, deltas, vars_)
             _fit_flexbodies(part, n, shifts.get(n, {}), vars_)
         _rename_refs(part, renames)
-        if n in active and (n in taken_beams or n in taken_tyres or n in taken_weights):
+        if n in active and (n in taken_beams or n in taken_tyres or n in taken_weights or n in taken_pt):
             values.apply_to_part(n, part, taken_beams, taken_tyres, taken_weights)
+            values.apply_powertrain(n, part, taken_pt)
             counts["values"] += 1
         if opt and opt.get("replace") and svjm and n in active:
             counts["base_meshes_dropped"] += _drop_body_meshes(n, part)
