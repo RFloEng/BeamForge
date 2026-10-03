@@ -19,6 +19,7 @@ types 5126 FLOAT / 5125 UNSIGNED_INT. Chunks are padded to 4 bytes (JSON with sp
 
 import json
 import math
+import re
 import struct
 
 
@@ -216,16 +217,23 @@ def _read(doc, bufs, ai, width):
     return [struct.unpack_from(fmt, buf, start + i * stride) for i in range(acc["count"])]
 
 
-def _meshes(doc, under):
+# what is not the body when a file has no body node (Assetto Corsa's names, as converters keep them):
+# the running gear (the base's stays), the high-detail cockpit (the low one stays), broken glass,
+# cameras and other helper nodes
+NOT_BODY = re.compile(r"^(wheel|tyre|tire|rim|disc|disk|brake|caliper|susp|flycam|damage_|cockpit_hr|steer_hr|"
+                      r"shift_hr|driver|helmet|ext_|camera)|_hr$", re.I)
+
+
+def _meshes(doc, under, skip=None):
     """(mesh index, world matrix) of every mesh node at or below the node named `under` (None: all; a
-    name no node has: all as well, the file has no such grouping)."""
+    name no node has: none). skip: a regex of node names whose subtrees are left out."""
     nodes = doc.get("nodes", [])
     out = []
-    if under is not None and not any(n.get("name") == under for n in nodes):
-        under = None
 
     def walk(ni, parent, on):
         node = nodes[ni]
+        if skip is not None and skip.search(node.get("name") or ""):
+            return
         m = _mul(parent, _matrix(node))
         on = on or under is None or node.get("name") == under
         if on and "mesh" in node:
@@ -251,7 +259,7 @@ def has_node(data, name, is_glb=True):
     return any(n.get("name") == name for n in doc.get("nodes", []))
 
 
-def positions(data, is_glb=True, under=None, buffers=None, limit=60000):
+def positions(data, is_glb=True, under=None, buffers=None, limit=60000, skip=None):
     """World-space vertex positions of the meshes in a .glb (or .gltf JSON) file, in the file's own axes.
 
     under: a node name; only meshes at or below that node are read (None: every node of the default
@@ -261,7 +269,7 @@ def positions(data, is_glb=True, under=None, buffers=None, limit=60000):
     """
     doc, bufs = _document(data, is_glb, buffers)
     out = []
-    for mi, m in _meshes(doc, under):
+    for mi, m in _meshes(doc, under, skip):
         for prim in doc["meshes"][mi].get("primitives", []):
             ai = prim.get("attributes", {}).get("POSITION")
             if ai is not None and doc["accessors"][ai].get("type") == "VEC3":
@@ -270,13 +278,83 @@ def positions(data, is_glb=True, under=None, buffers=None, limit=60000):
     return out[::step]
 
 
-def triangles(data, is_glb=True, under=None, buffers=None):
+def _read_norm(doc, bufs, ai, width):
+    """_read, with normalized integer accessors (UVs stored as bytes or shorts) scaled to 0-1."""
+    acc = doc["accessors"][ai]
+    vals = _read(doc, bufs, ai, width)
+    if acc.get("normalized") and acc.get("componentType") in (5121, 5123):
+        k = 255.0 if acc["componentType"] == 5121 else 65535.0
+        vals = [tuple(x / k for x in v) for v in vals]
+    return vals
+
+
+def textured(data, is_glb=True, under=None, buffers=None, skip=None):
+    """The meshes at or below `under` with their materials, in world space and the file's own axes:
+    (positions [[x, y, z]], uvs [[u, v]] (glTF's: v down; [0, 0] where a primitive has none),
+    [(glTF material index or None, indices [i0, i1, i2, ...])], one entry per primitive)."""
+    doc, bufs = _document(data, is_glb, buffers)
+    pos, uvs, groups = [], [], []
+    for mi, m in _meshes(doc, under, skip):
+        for prim in doc["meshes"][mi].get("primitives", []):
+            att = prim.get("attributes", {})
+            ai = att.get("POSITION")
+            if ai is None or prim.get("mode", 4) != 4 or doc["accessors"][ai].get("type") != "VEC3":
+                continue
+            base = len(pos)
+            pts = _read(doc, bufs, ai, 3)
+            pos += [_apply(m, p) for p in pts]
+            uv = _read_norm(doc, bufs, att["TEXCOORD_0"], 2) if "TEXCOORD_0" in att else []
+            uvs += [list(t) for t in uv] if len(uv) == len(pts) else [[0.0, 0.0]] * len(pts)
+            if "indices" in prim:
+                idx = [base + v[0] for v in _read(doc, bufs, prim["indices"], 1)]
+            else:
+                idx = [base + i for i in range(len(pts) - len(pts) % 3)]
+            groups.append((prim.get("material"), idx))
+    return pos, uvs, groups
+
+
+def materials(data, is_glb=True, buffers=None):
+    """The file's materials and images: ([{"name", "colour" [r, g, b, a], "texture" (image index or
+    None), "normal" (image index or None), "alpha" ("OPAQUE" | "MASK" | "BLEND"), "cutoff",
+    "double_sided", "metallic", "roughness"}], [(bytes, mime type)])."""
+    doc, bufs = _document(data, is_glb, buffers)
+    tex = doc.get("textures", [])
+
+    def image(ref):
+        if not isinstance(ref, dict) or ref.get("index") is None or ref["index"] >= len(tex):
+            return None
+        return tex[ref["index"]].get("source")
+    mats = []
+    for i, m in enumerate(doc.get("materials", [])):
+        pbr = m.get("pbrMetallicRoughness") or {}
+        mats.append({"name": m.get("name") or f"material{i}", "colour": pbr.get("baseColorFactor", [1, 1, 1, 1]),
+                     "texture": image(pbr.get("baseColorTexture")), "normal": image(m.get("normalTexture")),
+                     "alpha": m.get("alphaMode", "OPAQUE"), "cutoff": m.get("alphaCutoff", 0.5),
+                     "double_sided": bool(m.get("doubleSided")), "metallic": pbr.get("metallicFactor", 1.0),
+                     "roughness": pbr.get("roughnessFactor", 1.0)})
+    imgs = []
+    for im in doc.get("images", []):
+        raw = b""
+        if "bufferView" in im:
+            bv = doc["bufferViews"][im["bufferView"]]
+            raw = bufs[bv["buffer"]][bv.get("byteOffset", 0):bv.get("byteOffset", 0) + bv["byteLength"]]
+        elif str(im.get("uri", "")).startswith("data:"):
+            import base64
+            raw = base64.b64decode(im["uri"].split(",", 1)[1])
+        elif im.get("uri"):
+            raw = (buffers or {}).get(im["uri"], b"")
+        mime = im.get("mimeType") or ("image/png" if raw[1:4] == b"PNG" else "image/jpeg" if raw[:2] == bytes([0xFF, 0xD8]) else "")
+        imgs.append((bytes(raw), mime))
+    return mats, imgs
+
+
+def triangles(data, is_glb=True, under=None, buffers=None, skip=None):
     """The triangles of the meshes at or below `under`, in world space and the file's own axes, as one
     mesh: (positions [[x, y, z]], indices [i0, i1, i2, ...]). Triangle primitives only (mode 4, the
     default); a primitive without indices takes its vertices in order."""
     doc, bufs = _document(data, is_glb, buffers)
     pos, idx = [], []
-    for mi, m in _meshes(doc, under):
+    for mi, m in _meshes(doc, under, skip):
         for prim in doc["meshes"][mi].get("primitives", []):
             ai = prim.get("attributes", {}).get("POSITION")
             if ai is None or prim.get("mode", 4) != 4 or doc["accessors"][ai].get("type") != "VEC3":

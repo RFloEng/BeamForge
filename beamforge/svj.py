@@ -112,6 +112,8 @@ def visual_bindings(svj):
     Looks at chassis, suspension corners, mass_bodies and aerodynamics components. path is the
     SVJ location, node the glTF node name (SVJ::<category>::<id>); a binding without mesh_ref
     uses the only mesh asset if there is one. uri is None when mesh_ref is not in assets.meshes.
+    An SVJ with mesh assets but no chassis binding gets one implied ("implied": True, node None): its
+    first mesh is the body (the whole mesh but the running gear; gltf.NOT_BODY).
     """
     uris = {a["id"]: a["uri"] for a in (svj.get("assets") or {}).get("meshes", [])}
     out = []
@@ -135,6 +137,9 @@ def visual_bindings(svj):
         for a in comps:
             if isinstance(a, dict):
                 add(f"aerodynamics.{a.get('id')}", a.get("visual"))
+    if uris and not any(b["path"] == "chassis" for b in out):
+        first = next(iter(uris))
+        out.insert(0, {"path": "chassis", "mesh_ref": first, "node": None, "uri": uris[first], "implied": True})
     return out
 
 
@@ -277,7 +282,7 @@ def load_bundle(path, work_dir):
         m = by_id.get(b["mesh_ref"])
         if m is None:
             notes.append(f"{b['path']}: visual mesh_ref {b['mesh_ref']!r} is not in assets.meshes")
-        elif m["file"] and b["node"] not in m["nodes"]:
+        elif m["file"] and b["node"] is not None and b["node"] not in m["nodes"]:
             notes.append(f"{b['path']}: node {b['node']} not found in {m['uri']}")
     return json.dumps({"svj": doc, "summary": summary(doc), "notes": notes, "meshes": meshes,
                        "bindings": bindings, "axes": gltf_axes(doc), "base_dir": str(root)})

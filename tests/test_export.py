@@ -100,7 +100,9 @@ class TestExport(unittest.TestCase):
         for a, b in zip(xyz, want):
             self.assertAlmostEqual(a, b, places=4)
         mats = json.loads(f["vehicles/toyfit/toyfit_svj.materials.json"])
-        self.assertEqual(mats["toyfit_svj_chassis_mat"]["mapTo"], "toyfit_svj_chassis_mat")
+        self.assertEqual(mats["toyfit_svj0_panel_0"]["mapTo"], "toyfit_svj0_panel_0")    # the glTF material, by name
+        self.assertEqual(mats["toyfit_svj0_panel_0"]["Stages"][0]["baseColorFactor"], [0.8, 0.82, 0.86, 1.0])
+        self.assertTrue(mats["toyfit_svj0_panel_0"]["doubleSided"])
 
     def test_body_meshes_dropped_running_gear_kept(self):
         part = {"flexbodies": [["mesh", "[group]:", "nonFlexMaterials"], ["car_body", ["b"]], ["car_door_FL", ["d"]],

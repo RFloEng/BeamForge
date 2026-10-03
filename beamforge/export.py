@@ -230,8 +230,10 @@ def svj_attach(configured_json, svj_json, mapping_json=None):
 
 def svj_meshes(svj, files, place, attach, new_id):
     """The SVJ meshes in the new vehicle's frame: [{"name", "material", "part", "groups", "positions",
-    "indices"}]. files: {mesh asset id: path}; place: {"yf", "ground"}, where the SVJ sits on the
-    vehicle (the fit's placement); attach: svj_attach() rows (possibly changed by the user)."""
+    "indices", "uvs", "submeshes": [{"material", "indices"}], "materials": {name: glTF material, with
+    "image" / "normal_image": (bytes, mime) or None}}]. files: {mesh asset id: path}; place: {"yf",
+    "ground"}, where the SVJ sits on the vehicle (the fit's placement); attach: svj_attach() rows
+    (possibly changed by the user). One material per glTF material, named <id>_svj<file>_<material>."""
     axes = svjmod.gltf_axes(svj)
     cache, out = {}, []
     for a in attach:
@@ -242,17 +244,76 @@ def svj_meshes(svj, files, place, attach, new_id):
         if path not in cache:
             with open(path, "rb") as fh:
                 data = fh.read()
-            cache[path] = (data, svjmod.mesh_offset(svj, data, glb)[0] or [0.0, 0.0, 0.0])   # the mesh on its wheels
-        data, off = cache[path]
-        pos, idx = gltf.triangles(data, is_glb=glb, under=a["node"])
-        if not idx:
+            cache[path] = (data, svjmod.mesh_offset(svj, data, glb)[0] or [0.0, 0.0, 0.0],   # the mesh on its wheels
+                           gltf.materials(data, glb), len(cache))
+        data, off, (gmats, imgs), fi = cache[path]
+        under, skip = a["node"], None
+        if not under or not gltf.has_node(data, under, glb):
+            if a["path"] != "chassis":
+                continue                                   # the file has no such node: nothing to add
+            under, skip = None, gltf.NOT_BODY              # the body: the whole mesh but the wheels and such
+        pos, uvs, prims = gltf.textured(data, is_glb=glb, under=under, skip=skip)
+        if not any(len(i) >= 3 for _, i in prims):
             continue
         pos = [[round(c, 5) for c in svjmod.from_sae([x + o for x, o in zip(svjmod.gltf_to_sae(p, axes), off)],
                                                      place["yf"], place["ground"])] for p in pos]
         name = f"{new_id}_svj_{_safe(a['path'])}"
+        subs, mats = {}, {}
+        for k, idx in prims:
+            g = gmats[k] if k is not None and k < len(gmats) else None
+            mname = f"{new_id}_svj{fi}_{_safe(g['name'])}_{k}" if g else f"{name}_mat"
+            subs.setdefault(mname, []).extend(idx)
+            if g and mname not in mats:
+                mats[mname] = dict(g, image=imgs[g["texture"]] if g["texture"] is not None and g["texture"] < len(imgs) else None,
+                                   normal_image=imgs[g["normal"]] if g["normal"] is not None and g["normal"] < len(imgs) else None,
+                                   image_id=(fi, g["texture"]), normal_id=(fi, g["normal"]))
+        all_idx = [v for i in subs.values() for v in i]
         out.append({"name": name, "material": f"{name}_mat", "part": a["part"], "groups": a.get("groups") or [],
-                    "positions": pos, "indices": idx, "path": a["path"]})
+                    "positions": pos, "indices": all_idx, "uvs": uvs, "path": a["path"],
+                    "submeshes": [{"material": m, "indices": i} for m, i in subs.items()], "materials": mats})
     return out
+
+
+def svj_materials(svjm, new_id):
+    """The materials.json of the SVJ meshes and their texture files: ({name: BeamNG material (v1.5)},
+    {path in the vehicle folder: bytes}). glTF base colour (map and factor), normal map, metal and
+    roughness, alpha mode and double-sidedness carry over; a material without a glTF one is grey."""
+    mats, images = {}, {}
+
+    def tex(img, ident):
+        if not img or not img[0]:
+            return None
+        ext = ".png" if "png" in (img[1] or "") else ".jpg" if "jpeg" in (img[1] or "") or "jpg" in (img[1] or "") else ".png"
+        path = f"vehicles/{new_id}/svj_textures/t{ident[0]}_{ident[1]}{ext}"
+        images[path] = img[0]
+        return "/" + path
+    for m in svjm:
+        for sub in m.get("submeshes") or [{"material": m["material"]}]:
+            name = sub["material"]
+            if name in mats:
+                continue
+            g = (m.get("materials") or {}).get(name)
+            stage = {"baseColorFactor": [0.75, 0.77, 0.8, 1], "roughnessFactor": 0.55, "metallicFactor": 0.1}
+            entry = {"name": name, "mapTo": name, "class": "Material", "version": 1.5,
+                     "materialTag0": "beamng", "materialTag1": "vehicle"}
+            if g:
+                stage = {"baseColorFactor": [round(float(x), 4) for x in (list(g["colour"]) + [1])[:4]],
+                         "metallicFactor": round(float(g["metallic"]), 3), "roughnessFactor": round(float(g["roughness"]), 3)}
+                cm = tex(g["image"], g["image_id"])
+                if cm:
+                    stage["baseColorMap"] = cm
+                nm = tex(g["normal_image"], g["normal_id"])
+                if nm:
+                    stage["normalMap"] = nm
+                if g["alpha"] == "BLEND":
+                    entry.update(translucent=True, translucentBlendOp="PreMulAlpha", translucentZWrite=False)
+                elif g["alpha"] == "MASK":
+                    entry.update(alphaTest=True, alphaRef=int(255 * float(g.get("cutoff", 0.5))))
+                if g["double_sided"]:
+                    entry["doubleSided"] = True
+            entry["Stages"] = [stage, {}, {}, {}]
+            mats[name] = entry
+    return mats, images
 
 
 def _add_flexbody(part, mesh, groups):
@@ -421,20 +482,19 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     files[f"vehicles/{new_id}/info_beamforge.json"] = json.dumps(
         {"Configuration": "BeamForge", "Description": f"{name}: made with BeamForge from {model}"}, indent=2)
 
-    if svjm:                                                # the meshes, and a material for each
+    binary = {}
+    if svjm:                                                # the meshes, their materials and textures
         files[f"vehicles/{new_id}/{new_id}_svj.dae"] = dae.write(svjm)
-        mats = {}
-        for m in svjm:
-            mats[m["material"]] = {"name": m["material"], "mapTo": m["material"], "class": "Material", "version": 1.5,
-                                   "Stages": [{"baseColorFactor": [0.75, 0.77, 0.8, 1], "roughnessFactor": 0.55,
-                                               "metallicFactor": 0.1}, {}, {}, {}],
-                                   "materialTag0": "beamng", "materialTag1": "vehicle"}
+        mats, images = svj_materials(svjm, new_id)
         files[f"vehicles/{new_id}/{new_id}_svj.materials.json"] = json.dumps(mats, indent=2)
+        import base64
+        binary = {p: base64.b64encode(b).decode("ascii") for p, b in images.items()}
+        counts["svj_textures"] = len(images)
 
     unfitted = [p["part"] for p in json.loads(plan(model, configured_json)) if p["moved_mm"] >= 0.1 and choices.get(p["part"]) != "fit"]
     if unfitted:
         notes.append("edited parts written without their edits (by your choice): " + ", ".join(unfitted))
-    return json.dumps({"files": files, "renamed": renames, "notes": notes, "counts": counts})
+    return json.dumps({"files": files, "binary": binary, "renamed": renames, "notes": notes, "counts": counts})
 
 
 def assets(model, new_id, paths_json):

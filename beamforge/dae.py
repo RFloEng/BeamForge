@@ -5,7 +5,8 @@ files (every vanilla vehicle ships .dae, with a compiled .cdae the game makes it
 glTF meshes are written as COLLADA for the game. The layout follows the game's own files: COLLADA
 1.4.1, metres, Z up, positions already in the vehicle's frame (BeamNG axes: x left, y rear, z up),
 one <node> per mesh with an identity matrix and the mesh's name (the name a flexbody row asks for),
-and one material per mesh, named so a materials.json entry can map onto it.
+and its materials, named so a materials.json entry can map onto each (one per triangle group, with
+texture coordinates when the mesh has them).
 """
 
 import math
@@ -36,22 +37,44 @@ def _floats(rows, digits=5):
 
 def write(meshes):
     """COLLADA text for meshes: [{"name", "material", "positions": [[x, y, z]], "indices": [...],
-    "colour"?: [r, g, b]}]. Names are the node, geometry and flexbody names; materials are named as
-    given (colour: the diffuse colour of the material's effect, 0-1)."""
+    "colour"?: [r, g, b], "uvs"?: [[u, v]] (glTF's, v down), "submeshes"?: [{"material", "indices"}]}].
+    Names are the node, geometry and flexbody names; materials are named as given (colour: the
+    diffuse colour of the material's effect, 0-1). submeshes: the triangles split by material (else one
+    group, "material" with "indices")."""
     effects, materials, geometries, nodes = [], [], [], []
     seen = set()
     for i, m in enumerate(meshes):
-        name, mat = m["name"], m.get("material") or f"{m['name']}_mat"
+        name = m["name"]
+        groups = m.get("submeshes") or [{"material": m.get("material") or f"{name}_mat", "indices": m["indices"]}]
         gid, nid = f"g{i}", escape(name, {'"': "&quot;"})
-        pos, idx = m["positions"], m["indices"]
+        pos = m["positions"]
+        idx = [v for g in groups for v in g["indices"]]
         nor = _normals(pos, idx)
-        if mat not in seen:
+        uvs = m.get("uvs")
+        for g in groups:
+            mat = g["material"]
+            if mat in seen:
+                continue
             seen.add(mat)
-            r, g, b = m.get("colour") or (0.75, 0.77, 0.8)
+            r, gr, b = (m.get("colour") or (0.75, 0.77, 0.8))[:3]
             effects.append(f'<effect id="{mat}-fx"><profile_COMMON><technique sid="common"><lambert>'
-                           f'<diffuse><color sid="diffuse">{r} {g} {b} 1</color></diffuse></lambert></technique>'
+                           f'<diffuse><color sid="diffuse">{r} {gr} {b} 1</color></diffuse></lambert></technique>'
                            f'</profile_COMMON></effect>')
             materials.append(f'<material id="{mat}" name="{mat}"><instance_effect url="#{mat}-fx"/></material>')
+        uv_src = (f'<source id="{gid}-uv"><float_array id="{gid}-uv-a" count="{2 * len(uvs)}">'
+                  f'{_floats([[u, 1.0 - v] for u, v in uvs], 5)}</float_array>'
+                  f'<technique_common><accessor source="#{gid}-uv-a" count="{len(uvs)}" stride="2">'
+                  f'<param name="S" type="float"/><param name="T" type="float"/></accessor></technique_common></source>'
+                  if uvs else "")
+        uv_in = f'<input semantic="TEXCOORD" source="#{gid}-uv" offset="0" set="0"/>' if uvs else ""
+        tris = "".join(
+            f'<triangles material="{g["material"]}" count="{len(g["indices"]) // 3}">'
+            f'<input semantic="VERTEX" source="#{gid}-v" offset="0"/><input semantic="NORMAL" source="#{gid}-nor" offset="0"/>{uv_in}'
+            f'<p>{" ".join(str(v) for v in g["indices"][:len(g["indices"]) - len(g["indices"]) % 3])}</p></triangles>'
+            for g in groups if len(g["indices"]) >= 3)
+        binds = "".join(f'<instance_material symbol="{g["material"]}" target="#{g["material"]}">'
+                        + ('<bind_vertex_input semantic="UVSET0" input_semantic="TEXCOORD" input_set="0"/>' if uvs else "")
+                        + '</instance_material>' for g in groups if len(g["indices"]) >= 3)
         geometries.append(
             f'<geometry id="{gid}" name="{nid}"><mesh>'
             f'<source id="{gid}-pos"><float_array id="{gid}-pos-a" count="{3 * len(pos)}">{_floats(pos)}</float_array>'
@@ -60,13 +83,12 @@ def write(meshes):
             f'<source id="{gid}-nor"><float_array id="{gid}-nor-a" count="{3 * len(nor)}">{_floats(nor, 4)}</float_array>'
             f'<technique_common><accessor source="#{gid}-nor-a" count="{len(nor)}" stride="3">'
             f'<param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common></source>'
+            f'{uv_src}'
             f'<vertices id="{gid}-v"><input semantic="POSITION" source="#{gid}-pos"/></vertices>'
-            f'<triangles material="{mat}" count="{len(idx) // 3}">'
-            f'<input semantic="VERTEX" source="#{gid}-v" offset="0"/><input semantic="NORMAL" source="#{gid}-nor" offset="0"/>'
-            f'<p>{" ".join(str(v) for v in idx[:len(idx) - len(idx) % 3])}</p></triangles></mesh></geometry>')
+            f'{tris}</mesh></geometry>')
         nodes.append(f'<node id="n{i}" name="{nid}" type="NODE"><matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>'
                      f'<instance_geometry url="#{gid}" name="{nid}"><bind_material><technique_common>'
-                     f'<instance_material symbol="{mat}" target="#{mat}"/></technique_common></bind_material>'
+                     f'{binds}</technique_common></bind_material>'
                      f'</instance_geometry></node>')
     nl = "\n"
     return (f'<?xml version="1.0" encoding="utf-8"?>{nl}'

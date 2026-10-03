@@ -104,7 +104,11 @@ def mesh_points(svj, files, yf, ground, under=None):
             data = fh.read()
         node = under or (chassis["node"] if chassis else None)
         glb = path.lower().endswith(".glb")
-        raw = gltf.positions(data, is_glb=glb, under=node)
+        if not node or not gltf.has_node(data, node, glb):   # no body node: the whole mesh but the wheels and such
+            node, skip = None, gltf.NOT_BODY
+        else:
+            skip = None
+        raw = gltf.positions(data, is_glb=glb, under=node, skip=skip)
         off = svjmod.mesh_offset(svj, data, glb)[0] or [0.0, 0.0, 0.0]     # the mesh on its wheels
         pts += [svjmod.from_sae([a + b for a, b in zip(svjmod.gltf_to_sae(p, axes), off)], yf, ground) for p in raw]
     return pts
@@ -413,11 +417,15 @@ def fit_json(geometry_json, wheels_json, svj_json, files_json, stages_json, over
             mesh = mesh_points(svj, files, ax["yf"], ax["ground"]) or None
             chassis = next((b for b in svjmod.visual_bindings(svj) if b["path"] == "chassis"), None)
             for mid, path in files.items():
+                if mesh and chassis and chassis.get("implied"):
+                    notes.append(f"the SVJ binds no mesh to its chassis: {os.path.basename(path)}, all but its wheels, brakes, "
+                                 "suspension and helper nodes, is taken as the body")
+                    break
                 if mesh and chassis and chassis.get("node") and chassis["mesh_ref"] in (None, mid):
                     with open(path, "rb") as fh:
                         if not gltf.has_node(fh.read(), chassis["node"], path.lower().endswith(".glb")):
                             notes.append(f"the SVJ body binds to node {chassis['node']}, which {os.path.basename(path)} does not "
-                                         "have: the whole mesh is the body (wheels and all; the sizes may be a little large)")
+                                         "have: the whole mesh but its wheels, brakes, suspension and helper nodes is the body")
         except (OSError, ValueError, KeyError, IndexError) as exc:
             notes.append(f"could not read the SVJ body mesh: {exc}")
     r = fit(nodes, geo["parts"], wheels, svj, mesh, stages, geo.get("beams"), geo.get("beam_parts"),

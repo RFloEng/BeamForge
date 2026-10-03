@@ -1295,6 +1295,11 @@ async function runExport() {
     const copies = JSON.parse(exppy.assets(veh.model, id, JSON.stringify([...all])));
     const zw = new ZipWriter(new BlobWriter('application/zip'));   // default level: zip.js 2.7 flags entries as encrypted below level 4
     for (const [p, text] of Object.entries(out.files)) await zw.add(p, new TextReader(text));
+    for (const [p, b64] of Object.entries(out.binary || {})) {      // the SVJ mesh textures
+      const bin = atob(b64), u8 = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      await zw.add(p, new BlobReader(new Blob([u8])));
+    }
     let i = 0;
     const n = Object.keys(copies).length;
     for (const [src, dst] of Object.entries(copies)) {
