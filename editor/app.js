@@ -30,7 +30,7 @@ import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, reme
 
 // repo files copied into Pyodide's file system under /bf (add new Python modules here)
 const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py',
-  'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py', 'beamforge/dae.py'];
+  'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py', 'beamforge/dae.py', 'beamforge/values.py'];
 const REPO = new URL('../', import.meta.url);
 
 const $ = (id) => document.getElementById(id);
@@ -40,7 +40,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 // last line of a Python traceback, without the exception class
 const pyError = (e) => String(e.message || e).trim().split('\n').pop().replace(/^\w+Error: /, '');
 
-let py, vehpy, svjpy, fitpy, suspy, exppy;
+let py, vehpy, svjpy, fitpy, suspy, exppy, valpy;
 const timing = {};         // ms per step, shown in the footer by drawTiming
 
 // ---------- Python engine ----------
@@ -61,6 +61,7 @@ async function boot() {
   fitpy = py.pyimport('beamforge.fit');
   suspy = py.pyimport('beamforge.suspension');
   exppy = py.pyimport('beamforge.export');
+  valpy = py.pyimport('beamforge.values');
   timing.files = performance.now() - t1;
   $('loading').remove();
   redraw();
@@ -876,7 +877,8 @@ function svjInspector() {
     const v = (x, u) => x === null || x === undefined ? '–' : fmt(x, u === 'kg' ? 0 : 3);
     cmp = `<h2>Base vs SVJ</h2><table class="cmp"><tr><th></th><th>Base</th><th>SVJ</th><th>Δ</th></tr>
       ${rows.map((r) => `<tr><td>${esc(r.label)}</td><td>${v(r.base, r.unit)}</td><td>${v(r.svj, r.unit)}</td><td>${v(r.delta, r.unit)} ${r.delta === null ? '' : esc(r.unit)}</td></tr>`).join('')}</table>
-      ${fitPanel()}`;
+      ${fitPanel()}
+      ${valuesPanel()}`;
   }
   return `<h2>SVJ ${esc(s.version || '')}</h2>
     <div class="kv"><span>Vehicle</span><span>${esc(s.vehicle || '–')}</span>
@@ -969,7 +971,22 @@ function mappingTable(r) {
     }).join('')}</table></details>`;
 }
 
+// springs, dampers and tyres: base against SVJ, with a take box each (beamforge/values.py)
+function valuesPanel() {
+  let rows = [];
+  try { rows = JSON.parse(valpy.table(veh.model, JSON.stringify(veh), JSON.stringify(svjDoc.svj), JSON.stringify({ corners: svjSusp?.corners || {} }))); }
+  catch (err) { return `<p class="bad">${esc(pyError(err))}</p>`; }
+  if (!rows.length) return '';
+  const v = (x, u) => x === null || x === undefined ? '–' : fmt(x, u === 'm' ? 3 : 0);
+  return `<h2>Values from the SVJ</h2>
+    <table class="cmp"><tr><th></th><th>Base</th><th>SVJ</th><th>Take</th></tr>
+    ${rows.map((r) => `<tr title="${esc(r.note || '')}"><td>${esc(r.label)} <span class="q">${esc(r.unit)}</span></td><td>${v(r.base, r.unit)}</td><td>${v(r.svj, r.unit)}</td>
+      <td>${r.svj === null || r.svj === undefined ? '' : `<input type="checkbox" data-take="${esc(r.key)}" ${takeValues[r.key] !== false ? 'checked' : ''}>`}</td></tr>`).join('')}</table>
+    <p class="quiet">Taken values go into the new vehicle (Make a new vehicle): spring rates into the coil spring beams (the SVJ wheel rate over the spring's motion ratio squared), damping into the damper beams (slopes of the SVJ curves), tyre radius into the tyre parts. Hover a spring row for its wheel rate and motion ratio.</p>`;
+}
+
 function bindFitPanel() {
+  document.querySelectorAll('[data-take]').forEach((c) => c.onchange = () => { takeValues[c.dataset.take] = c.checked; });
   document.querySelectorAll('[data-retie]').forEach((b) => b.onclick = () => { retie = { key: b.dataset.retie, label: b.dataset.label }; drawInspector(); });
   document.querySelectorAll('[data-untie]').forEach((b) => b.onclick = () => {
     delete vehEdit.fitOverrides[b.dataset.untie]; rememberTie(b.dataset.untie, null); runFit();
@@ -1143,6 +1160,8 @@ function bindSuspPanel() {
 // exportForm: the new vehicle's id (folder), name, brand and the per-part choices ({part: 'reuse' | 'copy' |
 // 'fit'}; parts not set take the proposal of exppy.plan); exportOpen keeps the section open across redraws.
 let exportForm = { id: '', name: '', brand: '', choices: {}, svj: true, replace: true, attach: {} }, exportNote = '', exportOpen = false;
+// values taken from the SVJ (springs, dampers, tyres): {row key: true | false}, all taken unless unticked
+let takeValues = {};
 const CHOICE = { fit: 'with the edits', copy: 'as it is', reuse: 'reuse (not copied)' };
 
 function exportPanel() {
@@ -1244,11 +1263,18 @@ async function runExport() {
     if (svjDoc && exportForm.svj) {
       const files = Object.fromEntries(svjDoc.meshes.filter((m) => m.file).map((m) => [m.id, m.file]));
       const { yf, zg } = svjPlace();
-      svjOpt = JSON.stringify({ svj: svjDoc.svj, files, place: { yf, ground: zg }, attach: svjAttach(), replace: exportForm.replace });
+      svjOpt = { svj: svjDoc.svj, files, place: { yf, ground: zg }, attach: svjAttach(), replace: exportForm.replace };
       say('Writing the SVJ meshes…');
       await new Promise((r) => setTimeout(r, 20));
     }
-    const out = JSON.parse(exppy.build(veh.model, id, name, JSON.stringify(veh), JSON.stringify(exportForm.choices), brand || null, svjOpt));
+    if (svjDoc) {                                     // the SVJ values taken (springs, dampers, tyres)
+      let rows = [];
+      try { rows = JSON.parse(valpy.table(veh.model, JSON.stringify(veh), JSON.stringify(svjDoc.svj), JSON.stringify({ corners: svjSusp?.corners || {} }))); } catch (err) { rows = []; }
+      const take = Object.fromEntries(rows.filter((r) => r.svj !== null && takeValues[r.key] !== false).map((r) => [r.key, true]));
+      svjOpt = { ...(svjOpt || { svj: svjDoc.svj }), take, study: { corners: svjSusp?.corners || {} } };
+    }
+    const out = JSON.parse(exppy.build(veh.model, id, name, JSON.stringify(veh), JSON.stringify(exportForm.choices), brand || null,
+      svjOpt ? JSON.stringify(svjOpt) : null));
     const all = new Set();
     for (const s of allSources()) for (const p of Object.keys(s.blobs || {})) if (p.startsWith(`vehicles/${veh.model}/`)) all.add(p);
     const copies = JSON.parse(exppy.assets(veh.model, id, JSON.stringify([...all])));
@@ -1268,7 +1294,7 @@ async function runExport() {
     a.download = `${id}.zip`;
     a.click();
     const c = out.counts;
-    exportNote = `${esc(id)}.zip: ${c.fitted} parts with the edits (${c.nodes} nodes), ${c.copied} copied, ${c.regenerated} shared parts regenerated, ${c.reused} reused, ${n} meshes, materials and other files copied${c.svj_meshes ? `, ${c.svj_meshes} SVJ meshes added` : ''}${c.base_meshes_dropped ? ` (${c.base_meshes_dropped} body meshes of the base left out)` : ''} (${fmt(blob.size / 1e6, 1)} MB). Put it in your user folder's mods folder; the new vehicle is "${esc(name)}".`
+    exportNote = `${esc(id)}.zip: ${c.fitted} parts with the edits (${c.nodes} nodes), ${c.copied} copied, ${c.regenerated} shared parts regenerated, ${c.reused} reused, ${n} meshes, materials and other files copied${c.values ? `, SVJ values written into ${c.values} parts` : ''}${c.svj_meshes ? `, ${c.svj_meshes} SVJ meshes added` : ''}${c.base_meshes_dropped ? ` (${c.base_meshes_dropped} body meshes of the base left out)` : ''} (${fmt(blob.size / 1e6, 1)} MB). Put it in your user folder's mods folder; the new vehicle is "${esc(name)}".`
       + (out.notes.length ? ` <span class="bad">${out.notes.map(esc).join(' ')}</span>` : '');
   } catch (err) { exportNote = `<span class="bad">Export failed: ${esc(pyError(err))}</span>`; }
   drawInspector();

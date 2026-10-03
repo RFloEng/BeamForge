@@ -21,7 +21,7 @@ BeamForge starts from **any BeamNG vehicle** (vanilla or mod) and modifies it fr
    - Vanilla suspensions have no meaningful node names (`fhub1l`, `fwhl1l`…), so each SVJ hardpoint needs to be tied to a node.
    - Automatic guess from the structure: the wheel centre from the `pressureWheels` node pair, arms as the beams between hub and body nodes, springs and dampers by beam type.
    - Manual fix: click a node, assign a hardpoint. Save the mapping as a small file per suspension part, so every vehicle sharing that part benefits.
-3. **Choose each parameter.**
+3. **Choose each parameter.** Done for geometry (the fit), springs, dampers and tyre radius: a *Values from the SVJ* table (base, SVJ, take) written into the new vehicle. Still to come: mass and CG, alignment settings, powertrain, aero.
    - The comparison panel becomes a table with a "take" box per row (geometry per corner, wheelbase and track, springs and dampers, alignment, mass and CG, tyres, powertrain, aero), with "take all" per group.
    - Geometry is edited by moving single nodes, beams or whole parts with numeric x / y / z (done in the editor). Writing those moves into the game is part of this step.
    - A taken value is applied in the least invasive way that works: an existing tuning variable, then a slot `nodeOffset` / `nodeMove`, and only then a generated copy of the part with moved nodes, written to a local mod folder. Generated parts are made on the user's machine from their own install and are never committed here.

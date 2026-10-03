@@ -13,6 +13,10 @@ Pure Python, standard library only (runs in Pyodide). The game builds a vehicle 
   configurations       every configuration of the base vehicle, pointing at the new model, plus
                        "beamforge" (the edited configuration), the new default.
   info.json            the base's, with the new name.
+  SVJ values           (optional) springs, dampers and tyres taken from the SVJ (beamforge/values.py),
+                       written into the copied parts; a tyre part reused from the game is regenerated
+                       to take its new radius; a value driven by a tuning variable is set in the
+                       configuration instead.
   SVJ meshes           (optional) the SVJ's glTF meshes written as COLLADA (<id>_svj.dae, the format
                        the game's vehicles use) with a materials file, each added as a flexbody of the
                        part it is attached to (svj_attach), following that part's node groups. With
@@ -32,7 +36,7 @@ import json
 import math
 import re
 
-from beamforge import beamng, dae, gltf, jbeam
+from beamforge import beamng, dae, gltf, jbeam, values
 from beamforge import svj as svjmod
 
 ID = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
@@ -272,8 +276,9 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     """The text files of the new vehicle: {"files": {path: text}, "renamed": {old: new}, "notes": [...],
     "counts": {...}}. configured: beamng.configure() of the edited vehicle (with its moves); choices:
     {part: "reuse" | "copy" | "fit"} (missing parts take plan()'s proposal). svj_json (optional):
-    {"svj", "files", "place", "attach", "replace"}: the SVJ meshes to add (see svj_meshes; replace:
-    leave out the base vehicle's body meshes)."""
+    {"svj", "files", "place", "attach", "replace", "take", "study"}: the SVJ meshes to add (see
+    svj_meshes; replace: leave out the base vehicle's body meshes; no "attach": no meshes) and the
+    values to take ({row key: True}, values.table keys; study: the SVJ suspension study)."""
     problems = check_id(new_id, model)
     if problems:
         raise ValueError("; ".join(problems))
@@ -281,6 +286,13 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     choices = json.loads(choices_json) if choices_json else {}
     for p in json.loads(plan(model, configured_json)):
         choices.setdefault(p["part"], p["choice"])
+    opt = json.loads(svj_json) if svj_json else None
+    taken_beams, taken_tyres, taken_vars = ({}, {}, {})
+    if opt and opt.get("take"):
+        taken_beams, taken_tyres, taken_vars = values.apply(model, v, opt["svj"], opt["take"], opt.get("study"))
+        for n in list(taken_beams) + list(taken_tyres):     # a part that takes values must be written
+            if choices.get(n) == "reuse":
+                choices[n] = "copy"
     geo = v["geometry"]
     deltas = _deltas(geo)
     vars_ = {x["name"]: x["value"] for x in v["variables"] if isinstance(x["value"], (int, float))}
@@ -302,10 +314,9 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     renames = {n: f"{new_id}_{n}" for n in active
                if parts.get(n, {}).get("model") == "common" and choices.get(n) in ("copy", "fit")}
     files, counts, notes = {}, {"fitted": 0, "copied": 0, "reused": 0, "regenerated": 0, "nodes": 0, "svj_meshes": 0,
-                                "base_meshes_dropped": 0}, []
+                                "base_meshes_dropped": 0, "values": 0}, []
     base_dir = f"vehicles/{model}/"
-    opt = json.loads(svj_json) if svj_json else None
-    svjm = svj_meshes(opt["svj"], opt["files"], opt["place"], opt["attach"], new_id) if opt else []
+    svjm = svj_meshes(opt["svj"], opt["files"], opt["place"], opt["attach"], new_id) if opt and opt.get("attach") else []
     # a mesh attached to a shared part that is reused (not copied) goes to the body part instead
     written = {n for n in parts if parts[n]["model"] != "common"} | set(renames)
     for m in svjm:
@@ -318,7 +329,10 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
             counts["nodes"] += _fit_nodes(part, deltas, vars_)
             _fit_flexbodies(part, n, shifts.get(n, {}), vars_)
         _rename_refs(part, renames)
-        if opt and opt.get("replace") and n in active:
+        if n in active and (n in taken_beams or n in taken_tyres):
+            values.apply_to_part(n, part, taken_beams, taken_tyres)
+            counts["values"] += 1
+        if opt and opt.get("replace") and svjm and n in active:
             counts["base_meshes_dropped"] += _drop_body_meshes(n, part)
         for m in svjm:
             if m["part"] == n:
@@ -363,6 +377,8 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
             files[f"vehicles/{new_id}/" + path[len(base_dir):]] = pc_for(doc)
     edited = dict(v["pc"])
     edited["parts"] = dict(edited.get("parts") or {})
+    if taken_vars:                                          # values driven by tuning variables
+        edited["vars"] = dict(edited.get("vars") or {}, **taken_vars)
     for n, slot in _walk(v["tree"], []):
         if n in renames:                                    # the regenerated part is chosen in its slot
             edited["parts"][slot] = renames[n]
