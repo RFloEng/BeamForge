@@ -15,6 +15,12 @@ export.build when the user takes it.
             wheel velocities to the damper: force slopes are divided by MR^2).
   tyres     pressureWheels radius (unloaded; the SVJ loaded radius plus a 10 mm deflection when the
             file gives no unloaded radius) and tireWidth.
+  mass, CG  the base's mass is its node weights (default 25 kg) plus the wheels the game builds
+            (2 numRays tyre nodes and 2 numRays hub nodes per wheel); its CG the weighted node
+            position. SVJ chassis.mass_total and center_of_gravity (SAE, from the front-axle centre on
+            the ground). Taking them rescales every non-wheel node weight: one factor for the mass,
+            times a linear ramp along the car and one in height that put the weighted centre on
+            the SVJ's CG (each weight kept at 30 % or more of its own).
 
 A beam whose value is a tuning variable ("$spring_F") is not rewritten: the variable is set in the
 new configuration instead, so the tuning menu keeps working.
@@ -199,7 +205,124 @@ def table(model, configured_json, svj_json, study_json=None):
             {"key": f"tyre_radius_{axle}", "label": f"{axle.capitalize()} tyre radius", "unit": "m", "axle": axle,
              "base": (ty.get(axle) or {}).get("radius"), "svj": s.get("tyre_radius")},
         ]
+    mc, (sm, sy, sz) = mass_and_cg(model, configured), svj_mass(svj)
+    rows += [{"key": "mass", "label": "Total mass", "unit": "kg", "axle": None, "base": mc["mass"], "svj": sm},
+             {"key": "cg_y", "label": "CG behind the front axle", "unit": "m", "axle": None, "base": mc["cg_behind_front_axle"], "svj": sy},
+             {"key": "cg_z", "label": "CG height", "unit": "m", "axle": None, "base": mc["cg_height"], "svj": sz}]
     return json.dumps([r for r in rows if r["base"] is not None or r["svj"] is not None])
+
+
+DEFAULT_NODE_WEIGHT = 25.0     # kg, the game's node weight when a part gives none
+MIN_FACTOR = 0.3               # a node keeps at least this share of its weight when the CG is moved
+
+
+def node_weights(model, configured):
+    """The base vehicle's node masses: ([(part, row index, node id, kg, [x, y, z])], wheel kg). Rows of
+    the active parts' node tables; positions as configured (fit and moves included)."""
+    parts = beamng._parts_held(model)
+    nodes = configured["geometry"]["nodes"]
+    vars_ = {x["name"]: x["value"] for x in configured["variables"] if isinstance(x["value"], (int, float))}
+    out, wheel_kg = [], 0.0
+    for name in _active(configured):
+        part = (parts.get(name) or {}).get("part", {})
+        rows = part.get("nodes")
+        if isinstance(rows, list) and rows and isinstance(rows[0], list):
+            head = [str(h).rstrip(":") for h in rows[0]]
+            props = {}
+            for i, row in enumerate(rows[1:], 1):
+                if isinstance(row, dict):
+                    props.update(row)
+                    continue
+                if not isinstance(row, list) or "id" not in head or len(row) <= head.index("id"):
+                    continue
+                nid = str(row[head.index("id")])
+                if nid not in nodes:
+                    continue
+                inline = row[-1] if isinstance(row[-1], dict) else {}
+                w = inline.get("nodeWeight", props.get("nodeWeight", DEFAULT_NODE_WEIGHT))
+                try:
+                    w = jbeam.to_float(w, vars_, DEFAULT_NODE_WEIGHT)
+                except (jbeam.UnresolvedValue, TypeError, ValueError):
+                    w = DEFAULT_NODE_WEIGHT
+                out.append((name, i, nid, w, nodes[nid]))
+    # the wheels the game builds: numRays rays, two tyre nodes and two hub nodes each
+    table = []
+    for name in _active(configured):
+        pw = (parts.get(name) or {}).get("part", {}).get("pressureWheels")
+        if isinstance(pw, list) and pw and isinstance(pw[0], list):
+            table += pw if not table else pw[1:]
+    for r in jbeam.expand_table(table):
+        if r.get("node1") in nodes and r.get("node2") in nodes:
+            rays = _num_or(r.get("numRays"), vars_, 0)
+            wheel_kg += 2 * rays * (_num_or(r.get("nodeWeight"), vars_, 0) + _num_or(r.get("hubNodeWeight"), vars_, 0))
+    return out, wheel_kg
+
+
+def _num_or(v, vars_, default):
+    try:
+        return jbeam.to_float(v, vars_, default)
+    except (jbeam.UnresolvedValue, TypeError, ValueError):
+        return default
+
+
+def mass_and_cg(model, configured):
+    """{"mass" kg (nodes and wheels), "cg_behind_front_axle" m, "cg_height" m} of the base vehicle (the
+    CG from the node masses only; the wheels sit near the axle height and change it little)."""
+    rows, wheel_kg = node_weights(model, configured)
+    m = sum(r[3] for r in rows)
+    if not m:
+        return {"mass": None, "cg_behind_front_axle": None, "cg_height": None}
+    meas = configured.get("measure") or {}
+    cy = sum(r[3] * r[4][1] for r in rows) / m
+    cz = sum(r[3] * r[4][2] for r in rows) / m
+    yf, zg = meas.get("front_axle_y"), meas.get("ground_z")
+    return {"mass": round(m + wheel_kg, 1),
+            "cg_behind_front_axle": round(cy - yf, 4) if yf is not None else None,
+            "cg_height": round(cz - zg, 4) if zg is not None else None}
+
+
+def svj_mass(svj):
+    """(mass kg, CG behind the front axle m, CG height m) of the SVJ; None where it has no value."""
+    ch = svj.get("chassis") or {}
+    cg = ch.get("center_of_gravity")
+    ok = isinstance(cg, list) and len(cg) == 3
+    return (ch.get("mass_total") if isinstance(ch.get("mass_total"), (int, float)) else None,
+            round(-cg[0], 4) if ok else None, round(-cg[2], 4) if ok else None)
+
+
+def weight_changes(model, configured, mass=None, cg_y=None, cg_z=None):
+    """New node weights for a target mass (kg, wheels included) and CG (behind the front axle, height;
+    m): {part: {row: kg}}. None leaves that value as it is."""
+    rows, wheel_kg = node_weights(model, configured)
+    m = sum(r[3] for r in rows)
+    if not rows or not m:
+        return {}
+    meas = configured.get("measure") or {}
+    yf, zg = meas.get("front_axle_y") or 0.0, meas.get("ground_z") or 0.0
+    w = [r[3] for r in rows]
+    # the two ramps, a few rounds: the height ramp nudges the CG along the car a little, and back
+    for axis, target, origin in ((1, cg_y, yf), (2, cg_z, zg)) * 4:
+        if target is None:
+            continue
+        mw = sum(w)
+        mean = sum(wi * r[4][axis] for wi, r in zip(w, rows)) / mw
+        var = sum(wi * (r[4][axis] - mean) ** 2 for wi, r in zip(w, rows)) / mw
+        if var <= 0:
+            continue
+        k = (origin + target - mean) / var
+        # w' = w (1 + k (p - mean)) moves the weighted mean by k var; every node keeps MIN_FACTOR of
+        # its own (original) weight: k is shortened where a node would go below that
+        t = 1.0
+        for wi, r in zip(w, rows):
+            d = k * (r[4][axis] - mean)
+            if d < 0 and wi * (1 + d) < MIN_FACTOR * r[3]:
+                t = min(t, max(0.0, (MIN_FACTOR * r[3] / wi - 1) / d))
+        w = [wi * (1 + t * k * (r[4][axis] - mean)) for wi, r in zip(w, rows)]
+    scale = ((mass - wheel_kg) / sum(w)) if mass is not None and sum(w) > 0 else m / sum(w)
+    out = {}
+    for (part, row, _, _, _), wi in zip(rows, w):
+        out.setdefault(part, {})[row] = round(wi * scale, 4)
+    return out
 
 
 def _set_inline(row, values):
@@ -212,7 +335,8 @@ def _set_inline(row, values):
 
 def apply(model, configured, svj, take, study=None):
     """What taking values changes: ({part: {row index: {property: value}}} for beams, {part: {"radius",
-    "tireWidth", "scale"}} for tyres, {"$var": value} for the configuration). take: {row key: True}."""
+    "tireWidth", "scale"}} for tyres, {"$var": value} for the configuration, {part: {row index: kg}} for
+    node weights). take: {row key: True}."""
     sv = svj_values(svj, study)
     beams, tyre, pcvars = {}, {}, {}
     for r in springs_and_dampers(model, configured):
@@ -237,11 +361,20 @@ def apply(model, configured, svj, take, study=None):
         if take.get(f"tyre_radius_{axle}") and s.get("tyre_radius") and t.get("radius"):
             k = s["tyre_radius"] / t["radius"]
             tyre[t["part"]] = {"radius": s["tyre_radius"], "scale": [1.0, k, k]}
-    return beams, tyre, pcvars
+    sm, sy, sz = svj_mass(svj)
+    weights = {}
+    if (take.get("mass") and sm) or (take.get("cg_y") and sy is not None) or (take.get("cg_z") and sz is not None):
+        weights = weight_changes(model, configured, sm if take.get("mass") else None,
+                                 sy if take.get("cg_y") else None, sz if take.get("cg_z") else None)
+    return beams, tyre, pcvars, weights
 
 
-def apply_to_part(name, part, beams, tyre):
+def apply_to_part(name, part, beams, tyre, weights=None):
     """Write the taken values into a part (in place)."""
+    nrows = part.get("nodes")
+    for i, kg in ((weights or {}).get(name) or {}).items():
+        if isinstance(nrows, list) and 0 < i < len(nrows) and isinstance(nrows[i], list):
+            _set_inline(nrows[i], {"nodeWeight": kg})
     rows = part.get("beams")
     for i, values in (beams.get(name) or {}).items():
         if isinstance(rows, list) and 0 < i < len(rows) and isinstance(rows[i], list):
