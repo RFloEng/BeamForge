@@ -132,9 +132,10 @@ let folders = [], resolved = null, pending = [];
 let cat = null, veh = null, vehError = null, vehBusy = '';
 // the user's edits of the base vehicle: slot choices, tuning values, and moves ({parts|nodes: {name: [dx, dy, dz]}})
 // fit: the node moves of the last fit to the SVJ (fit.py), kept apart from the hand moves so a new fit
-// replaces it; fitReport: its report rows and notes
+// replaces it; fitReport: its report rows, hardpoint mapping, placement and notes; fitOverrides: the
+// hardpoint-to-node ties the user set ({"FL:lower_ball_joint": node})
 const freshEdit = (model, config) => ({ model, config: config || null, parts: {}, vars: {}, moves: { parts: {}, nodes: {} },
-  fit: {}, fitReport: null });
+  fit: {}, fitReport: null, fitOverrides: {} });
 // the moves Python applies: the hand moves on top of the fit
 function allMoves() {
   const nodes = {};
@@ -452,11 +453,15 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   let best = null, bestD = 10, bestZ = Infinity;
   const p = new THREE.Vector3();
   for (const id of nodeIds) {
-    if (!editable(veh.geometry.parts[id])) continue;               // locked parts cannot be picked
+    if (!retie && !editable(veh.geometry.parts[id])) continue;     // locked parts cannot be picked
     p.copy(v3(veh.geometry.nodes[id])).project(camera);
     if (p.z > 1) continue;                                          // behind the camera
     const d = Math.hypot((p.x + 1) / 2 * r.width - mx, (1 - p.y) / 2 * r.height - my);
     if (d < bestD - 0.5 || (Math.abs(d - bestD) <= 0.5 && p.z < bestZ)) { best = id; bestD = d; bestZ = p.z; }
+  }
+  if (retie) {                                                    // tying a hardpoint to this node
+    if (best) { vehEdit.fitOverrides[retie.key] = best; retie = null; runFit(); }
+    return;
   }
   if (best) pick = { kind: 'node', id: best };
   else {
@@ -697,7 +702,11 @@ let svjDoc = null;         // svjpy.load_bundle result of the last import (kept 
 let svjHp = [];            // its hardpoints in BeamNG coordinates, placed on the base vehicle
 
 // where the SVJ origin (front-axle centre on the ground) lands on the base vehicle
-const svjPlace = () => ({ yf: veh?.measure?.front_axle_y ?? 0, zg: veh?.measure?.ground_z ?? 0 });
+// (after a fit: where the fit placed it, so the overlay and the fitted nodes stay together)
+const svjPlace = () => {
+  const pl = Object.keys(vehEdit.fit || {}).length && vehEdit.fitReport?.place;
+  return pl ? { yf: pl.yf, zg: pl.ground } : { yf: veh?.measure?.front_axle_y ?? 0, zg: veh?.measure?.ground_z ?? 0 };
+};
 
 $('svjin').onclick = () => $('svjfile').click();
 // Import: an .svj.json with loose mesh files, or a .zip bundle
@@ -820,8 +829,10 @@ function svjInspector() {
 
 // ---------- fit the base vehicle to the SVJ (beamforge/fit.py, docs/fitting.md) ----------
 const FIT_STAGES = [['wheelbase', '1 Wheelbase', 'Stretch between the axle lines to the SVJ wheelbase; the front axle stays'],
-  ['body', '2 Body to the mesh', 'Overhangs, floor, width and roof line to the SVJ body mesh (the chassis visual binding)']];
-let fitStages = new Set(['wheelbase', 'body']);
+  ['body', '2 Body to the mesh', 'Overhangs, floor, width and roof line to the SVJ body mesh (the chassis visual binding)'],
+  ['pickups', '3 Pickup points', 'Every SVJ hardpoint tied to a node by its role, moved exactly onto it; the nodes around follow']];
+let fitStages = new Set(['wheelbase', 'body', 'pickups']);
+let retie = null;            // { key, label }: the hardpoint waiting for the user to click its node
 
 function fitPanel() {
   const r = vehEdit.fitReport;
@@ -829,14 +840,51 @@ function fitPanel() {
   const table = r && r.report.length ? `<table class="cmp"><tr><th></th><th>Base</th><th>SVJ</th><th>After</th></tr>
     ${r.report.map((x) => `<tr><td>${esc(x.label)}</td><td>${v(x.base)}</td><td>${v(x.target)}</td><td>${v(x.after)}</td></tr>`).join('')}</table>` : '';
   return `<h2>Fit to the SVJ</h2>
-    <div class="kv">${FIT_STAGES.map(([k, label, hint]) => `<span><label title="${esc(hint)}"><input type="checkbox" data-fitstage="${k}" ${fitStages.has(k) ? 'checked' : ''}> ${esc(label)}</label></span><span></span>`).join('')}
-      <span class="q">3 Pickup points</span><span class="q">next</span></div>
+    <div class="kv">${FIT_STAGES.map(([k, label, hint]) => `<span><label title="${esc(hint)}"><input type="checkbox" data-fitstage="${k}" ${fitStages.has(k) ? 'checked' : ''}> ${esc(label)}</label></span><span></span>`).join('')}</div>
     <div class="inl"><button id="fitrun" class="primary">Fit</button>${Object.keys(vehEdit.fit).length ? '<button id="fitclear">Remove fit</button>' : ''}</div>
     ${table}${r && r.notes.length ? r.notes.map((n) => `<p class="bad">${esc(n)}</p>`).join('') : ''}
+    ${uprightTable(r)}
+    ${mappingTable(r)}
     <p class="quiet">The fit moves every node; hand moves stay on top. Not saved in the .pc yet.</p>`;
 }
 
+// stage 3's check of each hub against the SVJ upright: shape gap before the fit, hub beams after, wheel angles
+function uprightTable(r) {
+  if (!r || !r.uprights || !r.uprights.length) return '';
+  const mm = (x) => x === null || x === undefined ? '–' : fmt(x, 0) + ' mm';
+  const ang = (a, b) => `${fmt(a, 2)}°${b === null || b === undefined ? '' : ` <span class="q">(SVJ ${fmt(b, 2)}°)</span>`}`;
+  return `<details open><summary><b>Uprights against the SVJ</b> <span class="q">(shape gap: base hub laid over the SVJ upright)</span></summary>
+    <table class="cmp"><tr><th>Corner</th><th>Shape gap</th><th>Hub beams</th><th>Camber</th><th>Toe</th></tr>
+    ${r.uprights.map((u) => `<tr title="${esc(u.points.join(', '))}${u.worst_pair ? ` · worst pair ${u.worst_pair[0]}–${u.worst_pair[1]}: ${u.worst_pair[2]} mm on the base, ${u.worst_pair[3]} mm in the SVJ` : ''}">
+      <td>${esc(u.corner)}</td>
+      <td class="${u.shape_rms_mm !== null && u.shape_rms_mm > 25 ? 'bad' : ''}">${u.shape_rms_mm === null ? `<span class="q">${u.points.length} points</span>` : mm(u.shape_rms_mm)}</td>
+      <td class="${u.hub_beams_pct !== null && u.hub_beams_pct > 25 ? 'bad' : ''}">${u.hub_beams_pct === null ? '–' : fmt(u.hub_beams_pct, 0) + ' %'}</td>
+      <td>${ang(u.camber_deg, u.svj_camber_deg)}</td><td>${ang(u.toe_deg, u.svj_toe_deg)}</td></tr>`).join('')}</table>
+    <p class="quiet">Shape gap: what is left after the best rigid overlay of the hub's tied nodes on the SVJ upright points (0 = the same upright; needs 3 points). Hub beams: the largest length change inside the hub after the fit. The wheel axis takes the SVJ static camber and toe when the file has them, else keeps the base vehicle's. Hover a row for its points and worst pair.</p></details>`;
+}
+
+// the hardpoint-to-node ties of stage 3: gap before the fit, how it was tied, re-tie by clicking a node
+function mappingTable(r) {
+  if (!r || !r.mapping || !r.mapping.length) return '';
+  const nice = (s) => s.replace(/_/g, ' ').replace(/\.(\d)$/, (m, i) => ` ${+i + 1}`);
+  const by = { wheel: 'wheel', guess: 'guessed', user: 'yours', none: '–' };
+  return `<details open><summary><b>Hardpoints and their nodes</b> <span class="q">(gap before the fit)</span></summary>
+    ${retie ? `<p class="bad">Click the node for ${esc(retie.label)} in the view. <button id="retiecancel" class="mini">cancel</button></p>` : ''}
+    <table class="cmp"><tr><th>Corner</th><th>Hardpoint</th><th>Node</th><th>Gap</th><th></th></tr>
+    ${r.mapping.map((m) => {
+      const key = `${m.corner}:${m.name}`;
+      return `<tr><td>${esc(m.corner)}</td><td>${esc(nice(m.name))}</td>
+        <td>${m.nodes.map((n) => `<button class="mini" data-picknode="${esc(n)}">${esc(n)}</button>`).join('') || '–'} <span class="q">${by[m.by] || ''}</span></td>
+        <td>${m.distance === null ? '–' : fmt(m.distance * 1000, 0) + ' mm'}</td>
+        <td>${m.kind === 'wheel' ? '' : `<button class="mini${retie && retie.key === key ? ' on' : ''}" data-retie="${esc(key)}" data-label="${esc(m.corner + ' ' + nice(m.name))}">re-tie</button>`}
+          ${m.by === 'user' ? `<button class="mini" data-untie="${esc(key)}">auto</button>` : ''}</td></tr>`;
+    }).join('')}</table></details>`;
+}
+
 function bindFitPanel() {
+  document.querySelectorAll('[data-retie]').forEach((b) => b.onclick = () => { retie = { key: b.dataset.retie, label: b.dataset.label }; drawInspector(); });
+  document.querySelectorAll('[data-untie]').forEach((b) => b.onclick = () => { delete vehEdit.fitOverrides[b.dataset.untie]; runFit(); });
+  if ($('retiecancel')) $('retiecancel').onclick = () => { retie = null; drawInspector(); };
   document.querySelectorAll('[data-fitstage]').forEach((c) => c.onchange = () => { if (c.checked) fitStages.add(c.dataset.fitstage); else fitStages.delete(c.dataset.fitstage); });
   if ($('fitrun')) $('fitrun').onclick = runFit;
   if ($('fitclear')) $('fitclear').onclick = () => { vehEdit.fit = {}; vehEdit.fitReport = null; configureVehicle(); };
@@ -847,7 +895,7 @@ function runFit() {
   const files = Object.fromEntries(svjDoc.meshes.filter((m) => m.file).map((m) => [m.id, m.file]));
   try {
     const r = JSON.parse(fitpy.fit_json(JSON.stringify(veh.geometry), JSON.stringify(veh.wheels), JSON.stringify(svjDoc.svj),
-      JSON.stringify(files), JSON.stringify([...fitStages])));
+      JSON.stringify(files), JSON.stringify([...fitStages]), JSON.stringify(vehEdit.fitOverrides || {})));
     vehEdit.fit = r.moves;
     vehEdit.fitReport = r;
   } catch (err) { vehEdit.fitReport = { report: [], notes: ['fit failed: ' + pyError(err)] }; }
