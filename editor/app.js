@@ -832,6 +832,7 @@ async function loadSvjMeshes() {
       setTimeout(styleSvj, 0);
       holder.add(gl.scene);
       holder.userData.uri = m.uri;
+      holder.userData.offset = m.offset_gltf;             // the mesh moved onto its wheels (svj.mesh_offset)
       meshG.add(holder);
     } catch (err) {
       showIssues([{ level: 'WARN', rule: 'SVJ §22', message: `could not load mesh ${m.uri}: ${err.message || err}` }]);
@@ -847,7 +848,11 @@ function placeSvj() {
   if (!svjDoc) { svjHp = []; return; }
   const { yf, zg } = svjPlace();
   const M = gltfToThree(svjDoc.axes, yf, zg);
-  for (const h of meshG.children) h.matrix.copy(M);
+  for (const h of meshG.children) {
+    h.matrix.copy(M);
+    const o = h.userData.offset;
+    if (o) h.matrix.multiply(new THREE.Matrix4().makeTranslation(o[0], o[1], o[2]));
+  }
   meshG.visible = $('meshes').checked;
   svjHp = JSON.parse(svjpy.hardpoints_json(JSON.stringify(svjDoc.svj), yf, zg));
 }
@@ -957,7 +962,7 @@ function uprightTable(r) {
 function mappingTable(r) {
   if (!r || !r.mapping || !r.mapping.length) return '';
   const nice = (s) => s.replace(/_/g, ' ').replace(/\.(\d)$/, (m, i) => ` ${+i + 1}`);
-  const by = { wheel: 'wheel', guess: 'guessed', user: 'yours', none: '–' };
+  const by = { wheel: 'wheel', guess: 'guessed', user: 'yours', none: '–', far: 'not tied: too far', same: 'same point', kept: 'base hub kept' };
   return `<details open><summary><b>Hardpoints and their nodes</b> <span class="q">(gap before the fit)</span></summary>
     ${retie ? `<p class="bad">Click the node for ${esc(retie.label)} in the view. <button id="retiecancel" class="mini">cancel</button></p>` : ''}
     <table class="cmp"><tr><th>Corner</th><th>Hardpoint</th><th>Node</th><th>Gap</th><th></th></tr>

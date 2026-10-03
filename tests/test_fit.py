@@ -113,18 +113,38 @@ class TestPickups(unittest.TestCase):
         self.assertEqual(next(r for r in over if r["name"] == "lower_ball_joint")["nodes"], ["h2"])
 
     def test_pickups_exact_and_local(self):
+        """Two upright points (too few to compare shapes): the base hub is kept, moved whole to the wheel
+        centre; the chassis tie is met exactly; far nodes stay."""
         nodes, parts, wheels, beams, bp = corner_car()
         r = fit.fit(nodes, parts, wheels, corner_svj(), stages=("pickups",), beams=beams, beam_parts=bp)
         n = r["nodes"]
-        for a, b in zip(n["h1"], [0.70, -1.22, 0.16]):
-            self.assertAlmostEqual(a, b, places=6)
         for a, b in zip(n["m1"], [0.33, -1.20, 0.20]):
             self.assertAlmostEqual(a, b, places=6)
+        wc0 = [(nodes["wFLo"][i] + nodes["wFLi"][i]) / 2 for i in range(3)]
         wc = [(n["wFLo"][i] + n["wFLi"][i]) / 2 for i in range(3)]
         for a, b in zip(wc, [0.72, -1.25, 0.31]):
             self.assertAlmostEqual(a, b, places=6)
+        for k in ("h1", "h2"):                                               # the hub: the wheel centre's shift
+            for i in range(3):
+                self.assertAlmostEqual(n[k][i], nodes[k][i] + 0.0 + [0.72, -1.25, 0.31][i] - wc0[i], places=4)
+        self.assertEqual(next(m for m in r["mapping"] if m["name"] == "lower_ball_joint")["by"], "kept")
+        self.assertTrue(any("kept as the base's" in c for c in r["changes"]))
         self.assertEqual(n["wRLo"], nodes["wRLo"])                         # far away: unchanged
         self.assertTrue(all(m["after"] < 1e-6 for m in r["mapping"] if m["nodes"]))
+
+    def test_same_upright_moved_whole(self):
+        """Three upright points with the base hub's shape: the hub moves as one piece onto them."""
+        nodes, parts, wheels, beams, bp = corner_car()
+        wc0 = [(nodes["wFLo"][i] + nodes["wFLi"][i]) / 2 for i in range(3)]
+        d = [0.02, 0.01, -0.01]
+        sh = lambda p: [p[i] + d[i] for i in range(3)]  # noqa: E731
+        doc = corner_svj(wc=sh(wc0), lbj=sh(nodes["h1"]))
+        doc["suspension"]["FL"]["topology"]["upright"]["hardpoints"]["upper_ball_joint"] = svjmod.to_sae(sh(nodes["h2"]), -1.25, 0.0)
+        r = fit.fit(nodes, parts, wheels, doc, stages=("pickups",), beams=beams, beam_parts=bp)
+        for k in ("h1", "h2"):
+            for a, b in zip(r["nodes"][k], sh(nodes[k])):
+                self.assertAlmostEqual(a, b, places=5)
+        self.assertFalse(any("kept as the base's" in c for c in r["changes"]))
 
     def test_upright_check_and_wheel_axis(self):
         nodes, parts, wheels, beams, bp = corner_car()

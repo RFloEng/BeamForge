@@ -36,7 +36,7 @@ import json
 import math
 import re
 
-from beamforge import beamng, dae, gltf, jbeam, values
+from beamforge import beamng, dae, gltf, jbeam, rigidity, values
 from beamforge import svj as svjmod
 
 ID = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
@@ -238,13 +238,17 @@ def svj_meshes(svj, files, place, attach, new_id):
         path = files.get(a.get("mesh_ref")) or (next(iter(files.values())) if len(files) == 1 else None)
         if not path or not a.get("part"):
             continue
+        glb = path.lower().endswith(".glb")
         if path not in cache:
             with open(path, "rb") as fh:
-                cache[path] = fh.read()
-        pos, idx = gltf.triangles(cache[path], is_glb=path.lower().endswith(".glb"), under=a["node"])
+                data = fh.read()
+            cache[path] = (data, svjmod.mesh_offset(svj, data, glb)[0] or [0.0, 0.0, 0.0])   # the mesh on its wheels
+        data, off = cache[path]
+        pos, idx = gltf.triangles(data, is_glb=glb, under=a["node"])
         if not idx:
             continue
-        pos = [[round(c, 5) for c in svjmod.from_sae(svjmod.gltf_to_sae(p, axes), place["yf"], place["ground"])] for p in pos]
+        pos = [[round(c, 5) for c in svjmod.from_sae([x + o for x, o in zip(svjmod.gltf_to_sae(p, axes), off)],
+                                                     place["yf"], place["ground"])] for p in pos]
         name = f"{new_id}_svj_{_safe(a['path'])}"
         out.append({"name": name, "material": f"{name}_mat", "part": a["part"], "groups": a.get("groups") or [],
                     "positions": pos, "indices": idx, "path": a["path"]})
@@ -288,14 +292,25 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
         choices.setdefault(p["part"], p["choice"])
     opt = json.loads(svj_json) if svj_json else None
     taken_beams, taken_tyres, taken_vars, taken_weights, taken_pt = ({}, {}, {}, {}, {})
+    # rigidity (rigidity.py): node weights follow their beams' lengths, beams their length and weights
+    springs = {(r["part"], r["row"]) for r in values.springs_and_dampers(model, v)}
+    bl = rigidity.beams(model, v)
+    fitted = {n for n, c in choices.items() if c == "fit"}
+    lf = rigidity.length_factors(model, v, springs, bl, fitted)
     if opt and opt.get("take"):
-        taken_beams, taken_tyres, taken_vars, taken_weights = values.apply(model, v, opt["svj"], opt["take"], opt.get("study"))
+        taken_beams, taken_tyres, taken_vars, taken_weights = values.apply(model, v, opt["svj"], opt["take"], opt.get("study"), lf)
         taken_pt = values.powertrain_changes(model, v, opt["svj"], opt["take"])
         for part, ch in list(values.steering_changes(model, v, opt["svj"], opt["take"]).items()) +                 list(values.aero_changes(model, v, opt["svj"], opt["take"]).items()):
             taken_pt.setdefault(part, {}).update(ch)
-        for n in list(taken_beams) + list(taken_tyres) + list(taken_weights) + list(taken_pt):   # a part that takes values must be written
-            if choices.get(n) == "reuse":
-                choices[n] = "copy"
+    if lf and not taken_weights:
+        taken_weights = values.weight_changes(model, v, length_factors=lf)
+    rig, rig_stats = rigidity.changes(model, v, taken_weights, springs, bl, fitted) if (lf or taken_weights) else ({}, None)
+    for part, rows in rig.items():
+        for row, vals in rows.items():
+            taken_beams.setdefault(part, {}).setdefault(row, {}).update(vals)
+    for n in list(taken_beams) + list(taken_tyres) + list(taken_weights) + list(taken_pt):   # a part that takes values must be written
+        if choices.get(n) == "reuse":
+            choices[n] = "copy"
     geo = v["geometry"]
     deltas = _deltas(geo)
     vars_ = {x["name"]: x["value"] for x in v["variables"] if isinstance(x["value"], (int, float))}
@@ -317,7 +332,13 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     renames = {n: f"{new_id}_{n}" for n in active
                if parts.get(n, {}).get("model") == "common" and choices.get(n) in ("copy", "fit")}
     files, counts, notes = {}, {"fitted": 0, "copied": 0, "reused": 0, "regenerated": 0, "nodes": 0, "svj_meshes": 0,
-                                "base_meshes_dropped": 0, "values": 0}, []
+                                "base_meshes_dropped": 0, "values": 0, "rigidity_beams": 0}, []
+    if rig_stats:
+        counts["rigidity_beams"] = rig_stats["beams"]
+        if rig_stats["softened"]:
+            notes.append(f"{rig_stats['softened']} beams softened so no node is stiffer for its weight than in the base (much shorter beams)")
+        if rig_stats["kept_variables"]:
+            notes.append(f"{rig_stats['kept_variables']} beam values written as tuning variables kept as they are (not rescaled)")
     base_dir = f"vehicles/{model}/"
     svjm = svj_meshes(opt["svj"], opt["files"], opt["place"], opt["attach"], new_id) if opt and opt.get("attach") else []
     # a mesh attached to a shared part that is reused (not copied) goes to the body part instead

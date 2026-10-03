@@ -46,14 +46,30 @@ def _axle_of(y, yf, yr):
 
 
 def _slopes(curve):
-    """(slow slope, fast slope, split velocity) of a [velocity, force] curve; None when it has no slope."""
-    pts = [p for p in curve or [] if isinstance(p, list) and len(p) == 2]
-    pts.sort()
-    if len(pts) < 2 or pts[1][0] <= pts[0][0]:
+    """(slow slope, fast slope, split velocity) of a [velocity, force] curve; None when it has no slope.
+
+    BeamNG's damper is two lines through the origin: beamDamp up to beamDampVelocitySplit, then
+    beamDampFast. Every curve point is tried as the split; the slow slope is the least-squares line
+    through the origin over the points up to it, the fast one over the points after it (from the
+    split's force), and the pair with the smallest squared force error wins (a two-point curve is one
+    line; a curve that is two lines already is matched exactly)."""
+    pts = sorted(p for p in curve or [] if isinstance(p, list) and len(p) == 2)
+    pts = [p for p in pts if p[0] > 0] if pts and pts[0][0] <= 0 else pts
+    if not pts:
         return None
-    slow = (pts[1][1] - pts[0][1]) / (pts[1][0] - pts[0][0])
-    fast = (pts[2][1] - pts[1][1]) / (pts[2][0] - pts[1][0]) if len(pts) > 2 and pts[2][0] > pts[1][0] else slow
-    return slow, fast, pts[1][0]
+    best = None
+    for k in range(len(pts)):
+        lo, hi = pts[:k + 1], pts[k + 1:]
+        slow = sum(v * f for v, f in lo) / sum(v * v for v, _ in lo)
+        vs, fs = pts[k][0], slow * pts[k][0]
+        fast = (sum((v - vs) * (f - fs) for v, f in hi) / sum((v - vs) ** 2 for v, _ in hi)) if hi else slow
+        err = sum((f - slow * v) ** 2 for v, f in lo) + sum((f - fs - fast * (v - vs)) ** 2 for v, f in hi)
+        if best is None or err < best[0] - 1e-9:
+            best = (err, slow, fast, vs)
+    _, slow, fast, vs = best
+    if slow <= 0:
+        return None
+    return round(slow, 3), round(max(fast, 0.0), 3), vs
 
 
 def svj_values(svj, study=None):
@@ -317,10 +333,13 @@ def svj_mass(svj):
             round(-cg[0], 4) if ok else None, round(-cg[2], 4) if ok else None)
 
 
-def weight_changes(model, configured, mass=None, cg_y=None, cg_z=None):
+def weight_changes(model, configured, mass=None, cg_y=None, cg_z=None, length_factors=None):
     """New node weights for a target mass (kg, wheels included) and CG (behind the front axle, height;
-    m): {part: {row: kg}}. None leaves that value as it is."""
+    m): {part: {row: kg}}. None leaves that value as it is. length_factors ({node: factor},
+    rigidity.length_factors): each weight first follows the length of its node's beams."""
+    lf = length_factors or {}
     rows, wheel_kg = node_weights(model, configured)
+    rows = [(p, i, n, kg * lf.get(n, 1.0), pos) for p, i, n, kg, pos in rows]
     m = sum(r[3] for r in rows)
     if not rows or not m:
         return {}
@@ -360,7 +379,7 @@ def _set_inline(row, values):
         row.append(dict(values))
 
 
-def apply(model, configured, svj, take, study=None):
+def apply(model, configured, svj, take, study=None, length_factors=None):
     """What taking values changes: ({part: {row index: {property: value}}} for beams, {part: {"radius",
     "tireWidth", "scale"}} for tyres, {"$var": value} for the configuration, {part: {row index: kg}} for
     node weights). take: {row key: True}."""
@@ -392,7 +411,7 @@ def apply(model, configured, svj, take, study=None):
     weights = {}
     if (take.get("mass") and sm) or (take.get("cg_y") and sy is not None) or (take.get("cg_z") and sz is not None):
         weights = weight_changes(model, configured, sm if take.get("mass") else None,
-                                 sy if take.get("cg_y") else None, sz if take.get("cg_z") else None)
+                                 sy if take.get("cg_y") else None, sz if take.get("cg_z") else None, length_factors)
     return beams, tyre, pcvars, weights
 
 

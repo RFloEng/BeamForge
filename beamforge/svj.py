@@ -18,6 +18,8 @@ the file's headline values with a BeamNG base vehicle (the start of the per-para
 docs/roadmap.md step 3). It does not change the BeamNG vehicle yet.
 """
 import json
+import math
+import re
 import shutil
 import zipfile
 from pathlib import Path
@@ -52,6 +54,54 @@ def gltf_to_sae(p, axes=None):
     r = [f[1] * u[2] - f[2] * u[1], f[2] * u[0] - f[0] * u[2], f[0] * u[1] - f[1] * u[0]]
     dot = lambda a, b: a[0] * b[0] + a[1] * b[1] + a[2] * b[2]  # noqa: E731
     return [dot(p, f), dot(p, r), -dot(p, u)]
+
+
+def sae_to_gltf(p, axes=None):
+    """SAE J670 vector -> glTF for the asset axes; the inverse of gltf_to_sae."""
+    axes = axes or DEFAULT_GLTF_AXES
+
+    def vec(t):
+        s, a = (-1.0, t[1:]) if t.startswith("-") else (1.0, t)
+        return [s if a == "X" else 0.0, s if a == "Y" else 0.0, s if a == "Z" else 0.0]
+    u, f = vec(axes["up"]), vec(axes["forward"])
+    r = [f[1] * u[2] - f[2] * u[1], f[2] * u[0] - f[0] * u[2], f[0] * u[1] - f[1] * u[0]]
+    return [p[0] * f[i] + p[1] * r[i] - p[2] * u[i] for i in range(3)]
+
+
+# a mesh's wheel node: WHEEL_LF, tyre_FL, TIRE RR... (side and axle in either order)
+WHEEL_NODE = re.compile(r"^(?:wheel|tyre|tire)[ _]?(?:([LR])([FR])|([FR])([LR]))$", re.I)
+OFFSET_MIN = 0.005      # m: a mesh closer than this to its wheels is left where it is
+OFFSET_SPREAD = 0.05    # m: the wheels must agree on the offset within this, else it is not applied
+
+
+def mesh_offset(svj, data, is_glb=True):
+    """The SAE [dX, dY, dZ] that puts a mesh's wheels (its nodes named like WHEEL_LF) on the SVJ's
+    wheel centres, and how many wheels agreed; (None, n) when the mesh has fewer than two wheel nodes,
+    they disagree, or it already sits within OFFSET_MIN. Converters do not always put the mesh's origin
+    where the SVJ's is (some leave it at the source game's origin)."""
+    axes = gltf_axes(svj)
+    centres = {h["corner"]: to_sae(h["pos"]) for h in hardpoints(svj) if h["name"] == "wheel_center"}
+    seen, diffs = set(), []
+    for name in gltf.node_names(data, is_glb=is_glb):
+        m = WHEEL_NODE.match(name or "")
+        if not m:
+            continue
+        side, axle = (m.group(1), m.group(2)) if m.group(1) else (m.group(4), m.group(3))
+        corner = (axle + side).upper()
+        if corner in seen or corner not in centres:
+            continue
+        pts = [gltf_to_sae(q, axes) for q in gltf.positions(data, is_glb=is_glb, under=name, limit=4000)]
+        if not pts:
+            continue
+        seen.add(corner)
+        mid = [(min(q[i] for q in pts) + max(q[i] for q in pts)) / 2 for i in range(3)]
+        diffs.append([centres[corner][i] - mid[i] for i in range(3)])
+    if len(diffs) < 2:
+        return None, len(diffs)
+    mean = [sum(d[i] for d in diffs) / len(diffs) for i in range(3)]
+    if max(math.dist(d, mean) for d in diffs) > OFFSET_SPREAD or math.hypot(*mean) < OFFSET_MIN:
+        return None, len(diffs)
+    return [round(x, 4) for x in mean], len(diffs)
 
 
 # ---------------------------------------------------------------- reading
@@ -206,10 +256,16 @@ def load_bundle(path, work_dir):
         if not f.is_file():                           # loose files: match by file name
             hits = sorted(root.rglob(Path(a["uri"]).name))
             f = hits[0] if hits else None
-        entry = {"id": a["id"], "uri": a["uri"], "file": str(f) if f else None, "nodes": []}
+        entry = {"id": a["id"], "uri": a["uri"], "file": str(f) if f else None, "nodes": [], "offset": None, "offset_gltf": None}
         if f:
             try:
-                entry["nodes"] = gltf.node_names(f.read_bytes(), is_glb=f.suffix.lower() == ".glb")
+                data = f.read_bytes()
+                entry["nodes"] = gltf.node_names(data, is_glb=f.suffix.lower() == ".glb")
+                off, n = mesh_offset(doc, data, f.suffix.lower() == ".glb")
+                if off:
+                    entry["offset"], entry["offset_gltf"] = off, sae_to_gltf(off, gltf_axes(doc))
+                    notes.append(f"mesh {a['uri']}: its {n} wheels are {math.hypot(*off) * 1000:.0f} mm from the SVJ wheel "
+                                 f"centres (SAE {off[0]:+.3f} {off[1]:+.3f} {off[2]:+.3f} m): moved onto them")
             except (ValueError, UnicodeDecodeError) as exc:
                 notes.append(f"mesh {a['uri']}: {exc}")
         else:

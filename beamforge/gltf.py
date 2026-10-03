@@ -217,9 +217,12 @@ def _read(doc, bufs, ai, width):
 
 
 def _meshes(doc, under):
-    """(mesh index, world matrix) of every mesh node at or below the node named `under` (None: all)."""
+    """(mesh index, world matrix) of every mesh node at or below the node named `under` (None: all; a
+    name no node has: all as well, the file has no such grouping)."""
     nodes = doc.get("nodes", [])
     out = []
+    if under is not None and not any(n.get("name") == under for n in nodes):
+        under = None
 
     def walk(ni, parent, on):
         node = nodes[ni]
@@ -240,6 +243,12 @@ def _apply(m, p):
     x, y, z = p
     return [m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13],
             m[2] * x + m[6] * y + m[10] * z + m[14]]
+
+
+def has_node(data, name, is_glb=True):
+    """Whether a node of the file has this name."""
+    doc, _ = _document(data, is_glb, None)
+    return any(n.get("name") == name for n in doc.get("nodes", []))
 
 
 def positions(data, is_glb=True, under=None, buffers=None, limit=60000):

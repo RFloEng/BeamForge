@@ -23,6 +23,7 @@ origin (front-axle centre on the ground) on the base vehicle's front axle line a
 
 import json
 import math
+import os
 import re
 
 from beamforge import gltf
@@ -102,8 +103,10 @@ def mesh_points(svj, files, yf, ground, under=None):
         with open(path, "rb") as fh:
             data = fh.read()
         node = under or (chassis["node"] if chassis else None)
-        raw = gltf.positions(data, is_glb=path.lower().endswith(".glb"), under=node)
-        pts += [svjmod.from_sae(svjmod.gltf_to_sae(p, axes), yf, ground) for p in raw]
+        glb = path.lower().endswith(".glb")
+        raw = gltf.positions(data, is_glb=glb, under=node)
+        off = svjmod.mesh_offset(svj, data, glb)[0] or [0.0, 0.0, 0.0]     # the mesh on its wheels
+        pts += [svjmod.from_sae([a + b for a, b in zip(svjmod.gltf_to_sae(p, axes), off)], yf, ground) for p in raw]
     return pts
 
 
@@ -278,7 +281,10 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
         else:
             bp = beam_parts or ["" for _ in beams]
             mapping = map_hardpoints(out, beams, bp, parts, wheels, hps, overrides)
-            targets = {}
+            targets, kept = {}, []
+            tw = _twins(out)
+            tied_chassis = {n for r in mapping if r["kind"] == "chassis" for n in r["nodes"]}
+            tied_chassis |= {t for n in tied_chassis for t in tw.get(n, ())}   # and the nodes at their place
             # the rest of each hub moves rigidly with its tied points (a hub is one piece)
             mid = lambda w: [(out[w["node1"]][i] + out[w["node2"]][i]) / 2 for i in range(3)]  # noqa: E731
             for corner in {r["corner"] for r in mapping}:
@@ -287,14 +293,38 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
                 if not wheel_row:
                     continue
                 wheel = next(w for w in wheels if [w["node1"], w["node2"]] == wheel_row["nodes"])
-                src = [mid(wheel)] + [out[r["nodes"][0]] for r in rows if r["kind"] == "upright"]
-                dst = [wheel_row["target"]] + [r["target"] for r in rows if r["kind"] == "upright"]
+                ups, seen_n = [], set()                    # one point per node (an SVJ point listed twice)
+                for r in rows:
+                    if r["kind"] == "upright" and r["nodes"][0] not in seen_n:
+                        seen_n.add(r["nodes"][0])
+                        ups.append(r)
+                src = [mid(wheel)] + [out[r["nodes"][0]] for r in ups]
+                dst = [wheel_row["target"]] + [r["target"] for r in ups]
                 move = rigid_fit(src, dst)
-                same = len(src) < 3 or math.sqrt(sum(math.dist(move(p), q) ** 2 for p, q in zip(src, dst)) / len(src)) <= HUB_TOLERANCE
+                rms = math.sqrt(sum(math.dist(move(p), q) ** 2 for p, q in zip(src, dst)) / len(src))
                 hub, _ = corner_roles(out, beams, bp, parts, wheel)
-                if same:                                   # the same upright: the whole hub moves as one piece
+                hub -= tied_chassis                        # a node with its own chassis tie follows that tie
+                c0 = mid(wheel)
+                turn = max(math.degrees(math.acos(max(-1.0, min(1.0, sum(
+                    (move([c0[k] + e[k] for k in range(3)])[k] - move(c0)[k]) * e[k] for k in range(3))))))
+                    for e in ([1, 0, 0], [0, 1, 0], [0, 0, 1]))
+                # the same upright: moved whole (rigid); close to it: reshaped; otherwise (another design, too few
+                # points to tell, or a fit that turns the hub a lot) the base hub is kept and moved to the wheel centre
+                why = ("fewer than 3 upright points to compare" if len(src) < 3 else
+                       f"turned {turn:.0f} deg" if turn > MAX_HUB_TURN else
+                       f"{rms * 1000:.0f} mm from the SVJ upright's shape" if rms > RESHAPE_MAX else None)
+                if why is None and rms <= HUB_TOLERANCE:
                     for n in hub:
                         targets[n] = move(out[n])
+                elif why is not None:
+                    t = [wheel_row["target"][i] - c0[i] for i in range(3)]
+                    for n in hub:
+                        targets[n] = [out[n][i] + t[i] for i in range(3)]
+                    for r in rows:
+                        if r["kind"] == "upright":
+                            r["by"], r["kept"] = "kept", r["nodes"]
+                            r["nodes"] = []
+                    kept.append(f"{corner} ({why})")
                 # a different upright: only its tied nodes are set; the rest of the hub follows them through
                 # the displacement field, so the base hub is reshaped towards the SVJ upright
                 al = ((svj.get("suspension") or {}).get(corner) or {}).get("alignment") or {}
@@ -318,10 +348,19 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
             except ValueError as exc:
                 notes.append(str(exc))
             uprights = upright_check(before, out, mapping, wheels, svj, beams, bp, parts)
+            deg = sorted(c for c, x in (svj.get("suspension") or {}).items()
+                         if isinstance(x, dict) and svj_alignment(x.get("alignment"))[2])
+            if deg:
+                notes.append("the SVJ alignment of " + ", ".join(deg) + " is too large for radians (the spec's unit): "
+                             "read as degrees; fix the file's converter")
             off = [f"{u['corner']} ({u['shape_rms_mm']:.0f} mm)" for u in uprights
                    if u["shape_rms_mm"] is not None and u["shape_rms_mm"] > 1000 * HUB_TOLERANCE]
+            off = [o for o in off if not any(o.split(" ")[0] == k.split(" ")[0] for k in kept)]  # noqa: E501
             if off:
                 changes.append("hubs reshaped towards the SVJ uprights: " + ", ".join(off) + " of shape difference")
+            if kept:
+                changes.append("hubs kept as the base's, moved whole to the SVJ wheel centre (not bent into the SVJ upright): "
+                               + ", ".join(kept))
             bad = distortion(before, out, beams)
             if bad:
                 worst = ", ".join(f"{a}-{b} x{r}" for r, a, b in bad[:3])
@@ -336,9 +375,13 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
                    for r in mapping if r["by"] == "user" and r["distance"] > 0.25]
             if far:
                 notes.append("your ties far from their hardpoint: " + ", ".join(far) + "; is that the right node?")
-            missing = [f"{r['corner']} {r['name']}" for r in mapping if not r["nodes"]]
+            missing = [f"{r['corner']} {r['name']}" for r in mapping if not r["nodes"] and r["by"] == "none"]
             if missing:
                 notes.append("no node for " + ", ".join(missing))
+            far = [f"{r['corner']} {r['name'].replace('_', ' ')} ({r['distance'] * 1000:.0f} mm)" for r in mapping if r["by"] == "far"]
+            if far:
+                changes.append(f"not tied, the nearest node is more than {MAX_GUESS * 1000:.0f} mm away (a different design "
+                               "there; tie one by hand to force it): " + ", ".join(far))
             done = [r for r in mapping if r["nodes"]]
             if done:
                 report.append({"stage": "pickups", "label": "Pickups, largest gap", "unit": "m",
@@ -366,7 +409,15 @@ def fit_json(geometry_json, wheels_json, svj_json, files_json, stages_json, over
     mesh, notes = None, []
     if "body" in stages and ax:
         try:
-            mesh = mesh_points(svj, json.loads(files_json), ax["yf"], ax["ground"]) or None
+            files = json.loads(files_json)
+            mesh = mesh_points(svj, files, ax["yf"], ax["ground"]) or None
+            chassis = next((b for b in svjmod.visual_bindings(svj) if b["path"] == "chassis"), None)
+            for mid, path in files.items():
+                if mesh and chassis and chassis.get("node") and chassis["mesh_ref"] in (None, mid):
+                    with open(path, "rb") as fh:
+                        if not gltf.has_node(fh.read(), chassis["node"], path.lower().endswith(".glb")):
+                            notes.append(f"the SVJ body binds to node {chassis['node']}, which {os.path.basename(path)} does not "
+                                         "have: the whole mesh is the body (wheels and all; the sizes may be a little large)")
         except (OSError, ValueError, KeyError, IndexError) as exc:
             notes.append(f"could not read the SVJ body mesh: {exc}")
     r = fit(nodes, geo["parts"], wheels, svj, mesh, stages, geo.get("beams"), geo.get("beam_parts"),
@@ -417,8 +468,12 @@ def map_hardpoints(nodes, beams, beam_parts, parts, wheels, hps, overrides=None)
     nodes (the wheel nearest to it); upright hardpoints go to the hub nodes, link inner points to
     the chassis-side nodes (corner_roles), each node used once, nearest pairs first. A hardpoint at
     the same place as a link's inner point (a strut top listed twice) counts once, as a chassis
-    point. overrides: {"<corner>:<name>": node id} set by the user. Returns [{"corner", "name",
-    "kind", "nodes", "target", "distance", "by"}]; nodes is [] when nothing fits.
+    point. Hardpoints at one place (an SVJ may list a strut's lower end, the damper's and the ball joint
+    at one point) are one point: tied once, the others follow it ("by": "same"). A guess farther than
+    MAX_GUESS is not tied ("by": "far": a different design there, not the same point; the field moves
+    that node with its neighbours). overrides: {"<corner>:<name>": node id} set by the user (any
+    distance). Returns [{"corner", "name", "kind", "nodes", "target", "distance", "by"}]; nodes is []
+    when nothing is tied.
     """
     overrides = overrides or {}
     rows, used = [], set()
@@ -439,12 +494,16 @@ def map_hardpoints(nodes, beams, beam_parts, parts, wheels, hps, overrides=None)
                      "target": wc["pos"], "distance": round(math.dist(mid(wheel), wc["pos"]), 4), "by": "wheel"})
         up, side = corner_roles(nodes, beams, beam_parts, parts, wheel)
         inner = [h["pos"] for h in mine if h["kind"] == "chassis"]
-        todo = []
+        todo, same = [], []
         for h in mine:
             if h["name"] == "wheel_center":
                 continue
             if h["kind"] == "upright" and any(math.dist(h["pos"], p) < 0.002 for p in inner):
                 continue                                   # the same point as a link's inner end
+            lead = next((t for t in todo if t["kind"] == h["kind"] and math.dist(t["pos"], h["pos"]) < SAME_POINT), None)
+            if lead is not None:
+                same.append((h, lead))                     # one point listed twice: tied with the first
+                continue
             todo.append(h)
         pairs = []
         free_up = []
@@ -466,23 +525,32 @@ def map_hardpoints(nodes, beams, beam_parts, parts, wheels, hps, overrides=None)
         hub_free = sorted(n for n in up if n not in used)
         best = _shape_assignment(nodes, wheel, wc["pos"], free_up, hub_free)
         for h, n in best:
+            if math.dist(nodes[n], h["pos"]) > MAX_GUESS:
+                continue
             rows.append({"corner": corner, "name": h["name"], "kind": h["kind"], "nodes": [n], "target": h["pos"],
                          "distance": round(math.dist(nodes[n], h["pos"]), 4), "by": "guess"})
             use(n)
         pairs.sort()
         done = {r["name"] for r in rows if r["corner"] == corner}
         for d, name, n in pairs:
-            if name in done or n in used:
+            if name in done or n in used or d > MAX_GUESS:
                 continue
             h = next(x for x in todo if x["name"] == name)
             rows.append({"corner": corner, "name": name, "kind": h["kind"], "nodes": [n], "target": h["pos"],
                          "distance": round(d, 4), "by": "guess"})
             done.add(name)
             use(n)
+        done = {r["name"] for r in rows if r["corner"] == corner}
         for h in todo:
             if h["name"] not in done:
+                cand = [n for n in (up if h["kind"] == "upright" else side) if n not in used]
+                near = min((math.dist(nodes[n], h["pos"]) for n in cand), default=None)
                 rows.append({"corner": corner, "name": h["name"], "kind": h["kind"], "nodes": [], "target": h["pos"],
-                             "distance": None, "by": "none"})
+                             "distance": round(near, 4) if near is not None else None, "by": "far" if near is not None else "none"})
+        for h, lead in same:
+            r = next(x for x in rows if x["corner"] == corner and x["name"] == lead["name"])
+            rows.append({"corner": corner, "name": h["name"], "kind": h["kind"], "nodes": list(r["nodes"]), "target": h["pos"],
+                         "distance": r["distance"], "by": "same", "same_as": lead["name"]})
     return rows
 
 
@@ -520,6 +588,8 @@ def _shape_assignment(nodes, wheel, wc, hps, hub, limit=20000):
     return list(zip(hps, best))
 
 
+SAME_POINT = 0.005   # m: SVJ hardpoints this close are one point
+MAX_GUESS = 0.15     # m: a guessed tie farther than this is a different design, not the same point
 TWIN = 0.002   # m: nodes this close are one physical point (BeamNG often puts two nodes at one place)
 
 
@@ -653,6 +723,27 @@ def distortion(before, after, beams, limit=2.0):
 
 
 HUB_TOLERANCE = 0.025   # m: a hub within this rms gap of the SVJ upright is the same upright (moved whole)
+MAX_HUB_TURN = 15.0     # deg: a rigid hub move that turns the hub more than this is moved only
+RESHAPE_MAX = 0.03      # m: beyond this gap the upright is another design: the base hub is kept, moved whole
+
+
+ALIGN_MAX = {"camber": 0.15, "toe": 0.1}   # rad: a static value beyond this is a file in degrees
+
+
+def svj_alignment(al):
+    """(camber, toe) in radians from an SVJ corner's alignment (None where absent), and whether a
+    value was read as degrees: the spec says radians, but a static camber over 0.15 rad (8.6 deg) or
+    toe over 0.1 rad is not a road car's; some converters write degrees."""
+    out, deg = [], False
+    for k in ("camber", "toe"):
+        x = (al or {}).get(k)
+        if not isinstance(x, (int, float)) or isinstance(x, bool):
+            out.append(None)
+            continue
+        if abs(x) > ALIGN_MAX[k]:
+            x, deg = math.radians(x), True
+        out.append(x)
+    return out[0], out[1], deg
 
 
 def _place_wheel(nodes, wheel, centre, alignment):
@@ -661,8 +752,8 @@ def _place_wheel(nodes, wheel, centre, alignment):
     a, b = nodes[wheel["node1"]], nodes[wheel["node2"]]
     half = math.dist(a, b) / 2
     mid = [(a[i] + b[i]) / 2 for i in range(3)]
-    c, t = alignment.get("camber"), alignment.get("toe")
-    if not (isinstance(c, (int, float)) and isinstance(t, (int, float))):
+    c, t, _ = svj_alignment(alignment)
+    if c is None or t is None:
         return {k: [nodes[k][i] - mid[i] + centre[i] for i in range(3)] for k in (wheel["node1"], wheel["node2"])}
     outer, inner = (wheel["node1"], wheel["node2"]) if abs(a[0]) >= abs(b[0]) else (wheel["node2"], wheel["node1"])
     side = 1.0 if nodes[outer][0] >= 0 else -1.0
@@ -697,7 +788,7 @@ def upright_check(before, after, mapping, wheels, svj, beams, beam_parts, parts)
     out = []
     susp = svj.get("suspension") or {}
     for corner in sorted({r["corner"] for r in mapping}):
-        rows = [r for r in mapping if r["corner"] == corner and r["nodes"] and r["kind"] in ("wheel", "upright")]
+        rows = [r for r in mapping if r["corner"] == corner and (r["nodes"] or r.get("kept")) and r["kind"] in ("wheel", "upright")]
         wrow = next((r for r in rows if r["kind"] == "wheel"), None)
         if not wrow:
             continue
@@ -705,7 +796,7 @@ def upright_check(before, after, mapping, wheels, svj, beams, beam_parts, parts)
         mid = lambda N: [(N[wheel["node1"]][i] + N[wheel["node2"]][i]) / 2 for i in range(3)]  # noqa: E731
         ups = [r for r in rows if r["kind"] == "upright"]
         names = ["wheel_center"] + [r["name"] for r in ups]
-        base = [mid(before)] + [before[r["nodes"][0]] for r in ups]
+        base = [mid(before)] + [before[(r["nodes"] or r["kept"])[0]] for r in ups]
         svjp = [wrow["target"]] + [r["target"] for r in ups]
         row = {"corner": corner, "points": names, "shape_rms_mm": None, "shape_max_mm": None, "worst_pair": None}
         if len(base) >= 3:
@@ -724,8 +815,9 @@ def upright_check(before, after, mapping, wheels, svj, beams, beam_parts, parts)
         row["hub_beams_pct"] = round(100 * max(changes), 1) if changes else None
         row["camber_deg"], row["toe_deg"] = (round(x, 2) for x in _wheel_angles(after, wheel))
         al = (susp.get(corner) or {}).get("alignment") or {}
-        row["svj_camber_deg"] = round(math.degrees(al["camber"]), 2) if isinstance(al.get("camber"), (int, float)) else None
-        row["svj_toe_deg"] = round(math.degrees(al["toe"]), 2) if isinstance(al.get("toe"), (int, float)) else None
+        c, t, _ = svj_alignment(al)
+        row["svj_camber_deg"] = round(math.degrees(c), 2) if c is not None else None
+        row["svj_toe_deg"] = round(math.degrees(t), 2) if t is not None else None
         out.append(row)
     return out
 
