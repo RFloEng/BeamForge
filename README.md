@@ -31,7 +31,7 @@ Tests (standard library only):
 python -m unittest discover -s tests -t .
 ```
 
-Set `BEAMNG_VEHICLES` to your `content/vehicles` folder to also build every vehicle of your install in `tests/test_beamng.py`.
+Set `BEAMNG_VEHICLES` to your `content/vehicles` folder to also build every vehicle of your install (`tests/test_beamng.py`) and export every car and truck as a new vehicle, read back as the game would (`tests/test_export.py`; all 38 of a 2026 install pass).
 
 ## Layout
 

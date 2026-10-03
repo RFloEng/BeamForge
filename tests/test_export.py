@@ -124,5 +124,45 @@ class TestExport(unittest.TestCase):
         self.assertEqual(find(v["tree"], "wheel_F_4")["part"], "toyfit_steel_wheel_F")
 
 
+@unittest.skipUnless(__import__("os").environ.get("BEAMNG_VEHICLES"), "set BEAMNG_VEHICLES to a BeamNG content/vehicles folder")
+class TestLocalInstallExport(unittest.TestCase):
+    """Every car and truck of a local install, edited, exported with every part regenerated, and read
+    back as the game would (new folder + common): every node where the edit put it, no part lost."""
+
+    def test_every_vehicle_exports(self):
+        import math
+        import os
+        import zipfile
+        lib = Path(os.environ["BEAMNG_VEHICLES"])
+        bng.reset()
+        with zipfile.ZipFile(lib / "common.zip") as z:
+            bng.add_files(json.dumps({n: z.read(n).decode("utf-8-sig", "replace") for n in z.namelist() if n.endswith(".jbeam")}))
+        for zp in sorted(lib.glob("*.zip")):
+            if zp.name == "common.zip":
+                continue
+            with zipfile.ZipFile(zp) as z:
+                texts = {n: z.read(n).decode("utf-8-sig", "replace") for n in z.namelist() if n.endswith((".jbeam", ".pc", ".json"))}
+            info = next((bng.jbeam.parse(t) for n, t in texts.items() if n.count("/") == 2 and n.endswith("/info.json")), {})
+            if not isinstance(info, dict) or info.get("Type") not in ("Car", "Truck"):
+                continue
+            model = next(iter({n.split("/")[1] for n in texts if n.startswith("vehicles/")}))
+            with self.subTest(model=model):
+                bng.add_files(json.dumps(texts))
+                base = json.loads(bng.configure(model))
+                moved = {n: [0.01, -0.02, 0.005] for n in list(base["geometry"]["nodes"])[::7]}
+                configured = bng.configure(model, base["config"], None, None, json.dumps({"nodes": moved}))
+                edited = json.loads(configured)["geometry"]["nodes"]
+                plan = json.loads(export.plan(model, configured))
+                new_id = f"bf_{model.lower()}"[:40]
+                out = json.loads(export.build(model, new_id, "BF", configured, json.dumps({p["part"]: "fit" for p in plan})))
+                bng.add_files(json.dumps(out["files"]))
+                nv = json.loads(bng.configure(new_id))
+                ng = nv["geometry"]["nodes"]
+                self.assertEqual(set(ng), set(edited))
+                self.assertLess(max(math.dist(ng[n], edited[n]) for n in edited), 2e-4)     # positions are kept to 0.1 mm
+                self.assertEqual(nv["missing"], base["missing"])                          # nothing lost (some vanilla
+                #                                                                           slots name parts that do not exist)
+
+
 if __name__ == "__main__":
     unittest.main()
