@@ -2,6 +2,8 @@
 
 A vanilla car has 400–600 nodes and 3,000–5,000 beams: too many to move by hand. This page is the method for bending a base vehicle onto an SVJ automatically, in a few stages the user can check and accept one by one.
 
+The base is a starting point, not a copy: the RWD saloon is taken and modified until it has the BMW E30's values. Large differences between the two are the work to be done, not errors. The editor lists them as the changes made to the base, and keeps red for real problems (a stage that could not run, a hardpoint without a node, a tie far from its point).
+
 **Built:** all three stages and the hardpoint mapping (`beamforge/fit.py`, the *Fit to the SVJ* section of the SVJ panel). **Next:** writing the fitted parts into the game.
 
 ## What there is to fit to
@@ -39,12 +41,12 @@ The order matters. Global, approximate stages come first; exact constraints come
 ### Stage 3: suspension pickup points (exact, local)
 
 - Every SVJ hardpoint is tied to one node of the base vehicle (see the mapping below). The tie gives a target for that node. A wheel centre moves its wheel's two axle nodes together.
-- The rest of each hub moves rigidly with its tied points (the best rotation and translation, Horn's method): a hub is one piece, so it is not bent between its points. When the hub's shape is more than 25 mm (rms) off the SVJ upright, that rotation means nothing, so the hub is only moved along.
+- A hub of the same shape as the SVJ upright (within 25 mm rms) moves as one piece with its tied points (the best rotation and translation, Horn's method). A hub of a different shape is reshaped: only its tied nodes are set, and the rest of it follows them through the displacement field. On the RWD saloon against the E30 that halves the largest hub beam change against moving it stiffly (57 % to 34 %).
 - **The wheel axis** takes the SVJ's static camber and toe (`alignment`, radians) when the file has them, and otherwise keeps the base vehicle's. It is never taken from the hub's best rotation: with hubs of different shapes that rotation tipped wheels by 15–40° in testing.
 - A smooth displacement field passes through every target exactly and fades to zero within a radius (Wendland's compactly supported function). The radius is 0.4 m, or three times the largest move (at most 1 m), so a long move is spread out instead of folding the structure. Nodes near a pickup point move with it, so the subframe, strut tower and arm mounts around it follow. Nodes far away do not move.
 - Track widths are not a separate step. They follow from the wheel centre and upright hardpoints.
-- **Check:** beams stretched or squeezed more than 2 times are counted and the worst named, so the user knows where to look. Ties the user set more than 25 cm from their hardpoint are named too.
-- **Uprights against the SVJ:** per corner, the base hub's tied points (wheel centre and upright hardpoints) are laid over the SVJ upright points by the best rigid move. What is left is the shape gap (0 for the same upright; it needs 3 points). The editor shows it with the worst point pair, the largest hub beam change after the fit, and the fitted camber and toe beside the SVJ's. Hubs more than 25 mm off are named in a note.
+- **Changes and problems:** beams that change length more than 2 times and reshaped hubs are listed as the largest changes made to the base (expected, and a place to look if a tie is wrong). Ties the user set more than 25 cm from their hardpoint, and hardpoints with no node, are problems.
+- **Uprights against the SVJ:** per corner, the base hub's tied points (wheel centre and upright hardpoints) are laid over the SVJ upright points by the best rigid move. What is left is the shape gap (0 for the same upright; it needs 3 points). The editor shows it with the worst point pair, the largest hub beam change after the fit, and the fitted camber and toe beside the SVJ's. Hubs more than 25 mm off are listed among the changes as reshaped.
 
 This is your order (wheelbase, pickup points, rest of the body) with the last two swapped. Fitting the body after the pickup points would move them again; fitting it first and finishing with the exact pickup points keeps them exact.
 
@@ -73,7 +75,7 @@ The nearest node gets the upright points roughly right, but not the inboard poin
 3. **The user checks it:** the editor lists each hardpoint, its node, how it was tied and the gap before the fit. *re-tie* then a click on a node in the view ties it there; *auto* goes back to the guess.
 4. **Later, saved per suspension part:** a small mapping file per part (for example `hatchback_suspension_F`), so every vehicle and configuration that uses that part gets it for free. Today the ties live with the open vehicle.
 
-**Choosing the base:** the closer the base vehicle, the smaller every stage. Pick one of the same kind, size and era (the RWD saloon for a BMW 3 Series), and above all with the same suspension type at each axle: a hardpoint can only be matched to a node that plays the same role. Where the types differ (a twist beam against a semi-trailing arm), only the wheel centre and the damper match; the editor should say so.
+**Choosing the base:** the closer the base vehicle, the smaller every stage, so pick one of the same kind, size and era (the RWD saloon for a BMW 3 Series). Differences are expected and are what the fit changes. Where the suspension types differ (the RWD saloon's multi-link rear against the E30's semi-trailing arm), only the points that have a node of the same role are tied (the wheel centre, the damper, the arm's mounts); the base keeps its other links.
 
 ## The user's choice per stage
 

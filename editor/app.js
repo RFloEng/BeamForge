@@ -843,6 +843,7 @@ function fitPanel() {
     <div class="kv">${FIT_STAGES.map(([k, label, hint]) => `<span><label title="${esc(hint)}"><input type="checkbox" data-fitstage="${k}" ${fitStages.has(k) ? 'checked' : ''}> ${esc(label)}</label></span><span></span>`).join('')}</div>
     <div class="inl"><button id="fitrun" class="primary">Fit</button>${Object.keys(vehEdit.fit).length ? '<button id="fitclear">Remove fit</button>' : ''}</div>
     ${table}${r && r.notes.length ? r.notes.map((n) => `<p class="bad">${esc(n)}</p>`).join('') : ''}
+    ${r && r.changes && r.changes.length ? `<p class="quiet"><b>Largest changes to the base:</b> ${r.changes.map(esc).join(' · ')}</p>` : ''}
     ${uprightTable(r)}
     ${mappingTable(r)}
     <p class="quiet">The fit moves every node; hand moves stay on top. Not saved in the .pc yet.</p>`;
@@ -853,14 +854,14 @@ function uprightTable(r) {
   if (!r || !r.uprights || !r.uprights.length) return '';
   const mm = (x) => x === null || x === undefined ? '–' : fmt(x, 0) + ' mm';
   const ang = (a, b) => `${fmt(a, 2)}°${b === null || b === undefined ? '' : ` <span class="q">(SVJ ${fmt(b, 2)}°)</span>`}`;
-  return `<details open><summary><b>Uprights against the SVJ</b> <span class="q">(shape gap: base hub laid over the SVJ upright)</span></summary>
-    <table class="cmp"><tr><th>Corner</th><th>Shape gap</th><th>Hub beams</th><th>Camber</th><th>Toe</th></tr>
+  return `<details open><summary><b>Uprights: base against the SVJ</b> <span class="q">(how much each hub was reshaped)</span></summary>
+    <table class="cmp"><tr><th>Corner</th><th>Shape difference</th><th>Hub beams changed</th><th>Camber</th><th>Toe</th></tr>
     ${r.uprights.map((u) => `<tr title="${esc(u.points.join(', '))}${u.worst_pair ? ` · worst pair ${u.worst_pair[0]}–${u.worst_pair[1]}: ${u.worst_pair[2]} mm on the base, ${u.worst_pair[3]} mm in the SVJ` : ''}">
       <td>${esc(u.corner)}</td>
-      <td class="${u.shape_rms_mm !== null && u.shape_rms_mm > 25 ? 'bad' : ''}">${u.shape_rms_mm === null ? `<span class="q">${u.points.length} points</span>` : mm(u.shape_rms_mm)}</td>
-      <td class="${u.hub_beams_pct !== null && u.hub_beams_pct > 25 ? 'bad' : ''}">${u.hub_beams_pct === null ? '–' : fmt(u.hub_beams_pct, 0) + ' %'}</td>
+      <td>${u.shape_rms_mm === null ? `<span class="q">${u.points.length} points</span>` : mm(u.shape_rms_mm)}</td>
+      <td>${u.hub_beams_pct === null ? '–' : fmt(u.hub_beams_pct, 0) + ' %'}</td>
       <td>${ang(u.camber_deg, u.svj_camber_deg)}</td><td>${ang(u.toe_deg, u.svj_toe_deg)}</td></tr>`).join('')}</table>
-    <p class="quiet">Shape gap: what is left after the best rigid overlay of the hub's tied nodes on the SVJ upright points (0 = the same upright; needs 3 points). Hub beams: the largest length change inside the hub after the fit. The wheel axis takes the SVJ static camber and toe when the file has them, else keeps the base vehicle's. Hover a row for its points and worst pair.</p></details>`;
+    <p class="quiet">Shape difference: how far the base hub was from the SVJ upright before the fit (the gap left after the best rigid overlay of its tied points; 0 = the same upright; needs 3 points). The fit reshapes the hub towards the SVJ: its tied nodes go exactly onto the SVJ points and the rest follows. Hub beams changed: the largest length change inside the hub. The wheel axis takes the SVJ static camber and toe when the file has them, else keeps the base vehicle's. Hover a row for its points and the pair that differs most.</p></details>`;
 }
 
 // the hardpoint-to-node ties of stage 3: gap before the fit, how it was tied, re-tie by clicking a node

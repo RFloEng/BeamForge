@@ -177,7 +177,8 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
     beam_parts (beamng geometry) and overrides ({"<corner>:<hardpoint>": node}), for "pickups".
     Returns {"nodes": new positions, "moves": {id: [dx, dy, dz]}, "report": [{"stage", "label",
     "base", "target", "after", "unit"}], "mapping": map_hardpoints() rows with "after" (m), "uprights":
-    upright_check() rows,
+    upright_check() rows, "notes": problems (a stage skipped, a hardpoint without a node, a far tie),
+    "changes": the largest changes made to the base (expected: the base is a starting point, not a copy),
     "place": {"yf", "ground"} where the SVJ was placed, "notes": [...]}.
     """
     out = {k: list(v) for k, v in nodes.items()}
@@ -269,7 +270,7 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
             report.append({"stage": "body", "label": "Rear overhang", "unit": "m", "base": round(before["rear"] - yr, 4),
                            "target": round(target["rear"] - yr, 4), "after": round(after["rear"] - yr, 4)})
 
-    mapping, uprights = [], []
+    mapping, uprights, changes = [], [], []
     if "pickups" in stages:
         hps = svjmod.hardpoints(svj, yf, ax["ground"])
         if not beams or not hps:
@@ -289,11 +290,13 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
                 src = [mid(wheel)] + [out[r["nodes"][0]] for r in rows if r["kind"] == "upright"]
                 dst = [wheel_row["target"]] + [r["target"] for r in rows if r["kind"] == "upright"]
                 move = rigid_fit(src, dst)
-                if len(src) >= 3 and math.sqrt(sum(math.dist(move(p), q) ** 2 for p, q in zip(src, dst)) / len(src)) > HUB_TOLERANCE:
-                    move = rigid_fit(src[:1], dst[:1])         # shapes too different to turn it: moved along only
+                same = len(src) < 3 or math.sqrt(sum(math.dist(move(p), q) ** 2 for p, q in zip(src, dst)) / len(src)) <= HUB_TOLERANCE
                 hub, _ = corner_roles(out, beams, bp, parts, wheel)
-                for n in hub:
-                    targets[n] = move(out[n])
+                if same:                                   # the same upright: the whole hub moves as one piece
+                    for n in hub:
+                        targets[n] = move(out[n])
+                # a different upright: only its tied nodes are set; the rest of the hub follows them through
+                # the displacement field, so the base hub is reshaped towards the SVJ upright
                 al = ((svj.get("suspension") or {}).get(corner) or {}).get("alignment") or {}
                 for n, p in _place_wheel(out, wheel, wheel_row["target"], al).items():
                     targets[n] = p
@@ -318,13 +321,12 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
             off = [f"{u['corner']} ({u['shape_rms_mm']:.0f} mm)" for u in uprights
                    if u["shape_rms_mm"] is not None and u["shape_rms_mm"] > 1000 * HUB_TOLERANCE]
             if off:
-                notes.append("hubs that do not match the SVJ uprights: " + ", ".join(off)
-                             + "; check their ties, or pick a base vehicle with the same suspension type")
+                changes.append("hubs reshaped towards the SVJ uprights: " + ", ".join(off) + " of shape difference")
             bad = distortion(before, out, beams)
             if bad:
                 worst = ", ".join(f"{a}-{b} x{r}" for r, a, b in bad[:3])
-                notes.append(f"{len(bad)} beams stretched or squeezed more than 2 times (worst: {worst}): "
-                             "check the hardpoint ties near them, or pick a base vehicle closer to the SVJ")
+                changes.append(f"{len(bad)} beams changed length more than 2 times (largest: {worst}); "
+                               "expected where the base differs from the SVJ, worth a look if a tie is wrong")
             for row in mapping:
                 if row["nodes"]:
                     pts = [out[n] for n in row["nodes"]]
@@ -348,6 +350,7 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
         if any(d):
             moves[n] = d
     return {"nodes": out, "moves": moves, "report": report, "mapping": mapping, "uprights": uprights, "notes": notes,
+            "changes": changes,
             "place": {"yf": round(yf, 4), "ground": round(ax["ground"], 4)}}
 
 
@@ -369,6 +372,7 @@ def fit_json(geometry_json, wheels_json, svj_json, files_json, stages_json, over
     r = fit(nodes, geo["parts"], wheels, svj, mesh, stages, geo.get("beams"), geo.get("beam_parts"),
             json.loads(overrides_json) if overrides_json else None)
     return json.dumps({"moves": r["moves"], "report": r["report"], "mapping": r["mapping"], "uprights": r["uprights"],
+                       "changes": r["changes"],
                        "place": r["place"],
                        "notes": notes + r["notes"]})
 
@@ -613,7 +617,7 @@ def distortion(before, after, beams, limit=2.0):
     return sorted(out, key=lambda x: -max(x[0], 1 / x[0]))
 
 
-HUB_TOLERANCE = 0.025   # m: a hub laid over the SVJ upright with a larger rms gap does not match it
+HUB_TOLERANCE = 0.025   # m: a hub within this rms gap of the SVJ upright is the same upright (moved whole)
 
 
 def _place_wheel(nodes, wheel, centre, alignment):
