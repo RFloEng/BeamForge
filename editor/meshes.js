@@ -4,13 +4,13 @@
 // scale}), the wheels it builds ({group, hubGroup, centre, ...}) and the nodes ({nodes, rest, groups}).
 // A mesh is a named node of a .dae in the vehicle's folder or in vehicles/common (any source). This
 // module finds it, reads it with three.js's ColladaLoader and places it:
-//   body meshes   modelled in place (BeamNG axes, metres; checked on the small hatchback). Every vertex follows
-//                 the displacement of its nearest node among the nodes of the flexbody's groups (a
-//                 simple version of the game's binding), so slot offsets, tuning and the user's moves
-//                 bend the mesh.
-//   wheel meshes  their groups name a wheel's group or hubGroup: modelled around the origin, axle on x,
-//                 put on the wheel centre with the row's rot and scale (pos ignored unless it is an
-//                 absolute position, as for brake hubs).
+//   placement     the row's pos (already shifted by the part's slot offsets in Python, as the game
+//                 does), rot (degrees, turned z, x, y as the game) and scale, applied to the mesh as
+//                 modelled in the .dae (BeamNG axes, metres). Body meshes have pos 0; wheel, brake
+//                 and hub meshes are modelled around the origin and placed by pos.
+//   moves         every vertex follows its nearest node among the nodes it is tied to (the
+//                 flexbody's node groups; for a wheel's groups, its two axle nodes; else its part's
+//                 nodes), by that node's move from the configured car, so the user's moves bend it.
 //
 // Axes: BeamNG (x left, y rear, z up) -> three.js (x, z, y), as v3() in app.js; the swap mirrors, so
 // materials are double sided.
@@ -81,9 +81,9 @@ async function locate(wanted, model, daePaths, read, progress) {
   return { where, missing: [...left] };
 }
 
-// BeamNG Euler rotation in degrees (x, y, z), applied x then y then z (to confirm in-game)
+// a flexbody rotation in degrees: the game turns z, then x, then y (intrinsic)
 const rotation = (r) => new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(
-  THREE.MathUtils.degToRad(r[0]), THREE.MathUtils.degToRad(r[1]), THREE.MathUtils.degToRad(r[2]), 'XYZ'));
+  THREE.MathUtils.degToRad(r[0]), THREE.MathUtils.degToRad(r[1]), THREE.MathUtils.degToRad(r[2]), 'ZXY'));
 
 // Build the meshes of a configured vehicle. Returns { group, update(veh), missing: [names], count }.
 export async function buildMeshes(veh, daePaths, readFile, progress = () => {}) {
@@ -103,17 +103,14 @@ export async function buildMeshes(veh, daePaths, readFile, progress = () => {}) 
     const scene = await parseDae(path, read);
     const obj = scene.getObjectByName(f.mesh);
     if (!obj) continue;
-    const wheel = wheelOf(f);
-    const absolute = !wheel || Math.abs(f.pos[1]) > 0.01 || Math.abs(f.pos[2]) > 0.01;
-    // flexbody transform in BeamNG space: translate(pos) * rot * scale (a wheel's centre is added at update)
-    const T = new THREE.Matrix4().makeTranslation(...(absolute ? f.pos : [0, 0, 0]))
+    // flexbody transform in BeamNG space: translate(pos) * rot * scale
+    const T = new THREE.Matrix4().makeTranslation(...f.pos)
       .multiply(rotation(f.rot)).multiply(new THREE.Matrix4().makeScale(...f.scale));
-    // the nodes a body mesh follows: its groups, else its part's nodes
-    let follow = [];
-    if (absolute) {
-      follow = Object.keys(g.nodes).filter((n) => g.groups[n] && g.groups[n].some((x) => f.groups.includes(x)));
-      if (!follow.length) follow = Object.keys(g.nodes).filter((n) => g.parts[n] === f.part);
-    }
+    // the nodes it follows: its node groups (+ a wheel's axle nodes), else its part's nodes
+    const wheel = wheelOf(f);
+    let follow = Object.keys(g.nodes).filter((n) => g.groups[n] && g.groups[n].some((x) => f.groups.includes(x)));
+    if (wheel) follow.push(wheel.node1, wheel.node2);
+    if (!follow.length) follow = Object.keys(g.nodes).filter((n) => g.parts[n] === f.part);
     obj.traverse((m) => {
       if (!m.isMesh) return;
       const geo = m.geometry.clone();
@@ -121,7 +118,7 @@ export async function buildMeshes(veh, daePaths, readFile, progress = () => {}) 
       const pos = geo.attributes.position;
       const base = Float32Array.from(pos.array);            // BeamNG space, before any node displacement
       let bind = null;
-      if (absolute && follow.length) {                      // nearest node (rest position) per vertex
+      if (follow.length) {                                  // nearest node (rest position) per vertex
         const rest = follow.map((n) => g.rest[n]);
         bind = new Int32Array(pos.count);
         for (let v = 0; v < pos.count; v++) {
@@ -141,7 +138,7 @@ export async function buildMeshes(veh, daePaths, readFile, progress = () => {}) 
       mesh.userData = { part: f.part, mesh: f.mesh, kinds };
       mesh.frustumCulled = false;
       group.add(mesh);
-      items.push({ mesh, base, bind, follow, wheel: absolute ? null : wheel.name });
+      items.push({ mesh, base, bind, follow });
     });
   }
   // place every mesh for the vehicle's current nodes and wheels (after a move, tuning or slot change)
@@ -149,14 +146,9 @@ export async function buildMeshes(veh, daePaths, readFile, progress = () => {}) 
     const nodes = v.geometry.nodes, rest = v.geometry.rest;
     for (const it of items) {
       const out = it.mesh.geometry.attributes.position.array, b = it.base;
-      let dx = 0, dy = 0, dz = 0;
-      if (it.wheel) {
-        const w = v.wheels.find((x) => x.name === it.wheel);
-        if (w) [dx, dy, dz] = w.centre;
-      }
       const disp = it.bind ? it.follow.map((n) => nodes[n] && rest[n] ? [nodes[n][0] - rest[n][0], nodes[n][1] - rest[n][1], nodes[n][2] - rest[n][2]] : [0, 0, 0]) : null;
       for (let i = 0, n = b.length / 3; i < n; i++) {
-        let x = b[3 * i] + dx, y = b[3 * i + 1] + dy, z = b[3 * i + 2] + dz;
+        let x = b[3 * i], y = b[3 * i + 1], z = b[3 * i + 2];
         if (disp) { const d = disp[it.bind[i]]; x += d[0]; y += d[1]; z += d[2]; }
         out[3 * i] = x; out[3 * i + 1] = z; out[3 * i + 2] = y;          // BeamNG -> three.js
       }

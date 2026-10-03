@@ -8,14 +8,15 @@ BeamForge starts from **any BeamNG vehicle** (vanilla or mod) and modifies it fr
 | --- | --- |
 | Base vehicle | Reads the install, the user folder's mods (zips, `repo`, `unpacked`, active ones only) and its own `vehicles/`, the game's way (user folder over mods over install), in the browser. Folders are remembered in Chrome and Edge. Parts tree, tuning, node-and-beam view, `.pc` save |
 | SVJ | Reads an `.svj.json` with its meshes, or a `.zip` bundle. It checks the visual bindings and places the meshes and suspension hardpoints on the base vehicle's front axle and ground. It compares wheelbase, tracks and mass |
-| Geometry edits | Pick a node, a beam or a part, move it with numeric x / y / z (editor only, not written to the game yet) |
+| Geometry edits | Pick a node, a beam or a part, move it with numeric x / y / z. Fit to the SVJ: wheelbase and body to the mesh (stages 1 and 2 of [fitting.md](fitting.md)). Editor only, not written to the game yet |
+| Suspension | The SVJ's corners solved over wheel travel (kinematics from FBeam): static geometry and curves, linkage in 3D |
 | Mesh | The base vehicle's own meshes from the game's `.dae` files (untextured, following its nodes) and wheels. SVJ glTF meshes as translucent reference geometry |
 
 ## Steps
 
 1. ~~**Find the install and mods once.**~~ Done in v0.2: see [beamng-vehicles.md](beamng-vehicles.md#the-editors-base-vehicle).
    - Left: Chrome cannot remember folders under AppData or Program Files (the default user folder). Check in-game which of two mods wins a file both ship.
-2. **Map SVJ hardpoints to jbeam nodes.**
+2. **Map SVJ hardpoints to jbeam nodes, and fit the vehicle to the SVJ.** The method (wheelbase, body to the mesh, exact pickup points) is in [fitting.md](fitting.md).
    - Vanilla suspensions have no meaningful node names (`fhub1l`, `fwhl1l`…), so each SVJ hardpoint needs to be tied to a node.
    - Automatic guess from the structure: the wheel centre from the `pressureWheels` node pair, arms as the beams between hub and body nodes, springs and dampers by beam type.
    - Manual fix: click a node, assign a hardpoint. Save the mapping as a small file per suspension part, so every vehicle sharing that part benefits.

@@ -260,11 +260,12 @@ def _delta(v):
 
 def geometry(parts, tree, vars_, moves=None):
     """Nodes and beams of the configured vehicle, for drawing: {"nodes": {id: [x, y, z]}, "beams": [[a, b]],
-    "parts": {node id: part}, "beam_parts": [part of each beam], "rest": {id: [x, y, z] as written in
-    the jbeam}, "groups": {id: [node groups]}}. Slot nodeOffset / nodeMove are applied to the part in
+    "parts": {node id: part}, "beam_parts": [part of each beam], "rest": {id: [x, y, z] without the
+    user's moves}, "groups": {id: [node groups]}, "ops": {part: [nodeOffset, nodeMove]} (the slot
+    shifts the part gets, summed down the tree)}. Slot nodeOffset / nodeMove are applied to the part in
     the slot and its children (nodeOffset x mirrored by each node's side, as the game does).
-    Expressions that cannot be evaluated offline count as 0. "rest" and "groups" place the flexbody
-    meshes: a mesh is modelled on the nodes as written, and follows them (see flexbodies()).
+    Expressions that cannot be evaluated offline count as 0. "rest", "groups" and "ops" place the
+    flexbody meshes (see flexbodies()): a mesh follows its nodes' moves from "rest".
 
     moves: the user's edits, {"parts": {part: [dx, dy, dz]}, "nodes": {node id: [dx, dy, dz]}} in m,
     added after everything else: a part move shifts that part's nodes and the parts in its slots, as a
@@ -273,7 +274,7 @@ def geometry(parts, tree, vars_, moves=None):
     """
     moves = moves or {}
     part_moves, node_moves = moves.get("parts") or {}, moves.get("nodes") or {}
-    nodes, owner, beams, beam_parts, rest, groups = {}, {}, [], [], {}, {}
+    nodes, owner, beams, beam_parts, rest, groups, ops = {}, {}, [], [], {}, {}, {}
 
     def walk(node, off, move, user):
         name = node["part"]
@@ -281,6 +282,7 @@ def geometry(parts, tree, vars_, moves=None):
             return
         part = parts[name]["part"]
         user = [a + b for a, b in zip(user, _delta(part_moves.get(name)))]
+        ops[name] = [list(off), list(move)]
         for r in jbeam.expand_table(part.get("nodes") or []):
             try:
                 x, y, z = (_num(r.get(k), vars_) for k in ("posX", "posY", "posZ"))
@@ -288,7 +290,6 @@ def geometry(parts, tree, vars_, moves=None):
                 continue
             if r.get("id") is None:
                 continue
-            rx, ry, rz = x, y, z
             o = r.get("nodeOffset") if isinstance(r.get("nodeOffset"), dict) else {}
             ox = off[0] + _num(o.get("x", 0), vars_)
             x += math.copysign(ox, x) if x else ox
@@ -298,7 +299,7 @@ def geometry(parts, tree, vars_, moves=None):
             nid = str(r["id"])
             d = [a + b for a, b in zip(user, _delta(node_moves.get(nid)))]
             nodes[nid] = [round(x + d[0], 4), round(y + d[1], 4), round(z + d[2], 4)]
-            rest[nid] = [round(rx, 4), round(ry, 4), round(rz, 4)]
+            rest[nid] = [round(x, 4), round(y, 4), round(z, 4)]
             g = r.get("group")
             groups[nid] = [str(x_) for x_ in g if x_] if isinstance(g, list) else ([str(g)] if g else [])
             owner[nid] = name
@@ -321,7 +322,7 @@ def geometry(parts, tree, vars_, moves=None):
     walk(tree, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
     keep = [i for i, b in enumerate(beams) if b[0] in nodes and b[1] in nodes]
     return {"nodes": nodes, "beams": [beams[i] for i in keep], "parts": owner, "beam_parts": [beam_parts[i] for i in keep],
-            "rest": rest, "groups": groups}
+            "rest": rest, "groups": groups, "ops": ops}
 
 
 def _vec(d, vars_, default=0.0):
@@ -337,9 +338,9 @@ def wheels(parts, active, geo, vars_):
     and tireWidth by the tyre, hubRadius and hubWidth by the rim, wheelOffset) applies to the wheel
     rows that follow in later parts (the wheel data part), as in the game. Returns [{"name", "node1",
     "node2", "group", "hubGroup", "centre", "axis", "radius", "width", "hubRadius", "hubWidth",
-    "hasTire"}]: axis is the unit vector from the inner to the outer axle node, centre the outer
-    node moved by wheelOffset along it (an approximation of where the game puts the wheel, to
-    confirm in-game).
+    "hasTire"}], placed as the game's pressure wheels: axis the unit vector from node1 to node2,
+    centre their midpoint (or, with offsetFromNode 1 / 2, half the hubWidth from that node), then
+    moved by wheelOffset along the axis.
     """
     nodes = geo["nodes"]
     table = []
@@ -353,29 +354,35 @@ def wheels(parts, active, geo, vars_):
         if a not in nodes or b not in nodes:
             continue
         pa, pb = nodes[a], nodes[b]
-        outer, inner = (pa, pb) if abs(pa[0]) >= abs(pb[0]) else (pb, pa)
-        d = [outer[i] - inner[i] for i in range(3)]
+        d = [pb[i] - pa[i] for i in range(3)]
         length = math.sqrt(sum(x * x for x in d)) or 1.0
         axis = [x / length for x in d]
+        centre = [(pa[i] + pb[i]) / 2 for i in range(3)]
+        hub_w = _num(r.get("hubWidth"), vars_, length)
+        if r.get("offsetFromNode") == 1:
+            centre = [pa[i] + axis[i] * hub_w / 2 for i in range(3)]
+        elif r.get("offsetFromNode") == 2:
+            centre = [pb[i] - axis[i] * hub_w / 2 for i in range(3)]
         off = _num(r.get("wheelOffset", 0), vars_)
         out.append({"name": str(r.get("name")), "node1": a, "node2": b,
                     "group": str(r.get("group") or ""), "hubGroup": str(r.get("hubGroup") or ""),
-                    "centre": [round(outer[i] + axis[i] * off, 4) for i in range(3)], "axis": [round(x, 5) for x in axis],
+                    "centre": [round(centre[i] + axis[i] * off, 4) for i in range(3)], "axis": [round(x, 5) for x in axis],
                     "radius": _num(r.get("radius"), vars_, None), "width": _num(r.get("tireWidth"), vars_, None),
                     "hubRadius": _num(r.get("hubRadius"), vars_, None), "hubWidth": _num(r.get("hubWidth"), vars_, None),
                     "hasTire": r.get("hasTire") is not False})
     return out
 
 
-def flexbodies(parts, active, vars_):
+def flexbodies(parts, active, vars_, ops=None):
     """The meshes of the active parts: [{"part", "mesh", "groups", "pos", "rot", "scale"}].
 
     A flexbody row names a mesh (a node of a .dae file in the vehicle's folder or in
-    vehicles/common) and the node groups it follows. pos / rot (degrees) / scale come from the
-    row or a property row before it. Body meshes are modelled in place (pos 0); meshes on a wheel
-    (their groups name the wheel's group or hubGroup) are modelled around the origin and placed on
-    the wheel.
+    vehicles/common) and the node groups it follows. pos / rot (degrees; the game turns them in the
+    order z, x, y) / scale come from the row or a property row before it. As in the game, pos then
+    takes the slot shifts of its part (ops from geometry()): nodeOffset with x mirrored by the sign of
+    pos x, then nodeMove. That is how a wheel mesh written beside the origin reaches its axle.
     """
+    ops = ops or {}
     out = []
     for n in active:
         rows = parts[n]["part"].get("flexbodies")
@@ -383,10 +390,14 @@ def flexbodies(parts, active, vars_):
             continue
         for r in jbeam.expand_table(rows):
             mesh, groups = r.get("mesh"), r.get("[group]")
-            if not isinstance(mesh, str) or not mesh:
+            if not isinstance(mesh, str) or not mesh or mesh.startswith("$"):     # "$=..." names need game state
                 continue
             groups = [str(g) for g in groups] if isinstance(groups, list) else ([str(groups)] if groups else [])
-            out.append({"part": n, "mesh": mesh, "groups": groups, "pos": _vec(r.get("pos"), vars_),
+            pos = _vec(r.get("pos"), vars_)
+            if n in ops:
+                (ox, oy, oz), (mx, my, mz) = ops[n]
+                pos = [round(pos[0] + math.copysign(ox, pos[0] or 1.0) + mx, 4), round(pos[1] + oy + my, 4), round(pos[2] + oz + mz, 4)]
+            out.append({"part": n, "mesh": mesh, "groups": groups, "pos": pos,
                         "rot": _vec(r.get("rot"), vars_), "scale": _vec(r.get("scale"), vars_, 1.0)})
     return out
 
@@ -617,7 +628,7 @@ def configure(model, config=None, selection_json=None, values_json=None, moves_j
                        "tree": t["tree"], "variables": var_list, "geometry": geo,
                        "measure": measure(parts, t["active"], geo),
                        "wheels": wheels(parts, t["active"], geo, vars_),
-                       "flexbodies": flexbodies(parts, t["active"], vars_),
+                       "flexbodies": flexbodies(parts, t["active"], vars_, geo["ops"]),
                        "missing": [list(m) for m in t["missing"]], "pc": out_pc})
 
 

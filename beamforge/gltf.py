@@ -153,3 +153,87 @@ def node_names(data, is_glb=True):
     """Node names of a .glb (is_glb) or a .gltf JSON file, given as bytes."""
     doc = glb_json(data) if is_glb else json.loads(data.decode("utf-8"))
     return [n.get("name", "") for n in doc.get("nodes", [])]
+
+
+# ---------------------------------------------------------------- vertex positions (reading)
+
+def _matrix(node):
+    """A glTF node's local transform as a column-major 4x4 list (matrix, or translation / rotation / scale)."""
+    if "matrix" in node:
+        return [float(x) for x in node["matrix"]]
+    t = node.get("translation", [0, 0, 0])
+    x, y, z, w = node.get("rotation", [0, 0, 0, 1])
+    s = node.get("scale", [1, 1, 1])
+    r = [1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w),
+         2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w),
+         2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y)]
+    return [r[0] * s[0], r[1] * s[0], r[2] * s[0], 0, r[3] * s[1], r[4] * s[1], r[5] * s[1], 0,
+            r[6] * s[2], r[7] * s[2], r[8] * s[2], 0, t[0], t[1], t[2], 1]
+
+
+def _mul(a, b):
+    """Column-major 4x4 product a * b."""
+    return [sum(a[k * 4 + r] * b[c * 4 + k] for k in range(4)) for c in range(4) for r in range(4)]
+
+
+def positions(data, is_glb=True, under=None, buffers=None, limit=60000):
+    """World-space vertex positions of the meshes in a .glb (or .gltf JSON) file, in the file's own axes.
+
+    under: a node name; only meshes at or below that node are read (None: every node of the default
+    scene). buffers: {uri: bytes} for a .gltf whose buffers are separate files (data: URIs are read
+    directly). At most `limit` points are returned (evenly thinned), enough for bounds and slices.
+    Float VEC3 POSITION accessors only (the glTF 2.0 rule); sparse accessors are not read.
+    """
+    import base64
+    if is_glb:
+        doc = glb_json(data)
+        jlen = struct.unpack_from("<I", data, 12)[0]
+        off = 20 + jlen
+        blen = struct.unpack_from("<I", data, off)[0] if len(data) > off + 8 else 0
+        glb_bin = data[off + 8:off + 8 + blen]
+    else:
+        doc, glb_bin = json.loads(data.decode("utf-8")), b""
+    bufs = []
+    for b in doc.get("buffers", []):
+        uri = b.get("uri")
+        if uri is None:
+            bufs.append(glb_bin)
+        elif uri.startswith("data:"):
+            bufs.append(base64.b64decode(uri.split(",", 1)[1]))
+        else:
+            bufs.append((buffers or {}).get(uri, b""))
+    nodes = doc.get("nodes", [])
+    out = []
+
+    def read_mesh(mi, m):
+        for prim in doc["meshes"][mi].get("primitives", []):
+            ai = prim.get("attributes", {}).get("POSITION")
+            if ai is None:
+                continue
+            acc = doc["accessors"][ai]
+            if acc.get("componentType") != 5126 or acc.get("type") != "VEC3" or "bufferView" not in acc:
+                continue
+            bv = doc["bufferViews"][acc["bufferView"]]
+            buf = bufs[bv["buffer"]]
+            start = bv.get("byteOffset", 0) + acc.get("byteOffset", 0)
+            stride = bv.get("byteStride") or 12
+            for i in range(acc["count"]):
+                x, y, z = struct.unpack_from("<fff", buf, start + i * stride)
+                out.append([m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13],
+                            m[2] * x + m[6] * y + m[10] * z + m[14]])
+
+    def walk(ni, parent, on):
+        node = nodes[ni]
+        m = _mul(parent, _matrix(node))
+        on = on or under is None or node.get("name") == under
+        if on and "mesh" in node:
+            read_mesh(node["mesh"], m)
+        for c in node.get("children", []):
+            walk(c, m, on)
+
+    scenes = doc.get("scenes") or [{"nodes": list(range(len(nodes)))}]
+    ident = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+    for ni in scenes[doc.get("scene", 0)].get("nodes", []):
+        walk(ni, ident, False)
+    step = max(1, len(out) // limit)
+    return out[::step]

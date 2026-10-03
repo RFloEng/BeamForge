@@ -28,7 +28,8 @@ import { buildMeshes, forgetMeshes } from './meshes.js';
 import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, rememberedHandles, rememberHandles, access } from './library.js';
 
 // repo files copied into Pyodide's file system under /bf (add new Python modules here)
-const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py'];
+const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py',
+  'beamforge/fit.py', 'beamforge/suspension.py'];
 const REPO = new URL('../', import.meta.url);
 
 const $ = (id) => document.getElementById(id);
@@ -38,7 +39,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 // last line of a Python traceback, without the exception class
 const pyError = (e) => String(e.message || e).trim().split('\n').pop().replace(/^\w+Error: /, '');
 
-let py, vehpy, svjpy;
+let py, vehpy, svjpy, fitpy, suspy;
 const timing = {};         // ms per step, shown in the footer by drawTiming
 
 // ---------- Python engine ----------
@@ -56,6 +57,8 @@ async function boot() {
   py.runPython("import sys; sys.path.insert(0, '/bf')");
   vehpy = py.pyimport('beamforge.beamng');
   svjpy = py.pyimport('beamforge.svj');
+  fitpy = py.pyimport('beamforge.fit');
+  suspy = py.pyimport('beamforge.suspension');
   timing.files = performance.now() - t1;
   $('loading').remove();
   redraw();
@@ -79,8 +82,9 @@ scene.add(sun);
 scene.add(new THREE.GridHelper(10, 50, 0xb8c0c8, 0xdde2e7));
 // vehG: the base vehicle's nodes and beams (drawVehicle); meshG: SVJ glTF meshes (loadSvjMeshes);
 // hpG: SVJ hardpoints (drawHardpoints)
-const vehG = new THREE.Group(), meshG = new THREE.Group(), hpG = new THREE.Group(), bodyG = new THREE.Group();
-scene.add(vehG, meshG, hpG, bodyG);
+// suspG: the SVJ suspension linkage at the travel slider (drawSuspension)
+const vehG = new THREE.Group(), meshG = new THREE.Group(), hpG = new THREE.Group(), bodyG = new THREE.Group(), suspG = new THREE.Group();
+scene.add(vehG, meshG, hpG, bodyG, suspG);
 
 // BeamNG axes (X left, Y rear, Z up) -> three.js (Y up)
 const v3 = (p) => new THREE.Vector3(p[0], p[2], p[1]);
@@ -110,7 +114,7 @@ function fitCamera() {
   renderer.render(scene, camera);
 })();
 
-function drawScene() { drawVehicle(); placeSvj(); drawHardpoints(); }
+function drawScene() { drawVehicle(); placeSvj(); drawHardpoints(); drawSuspension(); }
 function redraw() { drawScene(); drawVehList(); drawInspector(); drawBudget(); showIssues(issues()); drawTiming(); }
 
 // ---------- base vehicle: any BeamNG vehicle from the user's own install or mods ----------
@@ -127,7 +131,17 @@ function redraw() { drawScene(); drawVehList(); drawInspector(); drawBudget(); s
 let folders = [], resolved = null, pending = [];
 let cat = null, veh = null, vehError = null, vehBusy = '';
 // the user's edits of the base vehicle: slot choices, tuning values, and moves ({parts|nodes: {name: [dx, dy, dz]}})
-const freshEdit = (model, config) => ({ model, config: config || null, parts: {}, vars: {}, moves: { parts: {}, nodes: {} } });
+// fit: the node moves of the last fit to the SVJ (fit.py), kept apart from the hand moves so a new fit
+// replaces it; fitReport: its report rows and notes
+const freshEdit = (model, config) => ({ model, config: config || null, parts: {}, vars: {}, moves: { parts: {}, nodes: {} },
+  fit: {}, fitReport: null });
+// the moves Python applies: the hand moves on top of the fit
+function allMoves() {
+  const nodes = {};
+  for (const [n, d] of Object.entries(vehEdit.fit || {})) nodes[n] = [...d];
+  for (const [n, d] of Object.entries(vehEdit.moves.nodes)) nodes[n] = nodes[n] ? nodes[n].map((x, i) => x + d[i]) : [...d];
+  return { parts: vehEdit.moves.parts, nodes };
+}
 let vehEdit = freshEdit(null, null);
 // per part of the open vehicle: a colour (kept while the vehicle is open), hidden, locked
 let partColor = {}, hiddenParts = new Set(), lockedParts = new Set(), colorCount = 0;
@@ -305,7 +319,7 @@ function configureVehicle() {
   const t = performance.now();
   try {
     veh = JSON.parse(vehpy.configure(vehEdit.model, vehEdit.config, JSON.stringify(vehEdit.parts), JSON.stringify(vehEdit.vars),
-      JSON.stringify(vehEdit.moves)));
+      JSON.stringify(allMoves())));
     if (pick && !pickValid()) pick = null;
     vehEdit.config = veh.config;
     vehError = null;
@@ -635,7 +649,7 @@ function bindVehInspector(el) {
     configureVehicle();
   };
   if ($('movereset')) $('movereset').onclick = () => { vehEdit.moves = { parts: {}, nodes: {} }; configureVehicle(); };
-  $('vehcfg').onchange = (e) => { vehEdit = { ...freshEdit(veh.model, e.target.value), moves: vehEdit.moves }; configureVehicle(); };
+  $('vehcfg').onchange = (e) => { vehEdit = { ...freshEdit(veh.model, e.target.value), moves: vehEdit.moves }; configureVehicle(); };   // a new configuration drops the fit
   el.querySelectorAll('select[data-slot]').forEach((s) => s.onchange = () => { vehEdit.parts[s.dataset.slot] = s.value; configureVehicle(); });
   el.querySelectorAll('input[data-var]').forEach((r) => {
     r.oninput = () => { r.nextElementSibling.textContent = fmt(Number(r.value), Number(r.step) < 0.01 ? 3 : Number(r.step) < 1 ? 2 : 0); };
@@ -703,6 +717,7 @@ $('svjfile').onchange = async (e) => {
       if (!/\.(json|zip)$/i.test(x.name)) py.FS.writeFile(`${raw}/meshes/${x.name}`, data);
     }
     svjDoc = JSON.parse(svjpy.load_bundle(`${raw}/${f.name}`, '/tmp/svj_in'));
+    studySuspension();
     await loadSvjMeshes();
     redraw();
     if (!veh) fitCamera();
@@ -790,7 +805,7 @@ function svjInspector() {
     const v = (x, u) => x === null || x === undefined ? '–' : fmt(x, u === 'kg' ? 0 : 3);
     cmp = `<h2>Base vs SVJ</h2><table class="cmp"><tr><th></th><th>Base</th><th>SVJ</th><th>Δ</th></tr>
       ${rows.map((r) => `<tr><td>${esc(r.label)}</td><td>${v(r.base, r.unit)}</td><td>${v(r.svj, r.unit)}</td><td>${v(r.delta, r.unit)} ${r.delta === null ? '' : esc(r.unit)}</td></tr>`).join('')}</table>
-      <p class="quiet">Choosing which values to take onto the base vehicle comes next (docs/roadmap.md, step 3).</p>`;
+      ${fitPanel()}`;
   }
   return `<h2>SVJ ${esc(s.version || '')}</h2>
     <div class="kv"><span>Vehicle</span><span>${esc(s.vehicle || '–')}</span>
@@ -799,7 +814,169 @@ function svjInspector() {
       <span>Hardpoints</span><span>${svjHp.length}</span></div>
     ${svjDoc.bindings.length ? `<details><summary>Visual bindings</summary><div class="kv">${svjDoc.bindings.map((b) =>
       `<span>${esc(b.path)}</span><span>${esc(b.node)}</span>`).join('')}</div></details>` : ''}
-    ${cmp}`;
+    ${cmp}
+    ${suspPanel()}`;
+}
+
+// ---------- fit the base vehicle to the SVJ (beamforge/fit.py, docs/fitting.md) ----------
+const FIT_STAGES = [['wheelbase', '1 Wheelbase', 'Stretch between the axle lines to the SVJ wheelbase; the front axle stays'],
+  ['body', '2 Body to the mesh', 'Overhangs, floor, width and roof line to the SVJ body mesh (the chassis visual binding)']];
+let fitStages = new Set(['wheelbase', 'body']);
+
+function fitPanel() {
+  const r = vehEdit.fitReport;
+  const v = (x) => x === null || x === undefined ? '–' : fmt(x, 3);
+  const table = r && r.report.length ? `<table class="cmp"><tr><th></th><th>Base</th><th>SVJ</th><th>After</th></tr>
+    ${r.report.map((x) => `<tr><td>${esc(x.label)}</td><td>${v(x.base)}</td><td>${v(x.target)}</td><td>${v(x.after)}</td></tr>`).join('')}</table>` : '';
+  return `<h2>Fit to the SVJ</h2>
+    <div class="kv">${FIT_STAGES.map(([k, label, hint]) => `<span><label title="${esc(hint)}"><input type="checkbox" data-fitstage="${k}" ${fitStages.has(k) ? 'checked' : ''}> ${esc(label)}</label></span><span></span>`).join('')}
+      <span class="q">3 Pickup points</span><span class="q">next</span></div>
+    <div class="inl"><button id="fitrun" class="primary">Fit</button>${Object.keys(vehEdit.fit).length ? '<button id="fitclear">Remove fit</button>' : ''}</div>
+    ${table}${r && r.notes.length ? r.notes.map((n) => `<p class="bad">${esc(n)}</p>`).join('') : ''}
+    <p class="quiet">The fit moves every node; hand moves stay on top. Not saved in the .pc yet.</p>`;
+}
+
+function bindFitPanel() {
+  document.querySelectorAll('[data-fitstage]').forEach((c) => c.onchange = () => { if (c.checked) fitStages.add(c.dataset.fitstage); else fitStages.delete(c.dataset.fitstage); });
+  if ($('fitrun')) $('fitrun').onclick = runFit;
+  if ($('fitclear')) $('fitclear').onclick = () => { vehEdit.fit = {}; vehEdit.fitReport = null; configureVehicle(); };
+}
+
+function runFit() {
+  if (!veh || !svjDoc) return;
+  const files = Object.fromEntries(svjDoc.meshes.filter((m) => m.file).map((m) => [m.id, m.file]));
+  try {
+    const r = JSON.parse(fitpy.fit_json(JSON.stringify(veh.geometry), JSON.stringify(veh.wheels), JSON.stringify(svjDoc.svj),
+      JSON.stringify(files), JSON.stringify([...fitStages])));
+    vehEdit.fit = r.moves;
+    vehEdit.fitReport = r;
+  } catch (err) { vehEdit.fitReport = { report: [], notes: ['fit failed: ' + pyError(err)] }; }
+  configureVehicle();
+}
+
+// ---------- the SVJ's suspension: kinematics over wheel travel (beamforge/suspension.py, from FBeam) ----------
+// svjSusp: suspy.study_svj of the imported SVJ, {corners: {front, rear}, notes}; each corner has its points
+// (left side, front axle at y 0, ground at z 0), lines to draw, static values, curves and solver frames.
+let svjSusp = null, suspCorner = 'front', suspTravel = 0;
+const SCOL = { arm: 0x1a7f37, tie: 0x8250df, strut: 0xbf8700, upright: 0x8c959f };
+
+function studySuspension() {
+  try { svjSusp = JSON.parse(suspy.study_svj_json(JSON.stringify(svjDoc.svj), 100)); }
+  catch (err) { svjSusp = { corners: {}, notes: ['suspension: ' + pyError(err)] }; }
+  if (!svjSusp.corners[suspCorner]) suspCorner = Object.keys(svjSusp.corners)[0] || 'front';
+}
+
+function frameAt(res, t) {          // solver frame nearest to travel t (mm)
+  let best = res.frames[0];
+  for (const f of res.frames) if (Math.abs(f.travel_mm - t) < Math.abs(best.travel_mm - t)) best = f;
+  return best;
+}
+
+function tubeMesh(a, b, r, color, opacity = 1) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(r, r, dir.length(), 12),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.2, transparent: opacity < 1, opacity }));
+  mesh.position.copy(a).addScaledVector(dir, 0.5);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+  return mesh;
+}
+
+// both sides of every corner at the slider travel, placed like the SVJ (front axle line, ground)
+function drawSuspension() {
+  suspG.clear();
+  $('susptoggle').hidden = !(svjSusp && Object.keys(svjSusp.corners).length);
+  if (!svjSusp || !$('showsusp').checked) return;
+  const { yf, zg } = svjPlace();
+  const rad = { arm: 0.011, tie: 0.008, strut: 0.02, upright: 0.014 };
+  for (const res of Object.values(svjSusp.corners)) {
+    const f = frameAt(res, suspTravel), P = { ...res.points, ...f.pts };
+    for (const side of [1, -1]) {
+      const at = (k) => {
+        const m = k.startsWith('~'), q = P[m ? k.slice(1) : k];
+        return q && v3([(m ? -q[0] : q[0]) * side, q[1] + yf, q[2] + zg]);
+      };
+      for (const [a, b, kind, once] of res.lines) {
+        if (once && side < 0) continue;
+        const pa = at(a), pb = at(b);
+        if (pa && pb && pa.distanceTo(pb) > 1e-4) suspG.add(tubeMesh(pa, pb, rad[kind] || 0.01, SCOL[kind] || 0x8c959f));
+      }
+      const r = res.points.WC[2] > 0.1 ? res.points.WC[2] : 0.3;
+      const w = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.18, 32),
+        new THREE.MeshStandardMaterial({ color: 0x57606a, transparent: true, opacity: 0.35, depthWrite: false }));
+      w.position.copy(at('WC'));
+      w.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), v3([f.spin[0] * side, f.spin[1], f.spin[2]]).normalize());
+      suspG.add(w);
+    }
+  }
+}
+$('showsusp').onchange = () => drawSuspension();
+
+// small SVG line chart of one curve over wheel travel, with the usable band and the slider position (from FBeam)
+function chart(title, xs, ys, unit, cur, usable, digits = 1) {
+  const pts = xs.map((x, i) => [x, ys[i]]).filter((p) => p[1] !== null && p[1] !== undefined && Number.isFinite(p[1]));
+  if (pts.length < 2) return '';
+  const W = 270, H = 104, L = 40, B = 18, T = 6;
+  const x0 = Math.min(...pts.map((p) => p[0])), x1 = Math.max(...pts.map((p) => p[0]));
+  let y0 = Math.min(...pts.map((p) => p[1])), y1 = Math.max(...pts.map((p) => p[1]));
+  if (y1 - y0 < 1e-6) { y0 -= 1; y1 += 1; }
+  const pad = (y1 - y0) * 0.08; y0 -= pad; y1 += pad;
+  const X = (x) => L + (x - x0) / (x1 - x0) * (W - L - 6), Y = (y) => T + (y1 - y) / (y1 - y0) * (H - T - B);
+  const path = pts.map((p, i) => `${i ? 'L' : 'M'}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join('');
+  const here = pts.reduce((b, p) => (Math.abs(p[0] - cur) < Math.abs(b[0] - cur) ? p : b), pts[0]);
+  const zeroY = y0 < 0 && y1 > 0 ? `<line x1="${L}" x2="${W - 6}" y1="${Y(0)}" y2="${Y(0)}" stroke="currentColor" stroke-opacity=".25"/>` : '';
+  const band = usable ? `<rect x="${X(Math.max(usable[0], x0))}" y="${T}" width="${Math.max(0, X(Math.min(usable[1], x1)) - X(Math.max(usable[0], x0)))}" height="${H - T - B}" fill="#2f6fdf" fill-opacity=".07"/>` : '';
+  return `<div class="chart"><div class="t"><span>${title}</span><span>${fmt(here[1], digits)} ${unit} at ${fmt(here[0], 0)} mm</span></div>
+    <svg viewBox="0 0 ${W} ${H}" style="color:var(--ink)">${band}${zeroY}
+      <line x1="${X(0)}" x2="${X(0)}" y1="${T}" y2="${H - B}" stroke="currentColor" stroke-opacity=".25"/>
+      <path d="${path}" fill="none" stroke="#2f6fdf" stroke-width="1.8"/>
+      <circle cx="${X(here[0])}" cy="${Y(here[1])}" r="3.5" fill="#cf222e"/>
+      <text x="${L - 4}" y="${Y(y1 - pad) + 4}" text-anchor="end" font-size="10" fill="currentColor" fill-opacity=".6">${fmt(y1 - pad, digits)}</text>
+      <text x="${L - 4}" y="${Y(y0 + pad) + 4}" text-anchor="end" font-size="10" fill="currentColor" fill-opacity=".6">${fmt(y0 + pad, digits)}</text>
+      <text x="${L}" y="${H - 4}" font-size="10" fill="currentColor" fill-opacity=".6">${fmt(x0, 0)}</text>
+      <text x="${W - 6}" y="${H - 4}" text-anchor="end" font-size="10" fill="currentColor" fill-opacity=".6">+${fmt(x1, 0)} mm</text>
+    </svg></div>`;
+}
+
+function suspPanel() {
+  if (!svjSusp) return '';
+  const names = Object.keys(svjSusp.corners);
+  const general = svjSusp.notes.map((n) => `<p class="bad">${esc(n)}</p>`).join('');
+  if (!names.length) return `<h2>Suspension</h2>${general || '<p class="quiet">No suspension corners in this SVJ.</p>'}`;
+  const res = svjSusp.corners[suspCorner] || svjSusp.corners[names[0]];
+  const st = res.static, c = res.curves, t = suspTravel, usable = [-st.rebound_mm, st.bump_mm];
+  const d = (v, n, u) => v === null || v === undefined ? '–' : fmt(v, n) + u;
+  const row = (k, v) => `<span>${k}</span><span>${v}</span>`;
+  const moving = c.travel_mm.length > 1;
+  return `<h2>Suspension <span class="q">(from the SVJ)</span></h2>
+    <div class="inl">${names.map((n) => `<button data-sc="${n}" class="${n === suspCorner ? 'on' : ''}">${n} · ${esc(svjSusp.corners[n].corner)}</button>`).join(' ')}</div>
+    <div class="kv">${row('Layout', esc(res.name))}
+      ${row('Travel', `<input type="range" id="susptravel" min="-100" max="100" step="2.5" value="${t}"> <b>${fmt(t, 1)}</b> mm`)}</div>
+    ${res.notes.map((n) => `<p class="bad">${esc(n)}</p>`).join('')}${general}
+    <details open><summary><b>Static geometry</b></summary><div class="kv">
+      ${row('Camber / toe', `${d(st.camber_deg, 2, '°')} / ${d(st.toe_deg, 2, '°')}`)}
+      ${row('Track', d(st.track_mm, 0, ' mm'))}
+      ${row('Kingpin inclination', d(st.kpi_deg, 1, '°'))}${row('Caster', d(st.caster_deg, 1, '°'))}
+      ${row('Scrub radius', d(st.scrub_radius_mm, 0, ' mm'))}${row('Mechanical trail', d(st.trail_mm, 0, ' mm'))}
+      ${row('Roll-centre height', d(st.roll_centre_mm, 0, ' mm'))}
+      ${row('Motion ratio', d(st.motion_ratio, 2, ''))}${row('Wheel rate', d(st.wheel_rate_N_per_mm, 1, ' N/mm'))}
+      ${row('Travel bump / rebound', `${d(st.bump_mm, 0, '')} / ${d(st.rebound_mm, 0, ' mm')}`)}
+    </div></details>
+    ${moving ? `<details open><summary><b>Over wheel travel</b> <span class="q">(blue band: damper within its stroke)</span></summary>
+      ${chart('Camber', c.travel_mm, c.camber_deg, '°', t, usable, 2)}
+      ${chart('Toe, + = in (bump steer)', c.travel_mm, c.toe_deg, '°', t, usable, 2)}
+      ${chart('Roll-centre height (heave)', c.travel_mm, c.roll_centre_mm, 'mm', t, usable, 0)}
+      ${c.axle_shift_mm ? chart('Axle sideways shift', c.travel_mm, c.axle_shift_mm, 'mm', t, usable, 1) : chart('Track change (both sides)', c.travel_mm, c.track_change_mm, 'mm', t, usable, 1)}
+      ${chart('Motion ratio', c.travel_mm, c.motion_ratio, '', t, usable, 3)}
+      ${chart('Wheel rate', c.travel_mm, c.wheel_rate_N_per_mm, 'N/mm', t, usable, 1)}</details>` : '<p class="quiet">The corner does not move: no curves.</p>'}
+    <p class="quiet">Kinematics with the steering straight ahead; the right side is the mirror image. The base vehicle's own suspension comes once its nodes are tied to these hardpoints (docs/fitting.md, stage 3).</p>`;
+}
+
+function bindSuspPanel() {
+  document.querySelectorAll('[data-sc]').forEach((b) => b.onclick = () => { suspCorner = b.dataset.sc; drawInspector(); });
+  const r = $('susptravel');
+  if (!r) return;
+  r.oninput = () => { suspTravel = +r.value; r.nextElementSibling.textContent = fmt(suspTravel, 1); drawSuspension(); };
+  r.onchange = () => { drawInspector(); };
 }
 
 // ---------- panels ----------
@@ -807,6 +984,8 @@ function drawInspector() {
   const el = $('inspector');
   el.innerHTML = vehInspector() + svjInspector();
   bindVehInspector(el);
+  bindFitPanel();
+  bindSuspPanel();
 }
 
 function drawBudget() {
@@ -818,7 +997,8 @@ function drawBudget() {
     <div><span>Nodes / beams</span><b>${Object.keys(veh.geometry.nodes).length} / ${veh.geometry.beams.length}</b></div>
     <div><span>Wheelbase</span><b>${m.wheelbase ? fmt(m.wheelbase * 1000, 0) + ' mm' : '–'}</b></div>
     <div><span>Tuning variables</span><b>${veh.variables.length}</b> <span>${Object.keys(vehEdit.vars).length} changed</span></div>
-    <div><span>Moved</span><b>${moveCount()}</b> <span>parts and nodes</span></div>`;
+    <div><span>Moved</span><b>${moveCount()}</b> <span>parts and nodes</span></div>
+    ${Object.keys(vehEdit.fit || {}).length ? `<div><span>Fitted to the SVJ</span><b>${Object.keys(vehEdit.fit).length}</b> <span>nodes</span></div>` : ''}`;
 }
 
 function issues() {
@@ -850,6 +1030,7 @@ window.beamforge = {
   get veh() { return veh; },
   get svj() { return svjDoc; },
   get hardpoints() { return svjHp; },
+  get suspension() { return svjSusp; },
   get meshCount() { let n = 0; meshG.traverse((o) => { if (o.isMesh) n++; }); return n; },
   get folders() { return folders; },
   get catalog() { return cat; },

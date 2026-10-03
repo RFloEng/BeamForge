@@ -123,3 +123,8 @@ input[type=number][data-move] { width: 7em; }
 /* parts tree: the part's colour, as drawn in the view */
 .sw { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-left: 6px; vertical-align: middle; }
 button.mini:disabled { opacity: 0.4; cursor: default; }
+
+/* suspension curves (SVG charts, from FBeam) */
+.chart { margin: 6px 0 2px; }
+.chart svg { width: 100%; height: auto; display: block; }
+.chart .t { font-size: 11.5px; color: var(--quiet); display: flex; justify-content: space-between; }

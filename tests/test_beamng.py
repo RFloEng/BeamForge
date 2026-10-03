@@ -171,8 +171,8 @@ class TestWheelsAndMeshes(unittest.TestCase):
         self.assertEqual([x["name"] for x in w], ["FL", "FR"])
         fl = w[0]
         self.assertEqual((fl["radius"], fl["width"], fl["hubRadius"], fl["group"], fl["hubGroup"]), (0.3, 0.15, 0.2, "tire_FL", "wheel_FL"))
-        self.assertEqual(fl["axis"], [1.0, 0.0, 0.0])                      # inner -> outer axle node
-        self.assertEqual(fl["centre"], [0.75, -1.0, 0.3])                  # outer node moved by wheelOffset
+        self.assertEqual(fl["axis"], [-1.0, 0.0, 0.0])                     # node1 -> node2
+        self.assertEqual(fl["centre"], [0.75, -1.0, 0.3])                  # midpoint, then wheelOffset along the axis
         self.assertEqual(w[1]["centre"], [-0.75, -1.0, 0.3])
 
     def test_flexbody_rows(self):
@@ -180,12 +180,15 @@ class TestWheelsAndMeshes(unittest.TestCase):
         self.assertEqual([(x["mesh"], x["groups"]) for x in f], [("rim_a", ["wheel_FL", "wheelhub_FL"]), ("body_a", ["body"])])
         self.assertEqual((f[0]["pos"], f[0]["rot"], f[0]["scale"]), ([0.47, 0, 0], [0, 0, 180], [1.0, 1.0, 1.0]))
         self.assertEqual(f[1]["pos"], [0, 0, 0.1])                           # from the property row before it
+        f2 = bng.flexbodies(self.PARTS, ["rim"], {}, {"rim": [[0.2, -1.0, 0.3], [0.0, 0.0, 0.05]]})
+        self.assertEqual(f2[0]["pos"], [0.67, -1.0, 0.35])                    # slot nodeOffset (x by the side) + nodeMove
 
     def test_rest_positions_and_groups(self):
         bng.reset()
         bng.add_files(json.dumps(CAR))
         g = json.loads(bng.configure("toycar", None, None, None, json.dumps({"nodes": {"b1": [0, 0, 0.1]}})))["geometry"]
-        self.assertEqual(g["rest"]["fwhl1l"], [0.31, 0.0, 0.0])              # as written, before slot offsets
+        self.assertEqual(g["rest"]["fwhl1l"], [0.56, -1.2, 0.3])             # with slot offsets
+        self.assertEqual(g["ops"]["steel_wheel_F"][0], [0.25, -1.2, 0.3])
         self.assertEqual(g["rest"]["b1"], [0.5, -1.0, 0.3])                # before the user's move
         self.assertEqual(g["nodes"]["b1"], [0.5, -1.0, 0.4])
         self.assertEqual(g["groups"]["b1"], [])

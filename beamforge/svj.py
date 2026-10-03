@@ -40,6 +40,20 @@ def to_sae(p, yf=0.0, zg=0.0):
     return [yf - p[1], -p[0], zg - p[2]]
 
 
+def gltf_to_sae(p, axes=None):
+    """glTF point -> SAE J670 [X, Y, Z] for the asset axes {"up", "forward"} (§22.4; see gltf_axes):
+    X = p . forward, Y = p . (forward x up), Z = -p . up. The same frame as gltfToThree in the editor."""
+    axes = axes or DEFAULT_GLTF_AXES
+
+    def vec(t):
+        s, a = (-1.0, t[1:]) if t.startswith("-") else (1.0, t)
+        return [s if a == "X" else 0.0, s if a == "Y" else 0.0, s if a == "Z" else 0.0]
+    u, f = vec(axes["up"]), vec(axes["forward"])
+    r = [f[1] * u[2] - f[2] * u[1], f[2] * u[0] - f[0] * u[2], f[0] * u[1] - f[1] * u[0]]
+    dot = lambda a, b: a[0] * b[0] + a[1] * b[1] + a[2] * b[2]  # noqa: E731
+    return [dot(p, f), dot(p, r), -dot(p, u)]
+
+
 # ---------------------------------------------------------------- reading
 
 def visual_bindings(svj):
