@@ -15,6 +15,8 @@ export.build when the user takes it.
             wheel velocities to the damper: force slopes are divided by MR^2).
   tyres     pressureWheels radius (unloaded; the SVJ loaded radius plus a 10 mm deflection when the
             file gives no unloaded radius) and tireWidth.
+  aero      the SVJ drag area (Cd x frontal area): every drag triangle's dragCoef scaled so the base's
+            drag area estimate (drag_area) matches; liftCoef written as it was.
   steering  the SVJ's turns lock to lock into the steering hydros' steeringWheelLock (degrees each way);
             the road-wheel lock (the hydros' factor and the steering arms) is kept.
   mass, CG  the base's mass is its node weights (default 25 kg) plus the wheels the game builds
@@ -219,6 +221,11 @@ def table(model, configured_json, svj_json, study_json=None):
              {"key": "gears", "label": "Gear ratios", "unit": "", "axle": None, "base": ratios(pb.get("ratios")), "svj": ratios(sp["ratios"])},
              {"key": "final_drive", "label": f"Final drive ({sp['driven'] or 'driven'} axle)", "unit": "", "axle": None,
               "base": pb.get("final_drive"), "svj": sp["final_drive"]}]
+    starget, scd, sarea = svj_aero(svj)
+    rows.append({"key": "aero", "label": "Drag area CdA (estimate)", "unit": "m2", "axle": None,
+                 "base": round(drag_area(aero_triangles(model, configured)), 3), "svj": starget,
+                 "note": (f"SVJ Cd {scd} x frontal area {sarea} m2; " if starget else "")
+                 + "the base's from its aero triangles (sum of coef x area x facing^2), an estimate"})
     _, bturns = steering_base(model, configured)
     sturns, sratio = svj_steering(svj)
     rows.append({"key": "steering", "label": "Steering wheel turns, lock to lock", "unit": "", "axle": None,
@@ -628,4 +635,83 @@ def steering_changes(model, configured, svj, take):
     out = {}
     for part, i, _ in rows:
         out.setdefault(part, {})[("hydros", i)] = {"steeringWheelLock": round(turns * 180, 1)}
+    return out
+
+
+# ---------------------------------------------------------------- aerodynamics
+
+def aero_triangles(model, configured):
+    """The base vehicle's aero triangles: [(part, row index, dragCoef %, liftCoef %, area m2, |n . y|)]
+    (the game reads both coefficients in percent, default 100, liftCoef defaulting to dragCoef)."""
+    parts = beamng._parts_held(model)
+    nodes = configured["geometry"]["nodes"]
+    out = []
+    for name in _active(configured):
+        rows = (parts.get(name) or {}).get("part", {}).get("triangles")
+        if not (isinstance(rows, list) and rows and isinstance(rows[0], list)):
+            continue
+        head = [str(h).rstrip(":") for h in rows[0]]
+        props = {}
+        for i, row in enumerate(rows[1:], 1):
+            if isinstance(row, dict):
+                props.update(row)
+                continue
+            if not isinstance(row, list):
+                continue
+            inline = row[-1] if row and isinstance(row[-1], dict) else {}
+            rec = dict(props)
+            rec.update(inline)
+            rec.update(zip(head, row[:-1] if inline else row))
+            ids = [rec.get(k) for k in ("id1", "id2", "id3")]
+            if not all(n in nodes for n in ids):
+                continue
+            dc = _num_or(rec.get("dragCoef", 100), {}, 100.0)
+            lc = _num_or(rec.get("liftCoef", dc), {}, dc)
+            a, b, c = (nodes[n] for n in ids)
+            u = [b[k] - a[k] for k in range(3)]
+            w = [c[k] - a[k] for k in range(3)]
+            n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]]
+            area2 = math.sqrt(sum(x * x for x in n))
+            if area2:
+                out.append((name, i, dc, lc, area2 / 2, abs(n[1]) / area2))
+    return out
+
+
+def drag_area(tris):
+    """The drag area (m2) of aero triangles in head-on flow, estimated as sum(coef A (n . y)^2): each
+    triangle pushing back with the square of how squarely it faces the flow. An estimate (the game's
+    own aero model is not public); it gives about 0.67 m2 for the RWD saloon, a saloon of Cd ~0.3."""
+    return sum(dc / 100 * a * ny * ny for _, _, dc, _, a, ny in tris)
+
+
+def svj_aero(svj):
+    """(drag area m2, Cd, frontal area m2) of the SVJ: Cd x frontal area, or the components' drag
+    contributions over the frontal area; None where it has no value."""
+    a = svj.get("aerodynamics") or {}
+    area = (a.get("reference") or {}).get("frontal_area")
+    cd = (a.get("coefficients") or {}).get("Cd")
+    comps = a.get("components")
+    if cd is None and isinstance(comps, list):
+        parts = [c.get("Cd_contribution") for c in comps if isinstance(c, dict) and isinstance(c.get("Cd_contribution"), (int, float))]
+        cd = sum(parts) if parts else None
+    if not isinstance(area, (int, float)) or not isinstance(cd, (int, float)):
+        return None, cd, area
+    return round(cd * area, 4), cd, area
+
+
+def aero_changes(model, configured, svj, take):
+    """{part: {("triangles", row): {"dragCoef", "liftCoef"}}}: every drag triangle scaled so the drag area
+    estimate is the SVJ's, its lift coefficient written as it was (it would otherwise follow dragCoef)."""
+    target, _, _ = svj_aero(svj)
+    if not take.get("aero") or not target:
+        return {}
+    tris = aero_triangles(model, configured)
+    base = drag_area(tris)
+    if base <= 0:
+        return {}
+    k = target / base
+    out = {}
+    for part, row, dc, lc, _, _ in tris:
+        if dc > 0:
+            out.setdefault(part, {})[("triangles", row)] = {"dragCoef": round(dc * k, 3), "liftCoef": lc}
     return out

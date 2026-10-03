@@ -88,6 +88,17 @@ class TestValues(unittest.TestCase):
         self.assertEqual(values.svj_steering({"steering": {"lock_to_lock": 21.991}})[0], 3.5)      # radians of wheel
         self.assertEqual(values.svj_steering({}), (None, None))
 
+    def test_aero(self):
+        self.assertEqual(values.svj_aero({"aerodynamics": {"reference": {"frontal_area": 1.72}, "coefficients": {"Cd": 0.31}}}),
+                         (0.5332, 0.31, 1.72))
+        comps = {"aerodynamics": {"reference": {"frontal_area": 1.5},
+                                  "components": [{"Cd_contribution": 0.28}, {"Cd_contribution": 0.45}]}}
+        self.assertEqual(values.svj_aero(comps)[1], 0.73)                   # summed contributions
+        self.assertEqual(values.svj_aero({}), (None, None, None))
+        # a 1 m2 square facing the flow (two triangles) at 100 %: 1 m2; turned 60 degrees away: a quarter
+        self.assertAlmostEqual(values.drag_area([("p", 1, 100, 100, 0.5, 1.0), ("p", 2, 100, 100, 0.5, 1.0)]), 1.0)
+        self.assertAlmostEqual(values.drag_area([("p", 1, 100, 100, 1.0, 0.5)]), 0.25)
+
     def test_slopes(self):
         self.assertEqual(values._slopes([[0, 0], [0.1, 1000]]), (10000.0, 10000.0, 0.1))
         self.assertIsNone(values._slopes([[0, 0]]))
