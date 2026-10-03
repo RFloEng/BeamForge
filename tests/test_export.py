@@ -69,6 +69,46 @@ class TestExport(unittest.TestCase):
                              "vehicles/toycar/main.materials.json": "vehicles/toyfit/main.materials.json",
                              "vehicles/toycar/base.jpg": "vehicles/toyfit/base.jpg"})
 
+    def test_svj_meshes_as_collada(self):
+        """An SVJ body (one triangle) written as COLLADA in the vehicle's frame and added as a flexbody."""
+        import os
+        import tempfile
+        import xml.etree.ElementTree as ET
+        from beamforge import gltf, svj as svjmod
+        sae = [[0.5, 0.0, -1.0], [-3.5, 0.0, -1.0], [0.5, 0.9, 0.0]]
+        doc = {"assets": {"meshes": [{"id": "m", "uri": "body.glb"}]},
+               "chassis": {"visual": {"mesh_ref": "m", "node": "SVJ::body::chassis"}}}
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "body.glb")
+            Path(path).write_bytes(gltf.triangles_glb([sae], "SVJ::body::chassis"))
+            attach = json.loads(export.svj_attach(self.configured, json.dumps(doc)))
+            self.assertEqual([(a["path"], a["node"]) for a in attach], [("chassis", "SVJ::body::chassis")])
+            attach[0]["part"], attach[0]["groups"] = "toycar", ["toycar_body"]
+            opt = {"svj": doc, "files": {"m": path}, "place": {"yf": -1.25, "ground": 0.0}, "attach": attach, "replace": True}
+            out = json.loads(export.build("toycar", "toyfit", "Toy Fit", self.configured, "{}", None, json.dumps(opt)))
+        f = out["files"]
+        self.assertEqual(out["counts"]["svj_meshes"], 1)
+        body = json.loads(f["vehicles/toyfit/toycar.jbeam"])["toycar"]
+        self.assertEqual(body["flexbodies"][-1][:2], ["toyfit_svj_chassis", ["toycar_body"]])
+        root = ET.fromstring(f["vehicles/toyfit/toyfit_svj.dae"])
+        ns = {"c": "http://www.collada.org/2005/11/COLLADASchema"}
+        self.assertEqual(root.find(".//c:up_axis", ns).text, "Z_UP")
+        self.assertEqual(root.find(".//c:node", ns).get("name"), "toyfit_svj_chassis")
+        self.assertEqual(root.find(".//c:triangles", ns).get("count"), "1")
+        xyz = [float(x) for x in root.find(".//c:float_array", ns).text.split()]
+        want = [c for p in sae for c in svjmod.from_sae(p, -1.25, 0.0)]       # in the vehicle's frame
+        for a, b in zip(xyz, want):
+            self.assertAlmostEqual(a, b, places=4)
+        mats = json.loads(f["vehicles/toyfit/toyfit_svj.materials.json"])
+        self.assertEqual(mats["toyfit_svj_chassis_mat"]["mapTo"], "toyfit_svj_chassis_mat")
+
+    def test_body_meshes_dropped_running_gear_kept(self):
+        part = {"flexbodies": [["mesh", "[group]:", "nonFlexMaterials"], ["car_body", ["b"]], ["car_door_FL", ["d"]],
+                               ["car_seat_FL", ["s"]], {"deformGroup": ""}, ["brake_disc", ["w"]]]}
+        self.assertEqual(export._drop_body_meshes("car_body", part), 2)
+        self.assertEqual([r[0] for r in part["flexbodies"][1:] if isinstance(r, list)], ["car_seat_FL", "brake_disc"])
+        self.assertEqual(export._drop_body_meshes("car_wheel_F", {"flexbodies": [["mesh"], ["rim", []]]}), 0)
+
     def test_new_vehicle_builds(self):
         """The generated files, read back as the game would (new folder + common), build the edited shape."""
         out = json.loads(export.build("toycar", "toyfit", "Toy Fit", self.configured, "{}"))

@@ -13,6 +13,11 @@ Pure Python, standard library only (runs in Pyodide). The game builds a vehicle 
   configurations       every configuration of the base vehicle, pointing at the new model, plus
                        "beamforge" (the edited configuration), the new default.
   info.json            the base's, with the new name.
+  SVJ meshes           (optional) the SVJ's glTF meshes written as COLLADA (<id>_svj.dae, the format
+                       the game's vehicles use) with a materials file, each added as a flexbody of the
+                       part it is attached to (svj_attach), following that part's node groups. With
+                       "replace", the base vehicle's body meshes are left out (wheels, tyres, brakes,
+                       interior, engine bay and the rest of the running gear are kept).
 
 Node positions written for "fit" are numbers: the jbeam's own value (an expression is evaluated with
 the configuration's tuning values) plus the edit (the fitted / moved position minus the configured
@@ -27,7 +32,8 @@ import json
 import math
 import re
 
-from beamforge import beamng, jbeam
+from beamforge import beamng, dae, gltf, jbeam
+from beamforge import svj as svjmod
 
 ID = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
 TEXTURE = re.compile(r"\.dds$", re.I)       # textures stay in the game; config thumbnails (.jpg, .png) are copied
@@ -172,10 +178,102 @@ def _rename_refs(part, renames):
                 row[i] = renames[row[i]]
 
 
-def build(model, new_id, name, configured_json, choices_json, brand=None):
+# flexbodies kept when the SVJ body replaces the base's: running gear, interior, engine bay
+KEEP = re.compile(r"wheel|tire|tyre|brake|hub|rotor|caliper|seat|interior|_int|dash|steer|gauge|carpet|engine|intake|"
+                  r"exhaust|radiator|transmission|driveshaft|halfshaft|axle|diff|suspension|strut|spring|shock|coilover|"
+                  r"swaybar|fueltank|battery|pedal|shifter|roll_?cage", re.I)
+
+
+def _safe(name):
+    return re.sub(r"[^A-Za-z0-9_]+", "_", name).strip("_").lower() or "mesh"
+
+
+def svj_attach(configured_json, svj_json, mapping_json=None):
+    """Where each SVJ mesh binding goes on the new vehicle by default: [{"path", "node", "mesh_ref",
+    "part", "groups"}]. A suspension corner goes to the part and node groups of its tied hub nodes
+    (fit mapping), else to the wheel's axle nodes; everything else to the body part (the part with
+    the most nodes) and its most common node group."""
+    v, svj = json.loads(configured_json), json.loads(svj_json)
+    mapping = json.loads(mapping_json) if mapping_json else []
+    geo = v["geometry"]
+    count = {}
+    for n, part in geo["parts"].items():
+        count[part] = count.get(part, 0) + 1
+    body = max(count, key=count.get) if count else None
+
+    def groups_of(nodes):
+        c = {}
+        for n in nodes:
+            for g in geo.get("groups", {}).get(n, []):
+                c[g] = c.get(g, 0) + 1
+        return [max(c, key=c.get)] if c else []
+
+    out = []
+    for b in svjmod.visual_bindings(svj):
+        part, groups = body, groups_of([n for n, p in geo["parts"].items() if p == body])
+        if b["path"].startswith("suspension."):
+            corner = b["path"].split(".", 1)[1]
+            hub = [r["nodes"][0] for r in mapping if r["corner"] == corner and r["kind"] == "upright" and r["nodes"]]
+            wheel = next((r["nodes"] for r in mapping if r["corner"] == corner and r["kind"] == "wheel"), [])
+            nodes = hub or wheel
+            if nodes:
+                parts_ = [geo["parts"][n] for n in nodes if n in geo["parts"]]
+                part = max(set(parts_), key=parts_.count) if parts_ else body
+                groups = groups_of(nodes) or groups
+        out.append({"path": b["path"], "node": b["node"], "mesh_ref": b["mesh_ref"], "part": part, "groups": groups})
+    return json.dumps(out)
+
+
+def svj_meshes(svj, files, place, attach, new_id):
+    """The SVJ meshes in the new vehicle's frame: [{"name", "material", "part", "groups", "positions",
+    "indices"}]. files: {mesh asset id: path}; place: {"yf", "ground"}, where the SVJ sits on the
+    vehicle (the fit's placement); attach: svj_attach() rows (possibly changed by the user)."""
+    axes = svjmod.gltf_axes(svj)
+    cache, out = {}, []
+    for a in attach:
+        path = files.get(a.get("mesh_ref")) or (next(iter(files.values())) if len(files) == 1 else None)
+        if not path or not a.get("part"):
+            continue
+        if path not in cache:
+            with open(path, "rb") as fh:
+                cache[path] = fh.read()
+        pos, idx = gltf.triangles(cache[path], is_glb=path.lower().endswith(".glb"), under=a["node"])
+        if not idx:
+            continue
+        pos = [[round(c, 5) for c in svjmod.from_sae(svjmod.gltf_to_sae(p, axes), place["yf"], place["ground"])] for p in pos]
+        name = f"{new_id}_svj_{_safe(a['path'])}"
+        out.append({"name": name, "material": f"{name}_mat", "part": a["part"], "groups": a.get("groups") or [],
+                    "positions": pos, "indices": idx, "path": a["path"]})
+    return out
+
+
+def _add_flexbody(part, mesh, groups):
+    """Add a flexbody row for `mesh` following `groups` to a part (in place)."""
+    rows = part.get("flexbodies")
+    if not (isinstance(rows, list) and rows and isinstance(rows[0], list)):
+        rows = [["mesh", "[group]:", "nonFlexMaterials"]]
+        part["flexbodies"] = rows
+    rows.append([mesh, list(groups), [], {"pos": {"x": 0, "y": 0, "z": 0}, "rot": {"x": 0, "y": 0, "z": 0},
+                                           "scale": {"x": 1, "y": 1, "z": 1}}])
+
+
+def _drop_body_meshes(n, part):
+    """Leave out a part's body flexbodies (KEEP: running gear, interior); returns how many were dropped."""
+    rows = part.get("flexbodies")
+    if KEEP.search(n) or not (isinstance(rows, list) and rows and isinstance(rows[0], list)):
+        return 0
+    kept = [rows[0]] + [r for r in rows[1:] if not isinstance(r, list) or (r and isinstance(r[0], str) and KEEP.search(r[0]))]
+    dropped = sum(1 for r in rows[1:] if isinstance(r, list)) - sum(1 for r in kept[1:] if isinstance(r, list))
+    part["flexbodies"] = kept
+    return dropped
+
+
+def build(model, new_id, name, configured_json, choices_json, brand=None, svj_json=None):
     """The text files of the new vehicle: {"files": {path: text}, "renamed": {old: new}, "notes": [...],
     "counts": {...}}. configured: beamng.configure() of the edited vehicle (with its moves); choices:
-    {part: "reuse" | "copy" | "fit"} (missing parts take plan()'s proposal)."""
+    {part: "reuse" | "copy" | "fit"} (missing parts take plan()'s proposal). svj_json (optional):
+    {"svj", "files", "place", "attach", "replace"}: the SVJ meshes to add (see svj_meshes; replace:
+    leave out the base vehicle's body meshes)."""
     problems = check_id(new_id, model)
     if problems:
         raise ValueError("; ".join(problems))
@@ -203,14 +301,29 @@ def build(model, new_id, name, configured_json, choices_json, brand=None):
 
     renames = {n: f"{new_id}_{n}" for n in active
                if parts.get(n, {}).get("model") == "common" and choices.get(n) in ("copy", "fit")}
-    files, counts, notes = {}, {"fitted": 0, "copied": 0, "reused": 0, "regenerated": 0, "nodes": 0}, []
+    files, counts, notes = {}, {"fitted": 0, "copied": 0, "reused": 0, "regenerated": 0, "nodes": 0, "svj_meshes": 0,
+                                "base_meshes_dropped": 0}, []
     base_dir = f"vehicles/{model}/"
+    opt = json.loads(svj_json) if svj_json else None
+    svjm = svj_meshes(opt["svj"], opt["files"], opt["place"], opt["attach"], new_id) if opt else []
+    # a mesh attached to a shared part that is reused (not copied) goes to the body part instead
+    written = {n for n in parts if parts[n]["model"] != "common"} | set(renames)
+    for m in svjm:
+        if m["part"] not in written:
+            notes.append(f"{m['path']}: attached to {m['part']}, a shared part reused from the game; added to {v['main']} instead")
+            m["part"] = v["main"]
 
     def finish(n, part):
         if choices.get(n) == "fit" and n in active:
             counts["nodes"] += _fit_nodes(part, deltas, vars_)
             _fit_flexbodies(part, n, shifts.get(n, {}), vars_)
         _rename_refs(part, renames)
+        if opt and opt.get("replace") and n in active:
+            counts["base_meshes_dropped"] += _drop_body_meshes(n, part)
+        for m in svjm:
+            if m["part"] == n:
+                _add_flexbody(part, m["name"], m["groups"])
+                counts["svj_meshes"] += 1
 
     # the base vehicle's jbeam files, all their parts (inactive ones as they are)
     for path in sorted(p for p in beamng._DOCS if p.startswith(base_dir) and p.lower().endswith(".jbeam")):
@@ -266,6 +379,16 @@ def build(model, new_id, name, configured_json, choices_json, brand=None):
         files[f"vehicles/{new_id}/" + path[len(base_dir):]] = beamng._TEXT.get(path, "")
     files[f"vehicles/{new_id}/info_beamforge.json"] = json.dumps(
         {"Configuration": "BeamForge", "Description": f"{name}: made with BeamForge from {model}"}, indent=2)
+
+    if svjm:                                                # the meshes, and a material for each
+        files[f"vehicles/{new_id}/{new_id}_svj.dae"] = dae.write(svjm)
+        mats = {}
+        for m in svjm:
+            mats[m["material"]] = {"name": m["material"], "mapTo": m["material"], "class": "Material", "version": 1.5,
+                                   "Stages": [{"baseColorFactor": [0.75, 0.77, 0.8, 1], "roughnessFactor": 0.55,
+                                               "metallicFactor": 0.1}, {}, {}, {}],
+                                   "materialTag0": "beamng", "materialTag1": "vehicle"}
+        files[f"vehicles/{new_id}/{new_id}_svj.materials.json"] = json.dumps(mats, indent=2)
 
     unfitted = [p["part"] for p in json.loads(plan(model, configured_json)) if p["moved_mm"] >= 0.1 and choices.get(p["part"]) != "fit"]
     if unfitted:

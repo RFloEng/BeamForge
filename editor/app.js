@@ -30,7 +30,7 @@ import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, reme
 
 // repo files copied into Pyodide's file system under /bf (add new Python modules here)
 const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py',
-  'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py'];
+  'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py', 'beamforge/dae.py'];
 const REPO = new URL('../', import.meta.url);
 
 const $ = (id) => document.getElementById(id);
@@ -311,7 +311,7 @@ async function openVehicle(model, config) {
     vehEdit = freshEdit(model, config);
     pick = null;
     partColor = {}; hiddenParts = new Set(); lockedParts = new Set(); colorCount = 0;
-    exportForm = { id: '', name: '', brand: '', choices: {} }; exportNote = '';
+    exportForm = { id: '', name: '', brand: '', choices: {}, svj: true, replace: true, attach: {} }; exportNote = '';
     vehBusy = '';
     configureVehicle();
     fitCamera();
@@ -405,7 +405,7 @@ async function syncMeshes() {
   if (!veh || !$('showmesh').checked || !resolved) { bodyG.visible = false; return; }
   bodyG.visible = true;
   const key = veh.model + '|' + veh.flexbodies.map((f) => f.part + ':' + f.mesh).join(',');
-  if (meshes && key === meshKey) { meshes.update(veh); styleMeshes(); return; }
+  if (meshes && key === meshKey) { meshes.update(baseShape()); styleMeshes(); return; }
   const token = ++meshToken;
   meshKey = key; meshes = null; bodyG.clear();
   const src = sourceByName();
@@ -416,7 +416,7 @@ async function syncMeshes() {
     if (token !== meshToken) return;
     meshes = built;
     bodyG.add(built.group);
-    meshes.update(veh);
+    meshes.update(baseShape());
     styleMeshes();
     meshNote = `${built.count} meshes` + (built.missing.length ? `, ${built.missing.length} not found` : '');
   } catch (err) {
@@ -425,10 +425,61 @@ async function syncMeshes() {
   drawTiming(); showIssues(issues());
 }
 
+// ---------- comparing the base vehicle's meshes with the SVJ's (the Compare panel in the view) ----------
+// base: opacity, style ('parts' part colours, 'grey', 'wire'), before (the shape before the fit);
+// svj: opacity, style ('orange', 'own' its own colours, 'wire')
+const cmp = { base: { opacity: 1, style: 'parts', before: false }, svj: { opacity: 0.55, style: 'orange' } };
+// what the base meshes follow: the vehicle's nodes, or, before the fit, its nodes without the fit's moves
+function baseShape() {
+  if (!cmp.base.before || !veh.geometry.rest) return veh;
+  const nodes = {};
+  for (const [n, p] of Object.entries(veh.geometry.nodes)) {
+    const d = vehEdit.fit[n];
+    nodes[n] = d ? p.map((x, i) => x - d[i]) : p;
+  }
+  return { ...veh, geometry: { ...veh.geometry, nodes } };
+}
+
+function drawCompare() {
+  const el = $('compare');
+  if (el.hidden) return;
+  const opt = (v, cur, label) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${label}</option>`;
+  el.innerHTML = `<div class="cmprow"><b>Base</b>
+      <input type="range" id="cmpbo" min="0" max="1" step="0.05" value="${cmp.base.opacity}" title="Opacity">
+      <select id="cmpbs">${opt('parts', cmp.base.style, 'part colours')}${opt('grey', cmp.base.style, 'grey')}${opt('wire', cmp.base.style, 'wireframe')}</select>
+      <label title="The base vehicle as it was, before the fit to the SVJ"><input type="checkbox" id="cmpbb" ${cmp.base.before ? 'checked' : ''}> before the fit</label></div>
+    <div class="cmprow"><b>SVJ</b>
+      <input type="range" id="cmpso" min="0" max="1" step="0.05" value="${cmp.svj.opacity}" title="Opacity">
+      <select id="cmpss">${opt('orange', cmp.svj.style, 'orange')}${opt('own', cmp.svj.style, 'own colours')}${opt('wire', cmp.svj.style, 'wireframe')}</select>
+      <button id="cmpswap" class="mini" title="Swap which one is solid and which is see-through">swap</button></div>`;
+  $('cmpbo').oninput = (e) => { cmp.base.opacity = +e.target.value; styleMeshes(); };
+  $('cmpso').oninput = (e) => { cmp.svj.opacity = +e.target.value; styleSvj(); };
+  $('cmpbs').onchange = (e) => { cmp.base.style = e.target.value; styleMeshes(); };
+  $('cmpss').onchange = (e) => { cmp.svj.style = e.target.value; styleSvj(); };
+  $('cmpbb').onchange = (e) => { cmp.base.before = e.target.checked; if (meshes) { meshes.update(baseShape()); styleMeshes(); } };
+  $('cmpswap').onclick = () => {
+    [cmp.base.opacity, cmp.svj.opacity] = [cmp.svj.opacity, cmp.base.opacity];
+    drawCompare(); styleMeshes(); styleSvj();
+  };
+}
+$('cmpbtn').onclick = () => { $('compare').hidden = !$('compare').hidden; $('cmpbtn').classList.toggle('on', !$('compare').hidden); drawCompare(); };
+
+// the SVJ meshes: one colour (orange) or their own, see-through as set, or wireframe
+function styleSvj() {
+  meshG.traverse((o) => {
+    if (!o.isMesh) return;
+    o.userData.own ||= o.material.color.clone();
+    const op = cmp.svj.opacity;
+    o.material.color.copy(cmp.svj.style === 'own' ? o.userData.own : new THREE.Color(0xff8c2a));
+    Object.assign(o.material, { opacity: op, transparent: op < 1, depthWrite: op >= 1, wireframe: cmp.svj.style === 'wire' });
+    o.material.needsUpdate = true;
+  });
+}
+
 // mesh colours and visibility by part: tinted with the part's colour (glass stays clear)
 function styleMeshes() {
   const mat = (kind, part) => {
-    const c = colorOf(part), k = kind + '|' + (c ? part : '');
+    const c = cmp.base.style === 'parts' ? colorOf(part) : null, k = kind + '|' + (c ? part : '');
     if (meshMats[k]) return meshMats[k];
     const base = { body: 0xc9ced6, dark: 0x2b2d31, glass: 0x9fb4c8 }[kind];
     const color = new THREE.Color(base);
@@ -442,6 +493,12 @@ function styleMeshes() {
     const kinds = m.userData.kinds;
     m.material = kinds.length > 1 ? kinds.map((k) => mat(k, m.userData.part)) : mat(kinds[0], m.userData.part);
   });
+  // the Compare panel's opacity and wireframe on every base material (glass keeps its own transparency)
+  for (const [k, mt] of Object.entries(meshMats)) {
+    const glass = k.startsWith('glass'), op = cmp.base.opacity * (glass ? 0.3 : 1);
+    Object.assign(mt, { opacity: op, transparent: op < 1, depthWrite: op >= 1, wireframe: cmp.base.style === 'wire' });
+    mt.needsUpdate = true;
+  }
 }
 $('showmesh').onchange = () => syncMeshes();
 $('partcolors').onchange = () => { drawVehicle(); styleMeshes(); drawInspector(); };
@@ -771,6 +828,7 @@ async function loadSvjMeshes() {
       });
       const holder = new THREE.Group();
       holder.matrixAutoUpdate = false;
+      setTimeout(styleSvj, 0);
       holder.add(gl.scene);
       holder.userData.uri = m.uri;
       meshG.add(holder);
@@ -1084,7 +1142,7 @@ function bindSuspPanel() {
 // ---------- a new vehicle from the edited one, as a mod (beamforge/export.py) ----------
 // exportForm: the new vehicle's id (folder), name, brand and the per-part choices ({part: 'reuse' | 'copy' |
 // 'fit'}; parts not set take the proposal of exppy.plan); exportOpen keeps the section open across redraws.
-let exportForm = { id: '', name: '', brand: '', choices: {} }, exportNote = '', exportOpen = false;
+let exportForm = { id: '', name: '', brand: '', choices: {}, svj: true, replace: true, attach: {} }, exportNote = '', exportOpen = false;
 const CHOICE = { fit: 'with the edits', copy: 'as it is', reuse: 'reuse (not copied)' };
 
 function exportPanel() {
@@ -1109,6 +1167,7 @@ function exportPanel() {
     <div class="inl"><button id="expall" title="Every part copied into the new vehicle with the edits, shared ones under new names: fully self-contained">Regenerate all</button>
       <button id="expreset">Proposed choices</button><button id="exprun" class="primary">Export mod (.zip)…</button></div>
     ${exportNote ? `<p class="quiet">${exportNote}</p>` : ''}
+    ${svjMeshRows(plan)}
     <details><summary>Parts of ${esc(veh.model)} <span class="q">(${fromVeh.length}: always copied, the game cannot see them from a new folder)</span></summary>
       <table class="cmp"><tr><th>Part</th><th>Moved</th><th>Write</th></tr>${fromVeh.map(row).join('')}</table></details>
     <details><summary>Shared parts <span class="q">(${shared.length}, vehicles/common: reused, or regenerated under a new name)</span></summary>
@@ -1116,8 +1175,42 @@ function exportPanel() {
   </details>`;
 }
 
+// the SVJ meshes for the new vehicle: where each binding goes (exppy.svj_attach), changed by the user in
+// exportForm.attach ({path: {part, groups}})
+function svjAttach() {
+  if (!svjDoc || !veh) return [];
+  let rows = [];
+  try { rows = JSON.parse(exppy.svj_attach(JSON.stringify(veh), JSON.stringify(svjDoc.svj), JSON.stringify(vehEdit.fitReport?.mapping || []))); }
+  catch (err) { return []; }
+  return rows.map((r) => ({ ...r, ...(exportForm.attach[r.path] || {}) }));
+}
+
+function svjMeshRows(plan) {
+  if (!svjDoc) return '';
+  const rows = svjAttach().filter((r) => svjDoc.meshes.some((m) => m.file && (m.id === r.mesh_ref || svjDoc.meshes.length === 1)));
+  if (!rows.length) return '<p class="quiet">The SVJ has no meshes to add (no glTF bound to its chassis, corners or bodies).</p>';
+  const parts = plan.filter((p) => p.origin === 'vehicle' || p.choice !== 'reuse').map((p) => p.part);
+  return `<details open><summary><b>SVJ meshes</b> <span class="q">(written as COLLADA, the format of the game's vehicles)</span></summary>
+    <div class="kv"><span><label><input type="checkbox" id="expsvj" ${exportForm.svj ? 'checked' : ''}> Add the SVJ meshes</label></span><span></span>
+      <span><label title="Leave out the base vehicle's body meshes (body, panels, glass, lights); wheels, tyres, brakes, interior and the running gear stay">
+        <input type="checkbox" id="expreplace" ${exportForm.replace ? 'checked' : ''}> Use the SVJ body instead of the base's</label></span><span></span></div>
+    <table class="cmp"><tr><th>SVJ mesh</th><th>On part</th><th>Node groups</th></tr>
+    ${rows.map((r) => `<tr><td title="${esc(r.node)}">${esc(r.path)}</td>
+      <td><select data-attpart="${esc(r.path)}">${parts.map((p) => `<option ${p === r.part ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select></td>
+      <td><input data-attgroups="${esc(r.path)}" value="${esc((r.groups || []).join(', '))}" size="12"></td></tr>`).join('')}</table>
+    <p class="quiet">Each mesh becomes a flexbody of its part and follows that part's node groups. A part reused from the game cannot take one: choose a copied part.</p></details>`;
+}
+
 function bindExport() {
   if (!$('exportsec')) return;
+  if ($('expsvj')) $('expsvj').onchange = (e) => { exportForm.svj = e.target.checked; };
+  if ($('expreplace')) $('expreplace').onchange = (e) => { exportForm.replace = e.target.checked; };
+  document.querySelectorAll('[data-attpart]').forEach((sel) => sel.onchange = () => {
+    (exportForm.attach[sel.dataset.attpart] ||= {}).part = sel.value;
+  });
+  document.querySelectorAll('[data-attgroups]').forEach((inp) => inp.onchange = () => {
+    (exportForm.attach[inp.dataset.attgroups] ||= {}).groups = inp.value.split(',').map((g) => g.trim()).filter(Boolean);
+  });
   $('exportsec').ontoggle = (e) => { exportOpen = e.target.open; };
   $('expid').onchange = (e) => { exportForm.id = e.target.value.trim(); };
   $('expname').onchange = (e) => { exportForm.name = e.target.value.trim(); };
@@ -1147,7 +1240,15 @@ async function runExport() {
   try {
     say('Writing the parts…');
     await new Promise((r) => setTimeout(r, 20));
-    const out = JSON.parse(exppy.build(veh.model, id, name, JSON.stringify(veh), JSON.stringify(exportForm.choices), brand || null));
+    let svjOpt = null;
+    if (svjDoc && exportForm.svj) {
+      const files = Object.fromEntries(svjDoc.meshes.filter((m) => m.file).map((m) => [m.id, m.file]));
+      const { yf, zg } = svjPlace();
+      svjOpt = JSON.stringify({ svj: svjDoc.svj, files, place: { yf, ground: zg }, attach: svjAttach(), replace: exportForm.replace });
+      say('Writing the SVJ meshes…');
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const out = JSON.parse(exppy.build(veh.model, id, name, JSON.stringify(veh), JSON.stringify(exportForm.choices), brand || null, svjOpt));
     const all = new Set();
     for (const s of allSources()) for (const p of Object.keys(s.blobs || {})) if (p.startsWith(`vehicles/${veh.model}/`)) all.add(p);
     const copies = JSON.parse(exppy.assets(veh.model, id, JSON.stringify([...all])));
@@ -1167,7 +1268,7 @@ async function runExport() {
     a.download = `${id}.zip`;
     a.click();
     const c = out.counts;
-    exportNote = `${esc(id)}.zip: ${c.fitted} parts with the edits (${c.nodes} nodes), ${c.copied} copied, ${c.regenerated} shared parts regenerated, ${c.reused} reused, ${n} meshes, materials and other files copied (${fmt(blob.size / 1e6, 1)} MB). Put it in your user folder's mods folder; the new vehicle is "${esc(name)}".`
+    exportNote = `${esc(id)}.zip: ${c.fitted} parts with the edits (${c.nodes} nodes), ${c.copied} copied, ${c.regenerated} shared parts regenerated, ${c.reused} reused, ${n} meshes, materials and other files copied${c.svj_meshes ? `, ${c.svj_meshes} SVJ meshes added` : ''}${c.base_meshes_dropped ? ` (${c.base_meshes_dropped} body meshes of the base left out)` : ''} (${fmt(blob.size / 1e6, 1)} MB). Put it in your user folder's mods folder; the new vehicle is "${esc(name)}".`
       + (out.notes.length ? ` <span class="bad">${out.notes.map(esc).join(' ')}</span>` : '');
   } catch (err) { exportNote = `<span class="bad">Export failed: ${esc(pyError(err))}</span>`; }
   drawInspector();

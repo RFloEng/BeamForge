@@ -53,6 +53,7 @@ Survey of one 2026 install (122 zips): 28 cars, 10 trucks, 13 trailers, 2 heavy 
   - *Regenerate all* copies every part with the edits, for a self-contained vehicle;
   - every configuration of the base comes along, pointing at the new model, plus `beamforge` (the edited one), the default;
   - the base folder's meshes, materials, Lua and thumbnails are copied; textures are not (the materials find them in the game by their absolute paths).
+  - the SVJ's meshes (optional): each glTF binding is written into `<id>_svj.dae` (COLLADA, metres, Z up, in the vehicle's frame, as the game's own files) with `<id>_svj.materials.json`, and added as a flexbody of the part it is attached to, following that part's node groups. *Use the SVJ body instead of the base's* leaves out the base's body meshes and keeps wheels, tyres, brakes, the interior and the running gear.
   Edited node positions are written as numbers (the jbeam value, an expression evaluated with the configuration's tuning, plus the edit); a flexbody `pos` moves with the node nearest to it, so wheels, brakes and hubs follow. Read back the way the game reads it, the RWD saloon fitted to the E30 rebuilds all 481 nodes to within 0.000001 m. In the game, a vanilla flexbody binds to the nodes where they are at spawn, so the body mesh keeps its vanilla shape on a fitted vehicle; the SVJ's own meshes are meant to replace it (roadmap steps 4 and 5).
 - **Save configuration (.pc):** downloads the config, to be placed in the user folder at `vehicles/<model>/`.
 

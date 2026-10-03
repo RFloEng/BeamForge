@@ -176,14 +176,8 @@ def _mul(a, b):
     return [sum(a[k * 4 + r] * b[c * 4 + k] for k in range(4)) for c in range(4) for r in range(4)]
 
 
-def positions(data, is_glb=True, under=None, buffers=None, limit=60000):
-    """World-space vertex positions of the meshes in a .glb (or .gltf JSON) file, in the file's own axes.
-
-    under: a node name; only meshes at or below that node are read (None: every node of the default
-    scene). buffers: {uri: bytes} for a .gltf whose buffers are separate files (data: URIs are read
-    directly). At most `limit` points are returned (evenly thinned), enough for bounds and slices.
-    Float VEC3 POSITION accessors only (the glTF 2.0 rule); sparse accessors are not read.
-    """
+def _document(data, is_glb, buffers):
+    """(the glTF JSON, [bytes of each buffer]) of a .glb or .gltf; buffers: {uri: bytes} for separate files."""
     import base64
     if is_glb:
         doc = glb_json(data)
@@ -202,38 +196,87 @@ def positions(data, is_glb=True, under=None, buffers=None, limit=60000):
             bufs.append(base64.b64decode(uri.split(",", 1)[1]))
         else:
             bufs.append((buffers or {}).get(uri, b""))
+    return doc, bufs
+
+
+_COMPONENT = {5121: ("B", 1), 5123: ("H", 2), 5125: ("I", 4), 5126: ("f", 4)}
+
+
+def _read(doc, bufs, ai, width):
+    """An accessor's values as tuples of `width` numbers (unsigned byte / short / int, or float)."""
+    acc = doc["accessors"][ai]
+    if "bufferView" not in acc or acc.get("componentType") not in _COMPONENT:
+        return []
+    code, size = _COMPONENT[acc["componentType"]]
+    bv = doc["bufferViews"][acc["bufferView"]]
+    buf = bufs[bv["buffer"]]
+    start = bv.get("byteOffset", 0) + acc.get("byteOffset", 0)
+    stride = bv.get("byteStride") or size * width
+    fmt = "<" + code * width
+    return [struct.unpack_from(fmt, buf, start + i * stride) for i in range(acc["count"])]
+
+
+def _meshes(doc, under):
+    """(mesh index, world matrix) of every mesh node at or below the node named `under` (None: all)."""
     nodes = doc.get("nodes", [])
     out = []
-
-    def read_mesh(mi, m):
-        for prim in doc["meshes"][mi].get("primitives", []):
-            ai = prim.get("attributes", {}).get("POSITION")
-            if ai is None:
-                continue
-            acc = doc["accessors"][ai]
-            if acc.get("componentType") != 5126 or acc.get("type") != "VEC3" or "bufferView" not in acc:
-                continue
-            bv = doc["bufferViews"][acc["bufferView"]]
-            buf = bufs[bv["buffer"]]
-            start = bv.get("byteOffset", 0) + acc.get("byteOffset", 0)
-            stride = bv.get("byteStride") or 12
-            for i in range(acc["count"]):
-                x, y, z = struct.unpack_from("<fff", buf, start + i * stride)
-                out.append([m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13],
-                            m[2] * x + m[6] * y + m[10] * z + m[14]])
 
     def walk(ni, parent, on):
         node = nodes[ni]
         m = _mul(parent, _matrix(node))
         on = on or under is None or node.get("name") == under
         if on and "mesh" in node:
-            read_mesh(node["mesh"], m)
+            out.append((node["mesh"], m))
         for c in node.get("children", []):
             walk(c, m, on)
-
     scenes = doc.get("scenes") or [{"nodes": list(range(len(nodes)))}]
     ident = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
     for ni in scenes[doc.get("scene", 0)].get("nodes", []):
         walk(ni, ident, False)
+    return out
+
+
+def _apply(m, p):
+    x, y, z = p
+    return [m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13],
+            m[2] * x + m[6] * y + m[10] * z + m[14]]
+
+
+def positions(data, is_glb=True, under=None, buffers=None, limit=60000):
+    """World-space vertex positions of the meshes in a .glb (or .gltf JSON) file, in the file's own axes.
+
+    under: a node name; only meshes at or below that node are read (None: every node of the default
+    scene). buffers: {uri: bytes} for a .gltf whose buffers are separate files (data: URIs are read
+    directly). At most `limit` points are returned (evenly thinned), enough for bounds and slices.
+    Float VEC3 POSITION accessors only (the glTF 2.0 rule); sparse accessors are not read.
+    """
+    doc, bufs = _document(data, is_glb, buffers)
+    out = []
+    for mi, m in _meshes(doc, under):
+        for prim in doc["meshes"][mi].get("primitives", []):
+            ai = prim.get("attributes", {}).get("POSITION")
+            if ai is not None and doc["accessors"][ai].get("type") == "VEC3":
+                out += [_apply(m, p) for p in _read(doc, bufs, ai, 3)]
     step = max(1, len(out) // limit)
     return out[::step]
+
+
+def triangles(data, is_glb=True, under=None, buffers=None):
+    """The triangles of the meshes at or below `under`, in world space and the file's own axes, as one
+    mesh: (positions [[x, y, z]], indices [i0, i1, i2, ...]). Triangle primitives only (mode 4, the
+    default); a primitive without indices takes its vertices in order."""
+    doc, bufs = _document(data, is_glb, buffers)
+    pos, idx = [], []
+    for mi, m in _meshes(doc, under):
+        for prim in doc["meshes"][mi].get("primitives", []):
+            ai = prim.get("attributes", {}).get("POSITION")
+            if ai is None or prim.get("mode", 4) != 4 or doc["accessors"][ai].get("type") != "VEC3":
+                continue
+            base = len(pos)
+            pts = _read(doc, bufs, ai, 3)
+            pos += [_apply(m, p) for p in pts]
+            if "indices" in prim:
+                idx += [base + v[0] for v in _read(doc, bufs, prim["indices"], 1)]
+            else:
+                idx += [base + i for i in range(len(pts) - len(pts) % 3)]
+    return pos, idx

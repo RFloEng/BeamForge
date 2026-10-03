@@ -128,3 +128,10 @@ button.mini:disabled { opacity: 0.4; cursor: default; }
 .chart { margin: 6px 0 2px; }
 .chart svg { width: 100%; height: auto; display: block; }
 .chart .t { font-size: 11.5px; color: var(--quiet); display: flex; justify-content: space-between; }
+
+/* the Compare panel: base and SVJ meshes overlapped */
+#compare { position: absolute; right: 10px; top: 10px; background: color-mix(in srgb, var(--bg) 92%, transparent);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; display: flex; flex-direction: column; gap: 6px; }
+#compare .cmprow { display: flex; gap: 8px; align-items: center; }
+#compare .cmprow b { width: 34px; }
+#compare input[type=range] { width: 110px; }

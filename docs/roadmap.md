@@ -25,10 +25,10 @@ BeamForge starts from **any BeamNG vehicle** (vanilla or mod) and modifies it fr
    - The comparison panel becomes a table with a "take" box per row (geometry per corner, wheelbase and track, springs and dampers, alignment, mass and CG, tyres, powertrain, aero), with "take all" per group.
    - Geometry is edited by moving single nodes, beams or whole parts with numeric x / y / z (done in the editor). Writing those moves into the game is part of this step.
    - A taken value is applied in the least invasive way that works: an existing tuning variable, then a slot `nodeOffset` / `nodeMove`, and only then a generated copy of the part with moved nodes, written to a local mod folder. Generated parts are made on the user's machine from their own install and are never committed here.
-4. **glTF meshes on the part tree (editor).**
+4. **glTF meshes on the part tree (editor).** Done in part: the export panel attaches each SVJ mesh binding to a part and its node groups (chassis to the body part; a suspension corner to its tied hub nodes), and the *Compare* panel overlaps the base vehicle's meshes (as they are, or before the fit) with the SVJ's (opacity, colours, wireframe).
    - Match each glTF node (`SVJ::<category>::<id>`) to a part or slot of the tree: body to the main part, corners to the suspension parts, panels to their parts, with a manual override.
    - Attach each mesh to its part, so it follows part changes and wheel travel.
-5. **Meshes into the game as flexbodies.**
+5. **Meshes into the game as flexbodies.** Done, to check in-game: every vehicle mesh of the game is COLLADA (359 `.dae`, each with its compiled `.cdae`; the game exports glTF but no vehicle loads it), so the SVJ's glTF meshes are written as COLLADA (`beamforge/dae.py`) into the new vehicle, with a materials file, as flexbodies of their parts. Optionally the base vehicle's body meshes are left out.
    - Generate `flexbodies` entries that bind each mesh to its part's node groups.
    - **Check in-game first:** BeamNG vehicles use `.dae`, so glTF may need converting to DAE. Test this before building on it.
 
