@@ -192,11 +192,79 @@ def _safe(name):
     return re.sub(r"[^A-Za-z0-9_]+", "_", name).strip("_").lower() or "mesh"
 
 
-def svj_attach(configured_json, svj_json, mapping_json=None):
+# the panels of a body mesh that follow their own part (a door opens, a hood flies off): the kind, the
+# mesh node names it takes, and the base parts of that kind
+PANELS = [("trunk", re.compile(r"trunk|boot(?!h)|tailgate|hatch(?!back)|rear_?lid|decklid|rear_?hood|baule|bagagliaio", re.I),
+           re.compile(r"_trunk(_|$)|_tailgate(_|$)|_hatch(_|$)", re.I)),
+          ("door", re.compile(r"^doors?$|^door_|door_?[lr]\b|door_?(left|right)|door_?[fr][lr]|portiera", re.I),
+           re.compile(r"_door(_|$)", re.I)),
+          ("hood", re.compile(r"hood|bonnet|cofano", re.I), re.compile(r"_hood(_|$)|_bonnet", re.I)),
+          ("bumper_F", re.compile(r"(front|^f)_?bumper|bumper_?(front|f\b|fa)|paraurti[ _]?ant", re.I),
+           re.compile(r"_bumper_F(_|$)", re.I)),
+          ("bumper_R", re.compile(r"rear\w*_?bumper|^r_?bumper|bumper_?(rear|r\b|ra)|paraurti[ _]?post", re.I),
+           re.compile(r"_bumper_R(_|$)", re.I))]
+PANEL_MIN = 0.4     # m: the bounding-box diagonal of the smallest thing taken as a panel
+PANEL_ANY = re.compile("|".join(f"(?:{p.pattern})" for _, p, _ in PANELS), re.I)
+# where panels are looked for: everywhere but the running gear and helpers (some cars keep their doors
+# under the high-detail cockpit, which the body itself leaves out)
+PANEL_SKIP = re.compile(r"^(wheel|tyre|tire|rim|disc|disk|brake|caliper|susp|flycam|damage_|camera|bullone|bolt)", re.I)
+
+
+def _panels(v, svj, files, place, chassis):
+    """The body mesh's panels as attach rows of their own: [{"path", "node", "mesh_ref", "part",
+    "groups"}], each on the base flexbody of its kind whose node group is nearest to it."""
+    path = files.get(chassis["mesh_ref"]) or (next(iter(files.values())) if len(files) == 1 else None)
+    if not path or not place:
+        return []
+    with open(path, "rb") as fh:
+        data = fh.read()
+    glb = path.lower().endswith(".glb")
+    axes = svjmod.gltf_axes(svj)
+    off = svjmod.mesh_offset(svj, data, glb)[0] or [0.0, 0.0, 0.0]
+    geo = v["geometry"]
+    members = {}
+    for n, gs in (geo.get("groups") or {}).items():
+        for g in gs:
+            members.setdefault(g, []).append(geo["nodes"][n])
+    centre = lambda ps: [sum(p[i] for p in ps) / len(ps) for i in range(3)]  # noqa: E731
+    out = []
+    for name in gltf.named(data, PANEL_ANY, glb, skip=PANEL_SKIP):
+        kind, _, base_re = next(k for k in PANELS if k[1].search(name))
+        pts = gltf.positions(data, is_glb=glb, under=name, limit=4000)
+        if not pts:
+            continue
+        pts = [svjmod.from_sae([x + o for x, o in zip(svjmod.gltf_to_sae(p, axes), off)], place["yf"], place["ground"])
+               for p in pts]
+        if math.dist([min(p[i] for p in pts) for i in range(3)], [max(p[i] for p in pts) for i in range(3)]) < PANEL_MIN:
+            continue                                       # a switch or a label named "doors", not a panel
+        cands = [f for f in v.get("flexbodies", []) if base_re.search(f["part"]) and "_body" not in f["part"]
+                 and f.get("groups") and all(g in members for g in f["groups"])]
+        if not cands:
+            continue
+        # one node for both doors (or both of anything): a row per side, each side's triangles only
+        both = kind == "door" and min(p[0] for p in pts) < -0.3 and max(p[0] for p in pts) > 0.3
+        for side in ((1, -1) if both else (0,)):
+            mine = [p for p in pts if p[0] * side > 0] if side else pts
+            if not mine:
+                continue
+            c = centre(mine)
+            best = min(cands, key=lambda f: math.dist(c, centre([p for g in f["groups"] for p in members[g]])))
+            row = {"path": f"chassis.{kind}.{name}" + ({1: ".left", -1: ".right"}.get(side, "")), "node": name,
+                   "mesh_ref": chassis["mesh_ref"], "part": best["part"], "groups": list(best["groups"])}
+            if side:
+                row["side"] = side
+            out.append(row)
+    return out
+
+
+def svj_attach(configured_json, svj_json, mapping_json=None, files_json=None, place_json=None):
     """Where each SVJ mesh binding goes on the new vehicle by default: [{"path", "node", "mesh_ref",
     "part", "groups"}]. A suspension corner goes to the part and node groups of its tied hub nodes
     (fit mapping), else to the wheel's axle nodes; everything else to the body part (the part with
-    the most nodes) and its most common node group."""
+    the most nodes) and its most common node group. With the mesh files and the SVJ's place on the
+    vehicle (files: {mesh id: path}; place: {"yf", "ground"}), a body without its own node is split:
+    its doors, hood, trunk and bumpers (by node name) go to the base's part of that kind nearest to
+    them (_panels), and the body row lists them in "exclude"."""
     v, svj = json.loads(configured_json), json.loads(svj_json)
     mapping = json.loads(mapping_json) if mapping_json else []
     geo = v["geometry"]
@@ -225,6 +293,19 @@ def svj_attach(configured_json, svj_json, mapping_json=None):
                 part = max(set(parts_), key=parts_.count) if parts_ else body
                 groups = groups_of(nodes) or groups
         out.append({"path": b["path"], "node": b["node"], "mesh_ref": b["mesh_ref"], "part": part, "groups": groups})
+    files = json.loads(files_json) if files_json else {}
+    place = json.loads(place_json) if place_json else None
+    body = next((r for r in out if r["path"] == "chassis"), None)
+    if body and files and place:
+        path = files.get(body["mesh_ref"]) or (next(iter(files.values())) if len(files) == 1 else None)
+        own = False
+        if path and body["node"]:
+            with open(path, "rb") as fh:
+                own = gltf.has_node(fh.read(), body["node"], path.lower().endswith(".glb"))
+        if path and not own:
+            panels = _panels(v, svj, files, place, body)
+            body["exclude"] = sorted({p["node"] for p in panels})
+            out[out.index(body) + 1:out.index(body) + 1] = panels
     return json.dumps(out)
 
 
@@ -252,11 +333,17 @@ def svj_meshes(svj, files, place, attach, new_id):
             if a["path"] != "chassis":
                 continue                                   # the file has no such node: nothing to add
             under, skip = None, gltf.NOT_BODY              # the body: the whole mesh but the wheels and such
+            if a.get("exclude"):                           # and but the panels that go on their own parts
+                skip = re.compile(f"(?:{gltf.NOT_BODY.pattern})|^(?:{'|'.join(re.escape(x) for x in a['exclude'])})$", re.I)
         pos, uvs, prims = gltf.textured(data, is_glb=glb, under=under, skip=skip)
         if not any(len(i) >= 3 for _, i in prims):
             continue
         pos = [[round(c, 5) for c in svjmod.from_sae([x + o for x, o in zip(svjmod.gltf_to_sae(p, axes), off)],
                                                      place["yf"], place["ground"])] for p in pos]
+        if a.get("side"):                                  # one side of a node that holds both (both doors)
+            s = a["side"]
+            prims = [(k, [v for t in range(0, len(i) - 2, 3) for v in i[t:t + 3]
+                          if (pos[i[t]][0] + pos[i[t + 1]][0] + pos[i[t + 2]][0]) * s > 0]) for k, i in prims]
         name = f"{new_id}_svj_{_safe(a['path'])}"
         subs, mats = {}, {}
         for k, idx in prims:

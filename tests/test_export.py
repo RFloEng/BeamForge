@@ -104,6 +104,15 @@ class TestExport(unittest.TestCase):
         self.assertEqual(mats["toyfit_svj0_panel_0"]["Stages"][0]["baseColorFactor"], [0.8, 0.82, 0.86, 1.0])
         self.assertTrue(mats["toyfit_svj0_panel_0"]["doubleSided"])
 
+    def test_panel_names(self):
+        """Body panels found by their mesh node names (as converters and modders write them)."""
+        kind = lambda n: next((k for k, p, _ in export.PANELS if p.search(n)), None)  # noqa: E731
+        cases = {"DOOR_L": "door", "Door_RIGHT": "door", "MOTORHOOD": "hood", "bonnet003v": "hood", "REARHOOD": "trunk",
+                 "Trunk": "trunk", "FRONT_BUMPER": "bumper_F", "REARE_BUMPER": "bumper_R", "g_Bumper_R": "bumper_R",
+                 "paraurti ant": "bumper_F", "paraurti_post": "bumper_R", "CHASSIS_mesh": None, "COCKPIT_LR": None}
+        for name, want in cases.items():
+            self.assertEqual(kind(name), want, name)
+
     def test_body_meshes_dropped_running_gear_kept(self):
         part = {"flexbodies": [["mesh", "[group]:", "nonFlexMaterials"], ["car_body", ["b"]], ["car_door_FL", ["d"]],
                                ["car_seat_FL", ["s"]], {"deformGroup": ""}, ["brake_disc", ["w"]]]}

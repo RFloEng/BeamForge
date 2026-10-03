@@ -1211,12 +1211,19 @@ function exportPanel() {
 
 // the SVJ meshes for the new vehicle: where each binding goes (exppy.svj_attach), changed by the user in
 // exportForm.attach ({path: {part, groups}})
+let attachCache = { key: null, rows: [] };
 function svjAttach() {
   if (!svjDoc || !veh) return [];
-  let rows = [];
-  try { rows = JSON.parse(exppy.svj_attach(JSON.stringify(veh), JSON.stringify(svjDoc.svj), JSON.stringify(vehEdit.fitReport?.mapping || []))); }
-  catch (err) { return []; }
-  return rows.map((r) => ({ ...r, ...(exportForm.attach[r.path] || {}) }));
+  const files = Object.fromEntries(svjDoc.meshes.filter((m) => m.file).map((m) => [m.id, m.file]));
+  const { yf, zg } = svjPlace();
+  const key = [svjDoc.summary?.vehicle, veh.model, veh.config, Object.keys(vehEdit.fit || {}).length, yf, zg, JSON.stringify(files)].join('|');
+  if (attachCache.key !== key) {                     // reading the mesh for its panels is slow: once per fit
+    try {                                            // with the files and place: the body split into its panels
+      attachCache = { key, rows: JSON.parse(exppy.svj_attach(JSON.stringify(veh), JSON.stringify(svjDoc.svj),
+        JSON.stringify(vehEdit.fitReport?.mapping || []), JSON.stringify(files), JSON.stringify({ yf, ground: zg }))) };
+    } catch (err) { return []; }
+  }
+  return attachCache.rows.map((r) => ({ ...r, ...(exportForm.attach[r.path] || {}) }));
 }
 
 function svjMeshRows(plan) {

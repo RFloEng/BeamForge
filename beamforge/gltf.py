@@ -220,8 +220,8 @@ def _read(doc, bufs, ai, width):
 # what is not the body when a file has no body node (Assetto Corsa's names, as converters keep them):
 # the running gear (the base's stays), the high-detail cockpit (the low one stays), broken glass,
 # cameras and other helper nodes
-NOT_BODY = re.compile(r"^(wheel|tyre|tire|rim|disc|disk|brake|caliper|susp|flycam|damage_|cockpit_hr|steer_hr|"
-                      r"shift_hr|driver|helmet|ext_|camera)|_hr$", re.I)
+NOT_BODY = re.compile(r"^(wheel|tyre|tire|rim|disc|disk|brake|caliper|susp|hub_|flycam|damage_|cockpit_hr|steer_hr|"
+                      r"shift_hr|driver|helmet|ext_|camera|cinture|bullone|bolt)|_hr$", re.I)
 
 
 def _meshes(doc, under, skip=None):
@@ -257,6 +257,32 @@ def has_node(data, name, is_glb=True):
     """Whether a node of the file has this name."""
     doc, _ = _document(data, is_glb, None)
     return any(n.get("name") == name for n in doc.get("nodes", []))
+
+
+def named(data, pattern, is_glb=True, skip=None):
+    """The names of the topmost nodes matching `pattern` (a regex) that have meshes at or below them,
+    outside `skip`'s subtrees, in file order (each name once)."""
+    doc, _ = _document(data, is_glb, None)
+    nodes = doc.get("nodes", [])
+    out = []
+
+    def has_mesh(ni):
+        return "mesh" in nodes[ni] or any(has_mesh(c) for c in nodes[ni].get("children", []))
+
+    def walk(ni):
+        name = nodes[ni].get("name") or ""
+        if skip is not None and skip.search(name):
+            return
+        if pattern.search(name) and has_mesh(ni):
+            if name not in out:
+                out.append(name)
+            return
+        for c in nodes[ni].get("children", []):
+            walk(c)
+    scenes = doc.get("scenes") or [{"nodes": list(range(len(nodes)))}]
+    for ni in scenes[doc.get("scene", 0)].get("nodes", []):
+        walk(ni)
+    return out
 
 
 def positions(data, is_glb=True, under=None, buffers=None, limit=60000, skip=None):
