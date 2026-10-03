@@ -463,7 +463,7 @@ renderer.domElement.addEventListener('pointerup', (e) => {
     if (d < bestD - 0.5 || (Math.abs(d - bestD) <= 0.5 && p.z < bestZ)) { best = id; bestD = d; bestZ = p.z; }
   }
   if (retie) {                                                    // tying a hardpoint to this node
-    if (best) { vehEdit.fitOverrides[retie.key] = best; retie = null; runFit(); }
+    if (best) { vehEdit.fitOverrides[retie.key] = best; rememberTie(retie.key, best); retie = null; runFit(); }
     return;
   }
   if (best) pick = { kind: 'node', id: best };
@@ -838,6 +838,31 @@ const FIT_STAGES = [['wheelbase', '1 Wheelbase', 'Stretch between the axle lines
 let fitStages = new Set(['wheelbase', 'body', 'pickups']);
 let retie = null;            // { key, label }: the hardpoint waiting for the user to click its node
 
+// The user's ties, remembered per suspension part (the part that owns the node) in this browser:
+// { part: { "FL:lower_ball_joint": node } }. Every vehicle using that part starts from them.
+const TIES_KEY = 'beamforge.ties';
+function savedTies() { try { return JSON.parse(localStorage.getItem(TIES_KEY) || '{}'); } catch (e) { return {}; } }
+function storeTies(t) { try { localStorage.setItem(TIES_KEY, JSON.stringify(t)); } catch (e) { /* private window: this session only */ } }
+function rememberTie(key, node) {
+  const t = savedTies();
+  for (const ties of Object.values(t)) delete ties[key];          // one node per hardpoint
+  if (node) {
+    const part = veh.geometry.parts[node];
+    if (part) (t[part] ||= {})[key] = node;
+  }
+  for (const [part, ties] of Object.entries(t)) if (!Object.keys(ties).length) delete t[part];
+  storeTies(t);
+}
+// the ties for this vehicle: the remembered ones whose part (and node) it has, then this session's
+function tiesFor() {
+  const out = {}, t = savedTies(), active = new Set(Object.values(veh.geometry.parts));
+  for (const [part, ties] of Object.entries(t)) {
+    if (!active.has(part)) continue;
+    for (const [key, node] of Object.entries(ties)) if (veh.geometry.parts[node] === part) out[key] = node;
+  }
+  return Object.assign(out, vehEdit.fitOverrides || {});
+}
+
 function fitPanel() {
   const r = vehEdit.fitReport;
   const v = (x) => x === null || x === undefined ? '–' : fmt(x, 3);
@@ -850,7 +875,7 @@ function fitPanel() {
     ${r && r.changes && r.changes.length ? `<p class="quiet"><b>Largest changes to the base:</b> ${r.changes.map(esc).join(' · ')}</p>` : ''}
     ${uprightTable(r)}
     ${mappingTable(r)}
-    <p class="quiet">The fit moves every node; hand moves stay on top. Not saved in the .pc yet.</p>`;
+    <p class="quiet">The fit moves every node; hand moves stay on top. Your ties are remembered per suspension part in this browser, for every vehicle that uses it.</p>`;
 }
 
 // stage 3's check of each hub against the SVJ upright: shape gap before the fit, hub beams after, wheel angles
@@ -888,11 +913,13 @@ function mappingTable(r) {
 
 function bindFitPanel() {
   document.querySelectorAll('[data-retie]').forEach((b) => b.onclick = () => { retie = { key: b.dataset.retie, label: b.dataset.label }; drawInspector(); });
-  document.querySelectorAll('[data-untie]').forEach((b) => b.onclick = () => { delete vehEdit.fitOverrides[b.dataset.untie]; runFit(); });
+  document.querySelectorAll('[data-untie]').forEach((b) => b.onclick = () => {
+    delete vehEdit.fitOverrides[b.dataset.untie]; rememberTie(b.dataset.untie, null); runFit();
+  });
   if ($('retiecancel')) $('retiecancel').onclick = () => { retie = null; drawInspector(); };
   document.querySelectorAll('[data-fitstage]').forEach((c) => c.onchange = () => { if (c.checked) fitStages.add(c.dataset.fitstage); else fitStages.delete(c.dataset.fitstage); });
   if ($('fitrun')) $('fitrun').onclick = runFit;
-  if ($('fitclear')) $('fitclear').onclick = () => { vehEdit.fit = {}; vehEdit.fitReport = null; configureVehicle(); };
+  if ($('fitclear')) $('fitclear').onclick = () => { vehEdit.fit = {}; vehEdit.fitReport = null; studySuspension(); configureVehicle(); };
 }
 
 function runFit() {
@@ -900,9 +927,10 @@ function runFit() {
   const files = Object.fromEntries(svjDoc.meshes.filter((m) => m.file).map((m) => [m.id, m.file]));
   try {
     const r = JSON.parse(fitpy.fit_json(JSON.stringify(veh.geometry), JSON.stringify(veh.wheels), JSON.stringify(svjDoc.svj),
-      JSON.stringify(files), JSON.stringify([...fitStages]), JSON.stringify(vehEdit.fitOverrides || {})));
+      JSON.stringify(files), JSON.stringify([...fitStages]), JSON.stringify(tiesFor())));
     vehEdit.fit = r.moves;
     vehEdit.fitReport = r;
+    studySuspension(r);
   } catch (err) { vehEdit.fitReport = { report: [], notes: ['fit failed: ' + pyError(err)] }; }
   configureVehicle();
 }
@@ -913,8 +941,14 @@ function runFit() {
 let svjSusp = null, suspCorner = 'front', suspTravel = 0;
 const SCOL = { arm: 0x1a7f37, tie: 0x8250df, strut: 0xbf8700, upright: 0x8c959f };
 
-function studySuspension() {
-  try { svjSusp = JSON.parse(suspy.study_svj_json(JSON.stringify(svjDoc.svj), 100)); }
+// fit: a fit result; its hardpoint ties give the base vehicle's points (before the fit) for a second study,
+// the SVJ's layout on those points ("base"), compared with the SVJ in the panel
+function studySuspension(fit) {
+  let base = null;
+  if (fit && fit.mapping && fit.mapping.length && veh) {
+    try { base = fitpy.base_points_json(JSON.stringify(veh.geometry), JSON.stringify(fit.mapping), JSON.stringify(fit.place)); } catch (err) { base = null; }
+  }
+  try { svjSusp = JSON.parse(suspy.study_svj_json(JSON.stringify(svjDoc.svj), 100, base)); }
   catch (err) { svjSusp = { corners: {}, notes: ['suspension: ' + pyError(err)] }; }
   if (!svjSusp.corners[suspCorner]) suspCorner = Object.keys(svjSusp.corners)[0] || 'front';
 }
@@ -965,22 +999,30 @@ function drawSuspension() {
 $('showsusp').onchange = () => drawSuspension();
 
 // small SVG line chart of one curve over wheel travel, with the usable band and the slider position (from FBeam)
-function chart(title, xs, ys, unit, cur, usable, digits = 1) {
-  const pts = xs.map((x, i) => [x, ys[i]]).filter((p) => p[1] !== null && p[1] !== undefined && Number.isFinite(p[1]));
+// second: optional {xs, ys} drawn dashed in orange (the base vehicle), sharing the axes
+function chart(title, xs, ys, unit, cur, usable, digits = 1, second = null) {
+  const ok = (p) => p[1] !== null && p[1] !== undefined && Number.isFinite(p[1]);
+  const pts = xs.map((x, i) => [x, ys[i]]).filter(ok);
+  const pts2 = second ? second.xs.map((x, i) => [x, second.ys[i]]).filter(ok) : [];
   if (pts.length < 2) return '';
   const W = 270, H = 104, L = 40, B = 18, T = 6;
+  const both = pts.concat(pts2);
   const x0 = Math.min(...pts.map((p) => p[0])), x1 = Math.max(...pts.map((p) => p[0]));
-  let y0 = Math.min(...pts.map((p) => p[1])), y1 = Math.max(...pts.map((p) => p[1]));
+  let y0 = Math.min(...both.map((p) => p[1])), y1 = Math.max(...both.map((p) => p[1]));
   if (y1 - y0 < 1e-6) { y0 -= 1; y1 += 1; }
   const pad = (y1 - y0) * 0.08; y0 -= pad; y1 += pad;
   const X = (x) => L + (x - x0) / (x1 - x0) * (W - L - 6), Y = (y) => T + (y1 - y) / (y1 - y0) * (H - T - B);
   const path = pts.map((p, i) => `${i ? 'L' : 'M'}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join('');
+  const inX = pts2.filter((p) => p[0] >= x0 && p[0] <= x1);
+  const path2 = inX.length > 1 ? inX.map((p, i) => `${i ? 'L' : 'M'}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join('') : '';
+  const here2 = inX.length ? inX.reduce((b, p) => (Math.abs(p[0] - cur) < Math.abs(b[0] - cur) ? p : b), inX[0]) : null;
   const here = pts.reduce((b, p) => (Math.abs(p[0] - cur) < Math.abs(b[0] - cur) ? p : b), pts[0]);
   const zeroY = y0 < 0 && y1 > 0 ? `<line x1="${L}" x2="${W - 6}" y1="${Y(0)}" y2="${Y(0)}" stroke="currentColor" stroke-opacity=".25"/>` : '';
   const band = usable ? `<rect x="${X(Math.max(usable[0], x0))}" y="${T}" width="${Math.max(0, X(Math.min(usable[1], x1)) - X(Math.max(usable[0], x0)))}" height="${H - T - B}" fill="#2f6fdf" fill-opacity=".07"/>` : '';
-  return `<div class="chart"><div class="t"><span>${title}</span><span>${fmt(here[1], digits)} ${unit} at ${fmt(here[0], 0)} mm</span></div>
+  return `<div class="chart"><div class="t"><span>${title}</span><span>${fmt(here[1], digits)} ${unit}${here2 ? ` <span style="color:#e0782a">(base ${fmt(here2[1], digits)})</span>` : ''} at ${fmt(here[0], 0)} mm</span></div>
     <svg viewBox="0 0 ${W} ${H}" style="color:var(--ink)">${band}${zeroY}
       <line x1="${X(0)}" x2="${X(0)}" y1="${T}" y2="${H - B}" stroke="currentColor" stroke-opacity=".25"/>
+      ${path2 ? `<path d="${path2}" fill="none" stroke="#e0782a" stroke-width="1.6" stroke-dasharray="4 3"/>` : ''}
       <path d="${path}" fill="none" stroke="#2f6fdf" stroke-width="1.8"/>
       <circle cx="${X(here[0])}" cy="${Y(here[1])}" r="3.5" fill="#cf222e"/>
       <text x="${L - 4}" y="${Y(y1 - pad) + 4}" text-anchor="end" font-size="10" fill="currentColor" fill-opacity=".6">${fmt(y1 - pad, digits)}</text>
@@ -997,8 +1039,12 @@ function suspPanel() {
   if (!names.length) return `<h2>Suspension</h2>${general || '<p class="quiet">No suspension corners in this SVJ.</p>'}`;
   const res = svjSusp.corners[suspCorner] || svjSusp.corners[names[0]];
   const st = res.static, c = res.curves, t = suspTravel, usable = [-st.rebound_mm, st.bump_mm];
-  const d = (v, n, u) => v === null || v === undefined ? '–' : fmt(v, n) + u;
+  const bres = svjSusp.base && svjSusp.base.corners[suspCorner];
+  const bs = bres && bres.static, bc = bres && bres.curves;
+  const d0 = (v, n, u) => v === null || v === undefined ? '–' : fmt(v, n) + u;
+  const d = (v, n, u, key) => d0(v, n, u) + (bs && key ? ` <span style="color:#e0782a">· ${d0(bs[key], n, u)}</span>` : '');
   const row = (k, v) => `<span>${k}</span><span>${v}</span>`;
+  const sec = (key) => bc ? { xs: bc.travel_mm, ys: bc[key] } : null;
   const moving = c.travel_mm.length > 1;
   return `<h2>Suspension <span class="q">(from the SVJ)</span></h2>
     <div class="inl">${names.map((n) => `<button data-sc="${n}" class="${n === suspCorner ? 'on' : ''}">${n} · ${esc(svjSusp.corners[n].corner)}</button>`).join(' ')}</div>
@@ -1006,21 +1052,24 @@ function suspPanel() {
       ${row('Travel', `<input type="range" id="susptravel" min="-100" max="100" step="2.5" value="${t}"> <b>${fmt(t, 1)}</b> mm`)}</div>
     ${res.notes.map((n) => `<p class="bad">${esc(n)}</p>`).join('')}${general}
     <details open><summary><b>Static geometry</b></summary><div class="kv">
-      ${row('Camber / toe', `${d(st.camber_deg, 2, '°')} / ${d(st.toe_deg, 2, '°')}`)}
-      ${row('Track', d(st.track_mm, 0, ' mm'))}
-      ${row('Kingpin inclination', d(st.kpi_deg, 1, '°'))}${row('Caster', d(st.caster_deg, 1, '°'))}
-      ${row('Scrub radius', d(st.scrub_radius_mm, 0, ' mm'))}${row('Mechanical trail', d(st.trail_mm, 0, ' mm'))}
-      ${row('Roll-centre height', d(st.roll_centre_mm, 0, ' mm'))}
-      ${row('Motion ratio', d(st.motion_ratio, 2, ''))}${row('Wheel rate', d(st.wheel_rate_N_per_mm, 1, ' N/mm'))}
-      ${row('Travel bump / rebound', `${d(st.bump_mm, 0, '')} / ${d(st.rebound_mm, 0, ' mm')}`)}
+      ${bs ? row('', `SVJ <span style="color:#e0782a">· base</span>`) : ''}
+      ${row('Camber', d(st.camber_deg, 2, '°', 'camber_deg'))}${row('Toe', d(st.toe_deg, 2, '°', 'toe_deg'))}
+      ${row('Track', d(st.track_mm, 0, ' mm', 'track_mm'))}
+      ${row('Kingpin inclination', d(st.kpi_deg, 1, '°', 'kpi_deg'))}${row('Caster', d(st.caster_deg, 1, '°', 'caster_deg'))}
+      ${row('Scrub radius', d(st.scrub_radius_mm, 0, ' mm', 'scrub_radius_mm'))}${row('Mechanical trail', d(st.trail_mm, 0, ' mm', 'trail_mm'))}
+      ${row('Roll-centre height', d(st.roll_centre_mm, 0, ' mm', 'roll_centre_mm'))}
+      ${row('Motion ratio', d(st.motion_ratio, 2, '', 'motion_ratio'))}${row('Wheel rate', d(st.wheel_rate_N_per_mm, 1, ' N/mm'))}
+      ${row('Travel bump / rebound', `${d0(st.bump_mm, 0, '')} / ${d0(st.rebound_mm, 0, ' mm')}`)}
     </div></details>
     ${moving ? `<details open><summary><b>Over wheel travel</b> <span class="q">(blue band: damper within its stroke)</span></summary>
-      ${chart('Camber', c.travel_mm, c.camber_deg, '°', t, usable, 2)}
-      ${chart('Toe, + = in (bump steer)', c.travel_mm, c.toe_deg, '°', t, usable, 2)}
-      ${chart('Roll-centre height (heave)', c.travel_mm, c.roll_centre_mm, 'mm', t, usable, 0)}
-      ${c.axle_shift_mm ? chart('Axle sideways shift', c.travel_mm, c.axle_shift_mm, 'mm', t, usable, 1) : chart('Track change (both sides)', c.travel_mm, c.track_change_mm, 'mm', t, usable, 1)}
-      ${chart('Motion ratio', c.travel_mm, c.motion_ratio, '', t, usable, 3)}
+      ${chart('Camber', c.travel_mm, c.camber_deg, '°', t, usable, 2, sec('camber_deg'))}
+      ${chart('Toe, + = in (bump steer)', c.travel_mm, c.toe_deg, '°', t, usable, 2, sec('toe_deg'))}
+      ${chart('Roll-centre height (heave)', c.travel_mm, c.roll_centre_mm, 'mm', t, usable, 0, sec('roll_centre_mm'))}
+      ${c.axle_shift_mm ? chart('Axle sideways shift', c.travel_mm, c.axle_shift_mm, 'mm', t, usable, 1, sec('axle_shift_mm')) : chart('Track change (both sides)', c.travel_mm, c.track_change_mm, 'mm', t, usable, 1, sec('track_change_mm'))}
+      ${chart('Motion ratio', c.travel_mm, c.motion_ratio, '', t, usable, 3, sec('motion_ratio'))}
       ${chart('Wheel rate', c.travel_mm, c.wheel_rate_N_per_mm, 'N/mm', t, usable, 1)}</details>` : '<p class="quiet">The corner does not move: no curves.</p>'}
+    ${bres ? `<p class="quiet"><span style="color:#e0782a">Base</span>: the SVJ's layout solved on the base vehicle's nodes tied to its hardpoints, before the fit, so the two show what the fit changes. Where the base's own layout differs (another rear suspension type), the base values are an approximation.${bres.notes.length ? ' ' + bres.notes.map(esc).join(' ') : ''}</p>`
+      : (svjSusp.base ? '<p class="quiet">No base comparison for this corner (no tied points).</p>' : '<p class="quiet">Run the fit (stage 3) to compare with the base vehicle.</p>')}
     <p class="quiet">Kinematics with the steering straight ahead; the right side is the mirror image. The base vehicle's own suspension comes once its nodes are tied to these hardpoints (docs/fitting.md, stage 3).</p>`;
 }
 

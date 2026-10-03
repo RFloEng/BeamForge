@@ -56,6 +56,21 @@ class TestSvjCorners(unittest.TestCase):
         _, pts, _, _ = S.svj_corner(c, "svj_test_r")
         self.assertAlmostEqual(pts["WC"][0], 0.70)
 
+    def test_override_with_base_points(self):
+        """The SVJ's layout solved on other points: tied points replaced, the others move with the wheel centre."""
+        _, pts, _, _ = S.svj_corner(svj_macpherson(), "svj_ref")
+        over = {"wheel_center": [0.72, 0.0, 0.30], "lower_ball_joint": [0.70, 0.0, 0.16]}
+        _, p2, _, _ = S.svj_corner(svj_macpherson(), "svj_over", over)
+        self.assertEqual(p2["WC"], [0.72, 0.0, 0.30])
+        self.assertEqual(p2["lower_ball_joint"], [0.70, 0.0, 0.16])
+        for i, shift in enumerate((0.02, 0.0, 0.0)):              # not tied: moved with the wheel centre (+0.02 in x)
+            self.assertAlmostEqual(p2["TRI"][i], pts["TRI"][i] + shift, places=6)
+        import json
+        out = json.loads(S.study_svj_json(json.dumps({"suspension": {"FL": svj_macpherson()}}), 60, json.dumps({"FL": over})))
+        self.assertIn("front", out["base"]["corners"])
+        self.assertAlmostEqual(out["base"]["corners"]["front"]["static"]["track_mm"], 1440, delta=1)
+        self.assertAlmostEqual(out["corners"]["front"]["static"]["track_mm"], 1400, delta=1)
+
     def test_problems_are_named(self):
         c = svj_macpherson()
         c["topology"]["links"].append({"name": "extra_rod", "type": "rod", "inboard_points": [to_sae([0.3, 0.0, 0.4])],

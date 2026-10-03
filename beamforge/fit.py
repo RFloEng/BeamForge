@@ -693,3 +693,24 @@ def upright_check(before, after, mapping, wheels, svj, beams, beam_parts, parts)
         row["svj_toe_deg"] = round(math.degrees(al["toe"]), 2) if isinstance(al.get("toe"), (int, float)) else None
         out.append(row)
     return out
+
+
+def base_points(nodes, mapping, place):
+    """The base vehicle's points tied to the SVJ hardpoints, for the suspension study:
+    {corner: {hardpoint: [x, y, z]}} in the study's frame (left side, front axle at y 0, ground at
+    z 0; a right corner mirrored). nodes: the base vehicle without moves (geometry "rest"); mapping:
+    map_hardpoints() rows; place: fit()'s "place". A wheel centre is the middle of its axle nodes."""
+    out = {}
+    for r in mapping:
+        if not r["nodes"] or any(n not in nodes for n in r["nodes"]):
+            continue
+        p = [sum(nodes[n][i] for n in r["nodes"]) / len(r["nodes"]) for i in range(3)]
+        q = [abs(p[0]), p[1] - place["yf"], p[2] - place["ground"]]
+        out.setdefault(r["corner"], {})[r["name"]] = [round(v, 6) for v in q]
+    return out
+
+
+def base_points_json(geometry_json, mapping_json, place_json):
+    """base_points() for the editor."""
+    geo = json.loads(geometry_json)
+    return json.dumps(base_points(geo.get("rest") or geo["nodes"], json.loads(mapping_json), json.loads(place_json)))

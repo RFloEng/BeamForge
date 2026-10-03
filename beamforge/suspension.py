@@ -706,7 +706,7 @@ def _nice(name):
     return name.replace("_", " ").capitalize()
 
 
-def svj_corner(corner, key):
+def svj_corner(corner, key, override=None):
     """A solver corner built from an SVJ corner's own links (left side, BeamNG axes, front axle at
     y 0, ground at z 0). The layout is registered in TOPOLOGY as `key`.
 
@@ -717,6 +717,11 @@ def svj_corner(corner, key):
     the wheel (push / pull rods, rockers, anti-roll bars) are left out. The steering or toe link is
     TRI -> TRO. A solid axle or de Dion is one body carrying both hubs; Panhard and Watt links are
     used once. Returns (spec, points, labels, notes); spec is None when the corner cannot be built.
+
+    override: {SVJ hardpoint name (as svj.hardpoints names them): [x, y, z]} in the same frame, to
+    solve the SVJ's layout on other points (the base vehicle's nodes tied to those hardpoints).
+    Points without an override (an assumed strut lower point, a damper top) move with the wheel
+    centre, so the corner stays together.
     """
     import re
     from beamforge.svj import from_sae
@@ -728,6 +733,7 @@ def svj_corner(corner, key):
     flip = from_sae(hps["wheel_center"])[0] < 0           # a right corner: mirror it to the left
     B = (lambda p: mirror(from_sae(p))) if flip else (lambda p: from_sae(p))  # noqa: E731
     pts, labels = {"WC": B(hps["wheel_center"])}, {"WC": "Wheel centre"}
+    src = {"WC": "wheel_center"}                            # point key -> SVJ hardpoint name, for override
     if pts["WC"][2] <= 0.05:
         notes.append(f"the wheel centre is {pts['WC'][2] * 1000:.0f} mm above the ground: the file's Z axis may point up "
                      "(SAE J670 has Z down, origin on the ground); angles will be wrong")
@@ -750,6 +756,7 @@ def svj_corner(corner, key):
         for i, p in enumerate(ins):
             k = "TRI" if steer else "ST" if kind == "strut" else f"{name}.{i}"
             pts[k] = B(p)
+            src[k] = f"{name}.{i}"
             labels[k] = f"{_nice(name)}, inner" + (f" {i + 1}" if len(ins) > 1 else "")
             keys.append(k)
         once = axle and bool(re.search(r"panhard|watt", name))
@@ -757,6 +764,10 @@ def svj_corner(corner, key):
             sb = hps.get("strut_lower") or db
             if sb:
                 pts["SB"] = B(sb)
+                if hps.get("strut_lower"):
+                    src["SB"] = "strut_lower"
+                elif sb is hps.get("damper_outboard"):
+                    src["SB"] = "damper_outboard"
             elif "lower_ball_joint" in hps:
                 lbj, st = B(hps["lower_ball_joint"]), pts["ST"]
                 pts["SB"] = [lbj[i] + (st[i] - lbj[i]) * 0.4 for i in range(3)]
@@ -777,6 +788,7 @@ def svj_corner(corner, key):
         else:
             out = "TRO" if steer else ref
             pts[out] = B(hps[ref])
+            src[out] = ref
             labels.setdefault(out, _nice(ref))
             if steer:
                 toe = out
@@ -795,6 +807,8 @@ def svj_corner(corner, key):
         dmp = ("ST", "SB", "upright")
     else:
         pts["DB"] = B(db) if db else list(pts["WC"])
+        if db is not None and db is hps.get("damper_outboard"):
+            src["DB"] = "damper_outboard"
         if damper.get("inboard_mount"):
             pts["DT"] = B(damper["inboard_mount"])
         else:
@@ -802,6 +816,11 @@ def svj_corner(corner, key):
             notes.append("no damper inboard mount: placed 350 mm above its lower mount")
         labels.update({"DT": "Damper top", "DB": "Damper bottom"})
         dmp = ("DT", "DB", "upright")
+    if override:
+        shift = [override[src["WC"]][i] - pts["WC"][i] for i in range(3)] if src["WC"] in override else [0.0] * 3
+        for k in pts:
+            h = src.get(k)
+            pts[k] = list(override[h]) if h in override else [pts[k][i] + shift[i] for i in range(3)]
     if count != 5:
         notes.append(f"the links give {count} constraints where a corner needs 5: "
                      + ("it cannot move (over-constrained)" if count > 5 else "it is not located (under-constrained)"))
@@ -823,12 +842,13 @@ def svj_corner(corner, key):
     return spec, pts, labels, notes
 
 
-def study_svj(svj, travel_mm=100):
+def study_svj(svj, travel_mm=100, overrides=None, suffix=""):
     """Kinematics of an SVJ's front and rear corners (FL and RL, else FR and RR mirrored).
 
     Returns {"corners": {"front" | "rear": {"corner", "type", "name", "points", "labels", "lines",
     "single", "static", "curves", "frames", "notes"}}, "notes": [...]}; lines as describe(). Points
     are in BeamNG axes with the front axle at y 0 and the ground at z 0 (the editor places them).
+    overrides: {corner ("FL"...): svj_corner override}: the SVJ layout solved on other points.
     """
     out, notes = {}, []
     susp = svj.get("suspension") or {}
@@ -836,8 +856,10 @@ def study_svj(svj, travel_mm=100):
         name = L if isinstance(susp.get(L), dict) else R if isinstance(susp.get(R), dict) else None
         if not name:
             continue
-        key = f"svj_{axle}"
-        spec, pts, labels, n = svj_corner(susp[name], key)
+        key = f"svj_{axle}{suffix}"
+        if overrides is not None and name not in overrides:
+            continue
+        spec, pts, labels, n = svj_corner(susp[name], key, (overrides or {}).get(name))
         if spec is None:
             notes += [f"{name}: {x}" for x in n]
             continue
@@ -853,7 +875,12 @@ def study_svj(svj, travel_mm=100):
     return {"corners": out, "notes": notes}
 
 
-def study_svj_json(svj_json, travel_mm=100):
-    """study_svj() for the editor: SVJ text in, JSON out."""
+def study_svj_json(svj_json, travel_mm=100, base_json=None):
+    """study_svj() for the editor: SVJ text in, JSON out. base_json: overrides (fit.base_points) for a
+    second study, the SVJ's layout on the base vehicle's tied points, returned as "base"."""
     import json
-    return json.dumps(study_svj(json.loads(svj_json), travel_mm))
+    svj = json.loads(svj_json)
+    out = study_svj(svj, travel_mm)
+    if base_json:
+        out["base"] = study_svj(svj, travel_mm, json.loads(base_json), "_base")
+    return json.dumps(out)
