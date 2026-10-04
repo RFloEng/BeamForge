@@ -192,8 +192,8 @@ def springs_and_dampers(model, configured):
             kind = None
             if "precompressionRange" in rec and rec.get("beamSpring") not in (0, None, "0"):
                 kind = "spring"                           # |NORMAL, or |BOUNDED with its bump stop (small hatchback)
-            elif "BOUNDED" in bt and rec.get("beamDampRebound") is not None:
-                kind = "damper"
+            elif "BOUNDED" in bt and rec.get("beamDampRebound") is not None and                     any(_num_or(rec.get(k), {}, 1.0) != 0 for k in ("beamDamp", "beamDampRebound")):
+                kind = "damper"                           # (zero slow damping: a high-speed bump damper, left)
             if not kind:
                 continue
             y = (nodes[a][1] + nodes[b][1]) / 2
@@ -372,10 +372,20 @@ def svj_mass(svj):
             round(-cg[0], 4) if ok else None, round(-cg[2], 4) if ok else None)
 
 
-def weight_changes(model, configured, mass=None, cg_y=None, cg_z=None, length_factors=None):
+# the unsprung side and its mounts: their node weights and beams stay the base's when the mass changes
+# (their loads come from the wheels, not from the body's own weight)
+UNSPRUNG = re.compile(r"suspension|strut|coilover|shock|damper|spring|hub|arm|link|subframe|knuckle|upright|"
+                      r"steering|tierod|wheel|tire|tyre|brake|swaybar|halfshaft|axle|differential|finaldrive", re.I)
+
+
+def weight_changes(model, configured, mass=None, cg_y=None, cg_z=None, length_factors=None, floors=None):
     """New node weights for a target mass (kg, wheels included) and CG (behind the front axle, height;
     m): {part: {row: kg}}. None leaves that value as it is. length_factors ({node: factor},
-    rigidity.length_factors): each weight first follows the length of its node's beams."""
+    rigidity.length_factors): each weight first follows the length of its node's beams. The nodes of
+    the suspension and running gear (UNSPRUNG) keep their weight: the mass and CG are reached with the
+    body's nodes alone (all of them when those would be left with too little). floors ({node: kg},
+    rigidity.mass_floors): no node goes below its own (the structure keeps the base's stiffness, so a
+    node may get only as light as the physics step allows); the others take what they cannot."""
     lf = length_factors or {}
     rows, wheel_kg = node_weights(model, configured)
     rows = [(p, i, n, kg * lf.get(n, 1.0), pos) for p, i, n, kg, pos in rows]
@@ -384,29 +394,66 @@ def weight_changes(model, configured, mass=None, cg_y=None, cg_z=None, length_fa
         return {}
     meas = configured.get("measure") or {}
     yf, zg = meas.get("front_axle_y") or 0.0, meas.get("ground_z") or 0.0
+    total = (mass - wheel_kg) if mass is not None else m             # the target, without the wheels
+    # the suspension's nodes and the body nodes its beams hold on to (the mounts) keep their weight
+    geo = configured.get("geometry") or {}
+    mounts = set()
+    for (a, b), bp in zip(geo.get("beams") or [], geo.get("beam_parts") or []):
+        if UNSPRUNG.search(bp):
+            mounts.update((a, b))
+    # the suspension and its mounts; if that leaves the body too little, the suspension alone; else all scale
+    for fixed in ([UNSPRUNG.search(r[0]) is not None or r[2] in mounts for r in rows],
+                  [UNSPRUNG.search(r[0]) is not None for r in rows], [False] * len(rows)):
+        m_fix = sum(r[3] for r, f in zip(rows, fixed) if f)
+        if total - m_fix >= 0.3 * total:
+            break
+    free = [(r, i) for i, (r, f) in enumerate(zip(rows, fixed)) if not f]
     w = [r[3] for r in rows]
-    # the two ramps, a few rounds: the height ramp nudges the CG along the car a little, and back
+    m_free = total - m_fix
+    # the two ramps on the body's nodes, a few rounds: the height ramp nudges the CG along the car a
+    # little, and back. Their weighted mean goes where the whole car's CG lands on the target.
     for axis, target, origin in ((1, cg_y, yf), (2, cg_z, zg)) * 4:
         if target is None:
             continue
-        mw = sum(w)
-        mean = sum(wi * r[4][axis] for wi, r in zip(w, rows)) / mw
-        var = sum(wi * (r[4][axis] - mean) ** 2 for wi, r in zip(w, rows)) / mw
+        fix_moment = sum(w[i] * r[4][axis] for i, r in enumerate(rows) if fixed[i])
+        want = ((origin + target) * total - fix_moment) / m_free
+        mw = sum(w[i] for _, i in free)
+        mean = sum(w[i] * r[4][axis] for r, i in free) / mw
+        var = sum(w[i] * (r[4][axis] - mean) ** 2 for r, i in free) / mw
         if var <= 0:
             continue
-        k = (origin + target - mean) / var
+        k = (want - mean) / var
         # w' = w (1 + k (p - mean)) moves the weighted mean by k var; every node keeps MIN_FACTOR of
         # its own (original) weight: k is shortened where a node would go below that
         t = 1.0
-        for wi, r in zip(w, rows):
+        for r, i in free:
             d = k * (r[4][axis] - mean)
-            if d < 0 and wi * (1 + d) < MIN_FACTOR * r[3]:
-                t = min(t, max(0.0, (MIN_FACTOR * r[3] / wi - 1) / d))
-        w = [wi * (1 + t * k * (r[4][axis] - mean)) for wi, r in zip(w, rows)]
-    scale = ((mass - wheel_kg) / sum(w)) if mass is not None and sum(w) > 0 else m / sum(w)
+            if d < 0 and w[i] * (1 + d) < MIN_FACTOR * r[3]:
+                t = min(t, max(0.0, (MIN_FACTOR * r[3] / w[i] - 1) / d))
+        for r, i in free:
+            w[i] = w[i] * (1 + t * k * (r[4][axis] - mean))
+    s_free = sum(w[i] for _, i in free)
+    scale = m_free / s_free if s_free > 0 else 1.0
+    for _, i in free:
+        w[i] *= scale
+    # the floors: a node below its own is raised to it, and the free nodes above theirs give the
+    # difference back (a few rounds); the mass is not reached when all are at their floor
+    fl = floors or {}
+    for _ in range(8):
+        lo = {i: fl.get(r[2], 0.0) for r, i in free}
+        for i, f in lo.items():
+            w[i] = max(w[i], f)
+        extra = sum(w[i] for _, i in free) - m_free
+        room = sum(w[i] - lo[i] for _, i in free if w[i] > lo[i])
+        if extra <= 1e-6 or room <= 0:
+            break
+        k = min(1.0, extra / room)
+        for _, i in free:
+            if w[i] > lo[i]:
+                w[i] -= (w[i] - lo[i]) * k
     out = {}
-    for (part, row, _, _, _), wi in zip(rows, w):
-        out.setdefault(part, {})[row] = round(wi * scale, 4)
+    for i, (part, row, _, _, _) in enumerate(rows):
+        out.setdefault(part, {})[row] = round(w[i], 4)
     return out
 
 
@@ -435,7 +482,7 @@ def _axle_load_ratio(model, configured, svj, take):
     return {"front": f1 / f0 if f0 > 0 else 1.0, "rear": r1 / r0 if r0 > 0 else 1.0}
 
 
-def apply(model, configured, svj, take, study=None, length_factors=None):
+def apply(model, configured, svj, take, study=None, length_factors=None, floors=None):
     """What taking values changes: ({part: {row index: {property: value}}} for beams, {part: {"radius",
     "tireWidth", "scale"}} for tyres, {"$var": value} for the configuration, {part: {row index: kg}} for
     node weights). take: {row key: True}."""
@@ -444,7 +491,10 @@ def apply(model, configured, svj, take, study=None, length_factors=None):
     beams, tyre, pcvars = {}, {}, {}
     vars_ = {x["name"]: x["value"] for x in configured["variables"] if isinstance(x["value"], (int, float))}
     load = _axle_load_ratio(model, configured, svj, take)
-    for r in springs_and_dampers(model, configured):
+    sd = springs_and_dampers(model, configured)
+    spring_k = {r["axle"]: _num_or(r["values"].get("beamSpring"), vars_, None) for r in sd if r["kind"] == "spring"}
+    damp_floor = set()
+    for r in sd:
         s = sv.get(r["axle"]) or {}
         new = {}
         if r["kind"] == "spring" and take.get(f"spring_{r['axle']}") and s.get("coil_rate"):
@@ -461,6 +511,21 @@ def apply(model, configured, svj, take, study=None, length_factors=None):
             if take.get(f"damp_rebound_{r['axle']}") and s.get("damp_rebound"):
                 new.update(beamDampRebound=s["damp_rebound"], beamDampReboundFast=s["damp_rebound_fast"],
                            beamDampVelocitySplit=s["damp_split"])
+            # the base vehicle is the reference: its damping ratio (damping over the critical damping,
+            # 2 sqrt(k m)) is kept as a floor, the base dampers scaled by sqrt(new spring / old x new load /
+            # old load) (the motion ratios are the same beams'); below it, the base's dampers so scaled
+            if new:
+                k_old = spring_k.get(r["axle"])
+                k_new = (sv.get(r["axle"]) or {}).get("coil_rate") if take.get(f"spring_{r['axle']}") else None
+                f = math.sqrt((k_new / k_old if k_new and k_old else 1.0) * load.get(r["axle"], 1.0))
+                base = {k: _num_or(r["values"].get(k), vars_, None) for k in
+                        ("beamDamp", "beamDampRebound", "beamDampFast", "beamDampReboundFast")}
+                floor = {k: v * f for k, v in base.items() if v}
+                if any(new.get(k, 0) < floor.get(k, 0) * 0.999 for k in ("beamDamp", "beamDampRebound") if k in new):
+                    new = {k: round(v) for k, v in floor.items()}
+                    if r["values"].get("beamDampVelocitySplit") is not None:
+                        new["beamDampVelocitySplit"] = r["values"]["beamDampVelocitySplit"]
+                    damp_floor.add(r["axle"])
         for k in list(new):                               # a tuning variable: set it in the configuration
             old = r["values"].get(k)
             if isinstance(old, str) and re.fullmatch(r"\$[A-Za-z_]\w*", old):
@@ -476,7 +541,8 @@ def apply(model, configured, svj, take, study=None, length_factors=None):
     weights = {}
     if (take.get("mass") and sm) or (take.get("cg_y") and sy is not None) or (take.get("cg_z") and sz is not None):
         weights = weight_changes(model, configured, sm if take.get("mass") else None,
-                                 sy if take.get("cg_y") else None, sz if take.get("cg_z") else None, length_factors)
+                                 sy if take.get("cg_y") else None, sz if take.get("cg_z") else None, length_factors,
+                                 floors)
     return beams, tyre, pcvars, weights
 
 

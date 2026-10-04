@@ -50,18 +50,21 @@ class TestRigidity(unittest.TestCase):
                 got = new.get(b["part"], {}).get(b["row"], {}).get("beamSpring", b["values"]["beamSpring"])   # unchanged: not written
                 self.assertLessEqual(got, b["values"]["beamSpring"] * l0 / l1 * 1.0001)
 
-    def test_lighter_nodes_softer_beams(self):
-        """Half the mass: the beams take half their k, and no node's k / m goes above the base's."""
+    def test_lighter_car_keeps_its_structure(self):
+        """A much lighter target: the beams keep the base's values, the nodes stop at their floor (no node's
+        k / m above the base's highest), and the mass is not reached rather than the structure softened."""
         conf = json.loads(bng.configure("toycar"))
         conf["measure"].update(front_axle_y=-1.2, ground_z=0.0)
         rows, wheel_kg = values.node_weights("toycar", conf)
-        half = sum(r[3] for r in rows) / 2 + wheel_kg
-        w = values.weight_changes("toycar", conf, mass=half, cg_y=0.3)
+        floors = rigidity.mass_floors("toycar", conf)
+        tiny = sum(r[3] for r in rows) / 20 + wheel_kg
+        w = values.weight_changes("toycar", conf, mass=tiny, floors=floors)
         new, _ = rigidity.changes("toycar", conf, w)
+        self.assertEqual(new, {})                                            # no beam changed
         before, after = _index("toycar", conf, None, {}), _index("toycar", conf, w, new)
-        for n in before:
-            self.assertLessEqual(after[n], before[n] * 1.002, n)
-
+        self.assertLessEqual(max(after.values()), max(before.values()) * 1.002)
+        got = sum(kg for part in w.values() for kg in part.values())
+        self.assertGreater(got, sum(r[3] for r in rows) / 20)              # held up by the floors
 
 if __name__ == "__main__":
     unittest.main()

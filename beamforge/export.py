@@ -539,13 +539,23 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     bl = rigidity.beams(model, v)
     fitted = {n for n, c in choices.items() if c == "fit"}
     lf = rigidity.length_factors(model, v, springs, bl, fitted)
+    floors = rigidity.mass_floors(model, v, springs, bl, fitted)
     if opt and opt.get("take"):
-        taken_beams, taken_tyres, taken_vars, taken_weights = values.apply(model, v, opt["svj"], opt["take"], opt.get("study"), lf)
+        taken_beams, taken_tyres, taken_vars, taken_weights = values.apply(model, v, opt["svj"], opt["take"], opt.get("study"),
+                                                                           lf, floors)
         taken_pt = values.powertrain_changes(model, v, opt["svj"], opt["take"])
         for part, ch in list(values.steering_changes(model, v, opt["svj"], opt["take"]).items()) +                 list(values.aero_changes(model, v, opt["svj"], opt["take"]).items()):
             taken_pt.setdefault(part, {}).update(ch)
     if lf and not taken_weights:
-        taken_weights = values.weight_changes(model, v, length_factors=lf)
+        taken_weights = values.weight_changes(model, v, length_factors=lf, floors=floors)
+    mass_note = None
+    if opt and opt.get("take", {}).get("mass") and taken_weights:
+        target = values.svj_mass(opt["svj"])[0]
+        wheel_kg = values.node_weights(model, v)[1]
+        got = sum(kg for part in taken_weights.values() for kg in part.values()) + wheel_kg
+        if target and got > target + 1:
+            mass_note = (f"mass {got:.0f} kg, not the SVJ's {target:.0f}: lighter, the base's structure would be too stiff "
+                         "for its nodes' weight (BeamNG's physics step); the structure is kept as the base's")
     rig, rig_stats = rigidity.changes(model, v, taken_weights, springs, bl, fitted) if (lf or taken_weights) else ({}, None)
     for part, rows in rig.items():
         for row, vals in rows.items():
@@ -606,6 +616,8 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
                if parts.get(n, {}).get("model") == "common" and choices.get(n) in ("copy", "fit")}
     files, counts, notes = {}, {"fitted": 0, "copied": 0, "reused": 0, "regenerated": 0, "nodes": 0, "svj_meshes": 0,
                                 "base_meshes_dropped": 0, "values": 0, "rigidity_beams": 0}, []
+    if mass_note:
+        notes.append(mass_note)
     if rig_stats:
         counts["rigidity_beams"] = rig_stats["beams"]
         if rig_stats["softened"]:
