@@ -15,6 +15,8 @@ Node ids are given without their side letter: "l" or "r" is added per corner. Pe
   pivots       inner pivots of each link by role (lower_arm, upper_arm, tie_rod, trailing_arm),
                front to rear
   strut        a MacPherson strut: its top node(s) and the upright node its rail starts from
+  caster       False for an upright that is a trailing arm (long, pivoting at its front): not turned to
+               the SVJ's steering axis, which would swing its pivot up or down
 """
 
 import math
@@ -38,7 +40,65 @@ ROLES = {
         "pivots": {"lower_arm": ["rsub5", "rsub1"], "tie_rod": ["rsub2"]},
         "strut": {"top": ["rtop1", "rtopm1"], "rail_start": "rhub5"},
     },
+    # RWD compact coupe: MacPherson front, a lateral arm and a tension rod to the hub's lower joint
+    "coupe_suspension_F": {
+        "upright": ["fhub1", "fhub3", "fhub4", "fhub5", "ftop2"],
+        "joints": {"lower_ball_joint": ["fhub1"], "tie_rod_end": ["fhub3"]},
+        "pivots": {"lower_arm": ["fsub1", "fsub2"], "tie_rod": ["fhub6"]},
+        "strut": {"top": ["ftop1"], "rail_start": "ftop2"},
+    },
+    # RWD compact coupe: multilink rear, a lower A-arm, two upper links (an upper arm) and a toe link;
+    # coilover to the body
+    "coupe_suspension_R": {
+        "upright": ["rhub1", "rhub2", "rhub3", "rhub4", "rhub5", "rhub6"],
+        "joints": {"lower_ball_joint": ["rhub1"], "upper_ball_joint": ["rhub3", "rhub4"], "tie_rod_end": ["rhub5"]},
+        "pivots": {"lower_arm": ["rsub2", "rsub1"], "upper_arm": ["rsub3", "rsub4"], "tie_rod": ["rsub5"]},
+    },
+    # RWD saloon: MacPherson front, two lower links (a lateral arm and a tension rod, each to its own joint),
+    # the strut's rail from the lower joint
+    "saloon_suspension_F": {
+        "upright": ["fhub1", "fhub3", "fhub4", "fhub5", "fwhl2", "ftop2"],
+        "joints": {"lower_ball_joint": ["fhub1", "fwhl2"], "tie_rod_end": ["fhub3"]},
+        "pivots": {"lower_arm": ["fsub1", "fsub2"], "tie_rod": ["fhub6"]},
+        "strut": {"top": ["ftop1"], "rail_start": "fhub1"},
+    },
+    # RWD saloon: multilink rear, two lower links, two upper links and a toe link
+    "saloon_suspension_R": {
+        "upright": ["rhub1", "rhub2", "rhub3", "rhub4", "rhub5", "rhub6"],
+        "joints": {"lower_ball_joint": ["rhub1", "rhub3"], "upper_ball_joint": ["rhub4", "rhub6"], "tie_rod_end": ["rhub2"]},
+        "pivots": {"lower_arm": ["rsub2", "rsub1"], "upper_arm": ["rsub4", "rsub5"], "tie_rod": ["rsub3"]},
+    },
+    # older RWD saloon: MacPherson front, two lower links to their own joints, tie rod to the steering linkage
+    "saloon2_suspension_F": {
+        "upright": ["fhub1", "fhub3", "fhub4", "fhub5", "fwhl2"],
+        "joints": {"lower_ball_joint": ["fhub1", "fwhl2"], "tie_rod_end": ["fhub3"]},
+        "pivots": {"lower_arm": ["fsub1", "fsub2"], "tie_rod": ["steer1"]},
+        "strut": {"top": ["ftop1"], "rail_start": "fhub1"},
+    },
+    # older RWD saloon: semi-trailing arm rear, the hub rigid on the arm. As a lower arm (an SVJ wishbone rear):
+    # its two pivots on the SVJ's lower arm's, measured from the hub's bottom
+    "saloon2_suspension_R": {
+        "upright": ["rhub1", "rhub2", "rhub4", "rhub5", "rhub6"],
+        "joints": {"lower_ball_joint": ["rhub1"]},
+        "pivots": {"lower_arm": ["rsub1ll", "rsub1"]},
+    },
+    # small hatchback: double wishbone front, a lateral arm and a torque rod (the lower arm), the upper
+    # arm's pivots on the body
+    "hatchback_suspension_F": {
+        "upright": ["fhub1", "fhub2", "fhub3", "fhub6"],
+        "joints": {"lower_ball_joint": ["fhub1"], "upper_ball_joint": ["fhub2"], "tie_rod_end": ["fhub3"]},
+        "pivots": {"lower_arm": ["fsub1", "fsub2"], "upper_arm": ["fsub3", "fsub4"], "tie_rod": ["fhub8"]},
+    },
+    # small hatchback: trailing arm rear (the hub on it), a lower and an upper lateral link. The links to
+    # the SVJ's arms; the trailing arm's pivots have no SVJ counterpart (left to the field)
+    "hatchback_suspension_R": {
+        "upright": ["rhub1", "rhub2", "rhub3", "rhub4", "rwhl2", "rwhl3"],
+        "joints": {"lower_ball_joint": ["rhub1"], "upper_ball_joint": ["rhub3"]},
+        "pivots": {"lower_arm": ["rsub1"], "upper_arm": ["rsub3"], "trailing_arm": ["rsub2"]},
+        "caster": False,
+    },
 }
+ROLES["saloon_suspension_F_wide"] = ROLES["saloon_suspension_F"]
 
 
 def for_corner(parts, nodes, wheel):
@@ -56,6 +116,8 @@ def for_corner(parts, nodes, wheel):
         out = {"part": part, "upright": up,
                "joints": {k: sided(v) for k, v in t.get("joints", {}).items()},
                "pivots": {k: sided(v) for k, v in t.get("pivots", {}).items()}}
+        if "caster" in t:
+            out["caster"] = t["caster"]
         if t.get("strut"):
             out["strut"] = {"top": sided(t["strut"]["top"]), "rail_start": t["strut"]["rail_start"] + side}
         return out

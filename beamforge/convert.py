@@ -127,7 +127,10 @@ def corner(nodes, roles, wheel, svj, corner_name, hps, wheel_axis=None):
     # then about the wheel's axis, so the steering axis comes as close to the SVJ's as the base upright
     # allows (caster; the kingpin inclination is the upright's own: a rigid upright cannot take both an
     # SVJ's camber and its kingpin axis)
-    if lbj0 and top0 and lbj1 and top1:
+    if roles.get("caster") is False:
+        notes.append(f"{corner_name}: the upright is a trailing arm (no steering axis): turned about the wheel's axis "
+                     "as the base's")
+    elif lbj0 and top0 and lbj1 and top1:
         w = _unit(_apply(R, u0))
         a0 = _apply(R, [top0[i] - lbj0[i] for i in range(3)])
         a1_ = [top1[i] - lbj1[i] for i in range(3)]

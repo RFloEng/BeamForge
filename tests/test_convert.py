@@ -50,6 +50,17 @@ class TestConvert(unittest.TestCase):
         cos = sum(a * b for a, b in zip(d, d0)) / math.sqrt(sum(a * a for a in d) * sum(b * b for b in d0))
         self.assertGreater(cos, 0.999)
 
+    def test_trailing_arm_upright_not_turned_for_caster(self):
+        roles.ROLES["car_suspension_F"]["caster"] = False
+        rt = roles.for_corner(self.parts, self.nodes, self.wheel)
+        hps = [h for h in svjmod.hardpoints(self.svj, -1.3, 0.0) if h["corner"] == "FL"]
+        t, info = convert.corner(self.nodes, rt, self.wheel, self.svj, "FL", hps, [1.0, 0.0, 0.0])
+        d = [t["tl"][i] - t["bl"][i] for i in range(3)]                       # wheel axis kept: the upright only moved
+        d0 = [self.nodes["tl"][i] - self.nodes["bl"][i] for i in range(3)]
+        for a, b in zip(d, d0):
+            self.assertAlmostEqual(a, b, places=6)
+        self.assertTrue(any("trailing arm" in n for n in info["notes"]))
+
 
 if __name__ == "__main__":
     unittest.main()
