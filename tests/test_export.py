@@ -113,6 +113,46 @@ class TestExport(unittest.TestCase):
         for name, want in cases.items():
             self.assertEqual(kind(name), want, name)
 
+    def test_svj_named_panels(self):
+        """A door named by the SVJ convention goes on the base's door on its side, and leaves the body."""
+        import base64
+        import os
+        import struct
+        import tempfile
+        from beamforge import svj as svjmod
+
+        def tri(sae):                                     # a triangle around an SAE point, in glTF axes
+            return [svjmod.sae_to_gltf([sae[0] + dx, sae[1] + dy, sae[2] + dz]) for dx, dy, dz in
+                    ((0, 0, 0), (0.5, 0, 0), (0, 0, -0.5))]
+        body, door = tri([-1.0, 0.0, -0.8]), tri([-1.0, -0.8, -0.6])          # the door on the left (SAE Y < 0)
+        raw = b"".join(struct.pack("<3f", *p) for p in body + door)
+        doc = {"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0, 1]}],
+               "nodes": [{"name": "SVJ::body::chassis", "mesh": 0}, {"name": "SVJ::body::door_fl", "mesh": 1}],
+               "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}, {"primitives": [{"attributes": {"POSITION": 1}}]}],
+               "buffers": [{"byteLength": len(raw), "uri": "data:application/octet-stream;base64," + base64.b64encode(raw).decode()}],
+               "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}, {"buffer": 0, "byteOffset": 36, "byteLength": 36}],
+               "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+                             {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"}]}
+        svj = {"assets": {"meshes": [{"id": "m", "uri": "car.gltf"}]}, "chassis": {"visual": {"mesh_ref": "m", "node": "SVJ::body::chassis"}}}
+        v = {"geometry": {"nodes": {"a": [0.8, -0.2, 0.6], "b": [-0.8, -0.2, 0.6], "c": [0.0, 0.0, 0.5]},
+                          "parts": {"a": "car_door_L", "b": "car_door_R", "c": "car_body"},
+                          "groups": {"a": ["car_door_L"], "b": ["car_door_R"], "c": ["car_body"]}},
+             "flexbodies": [{"part": "car_door_L", "mesh": "door_L", "groups": ["car_door_L"]},
+                            {"part": "car_door_R", "mesh": "door_R", "groups": ["car_door_R"]}]}
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "car.gltf")
+            Path(path).write_text(json.dumps(doc))
+            rows = json.loads(export.svj_attach(json.dumps(v), json.dumps(svj), "[]", json.dumps({"m": path}),
+                                                json.dumps({"yf": -1.25, "ground": 0.0})))
+            door_row = next(r for r in rows if r["node"] == "SVJ::body::door_fl")
+            self.assertEqual((door_row["part"], door_row["groups"]), ("car_door_L", ["car_door_L"]))
+            body_row = next(r for r in rows if r["path"] == "chassis")
+            self.assertEqual(body_row["exclude"], ["SVJ::body::door_fl"])
+            for r in rows:
+                r["part"] = r["part"] or "car_body"
+            meshes = export.svj_meshes(svj, {"m": path}, {"yf": -1.25, "ground": 0.0}, rows, "x")
+            self.assertEqual([len(m["indices"]) for m in meshes], [3, 3])                 # one triangle each, no overlap
+
     def test_body_meshes_dropped_running_gear_kept(self):
         part = {"flexbodies": [["mesh", "[group]:", "nonFlexMaterials"], ["car_body", ["b"]], ["car_door_FL", ["d"]],
                                ["car_seat_FL", ["s"]], {"deformGroup": ""}, ["brake_disc", ["w"]]]}

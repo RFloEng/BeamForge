@@ -73,6 +73,33 @@ def _slopes(curve):
     return round(slow, 3), round(max(fast, 0.0), 3), vs
 
 
+def tyre_size(svj, corner):
+    """A corner's tyre and rim size from the tyre set it refers to (tire.set_ref or wheel.set_ref in
+    tires.sets): {"width" (m), "aspect" (0-1), "rim_in" (inches), "diameter" (m)}, keys missing where
+    the file has no value."""
+    ref = ((corner.get("tire") or {}).get("set_ref") or (corner.get("wheel") or {}).get("set_ref"))
+    ts = (((svj.get("tires") or {}).get("sets") or {}).get(ref) or {}) if ref else {}
+    d, rim = ts.get("dimensions") or {}, ts.get("rim") or {}
+    out = {}
+    if isinstance(d.get("section_width"), (int, float)):
+        out["width"] = d["section_width"]
+    if isinstance(d.get("aspect_ratio"), (int, float)):
+        out["aspect"] = d["aspect_ratio"] if d["aspect_ratio"] < 1.5 else d["aspect_ratio"] / 100
+    r = d.get("rim_diameter_code") or (rim.get("diameter") / 0.0254 if isinstance(rim.get("diameter"), (int, float)) else None)
+    r = r or ((corner.get("wheel") or {}).get("rim_diameter") or 0) / 0.0254 or None
+    if r:
+        out["rim_in"] = round(r)
+    if isinstance(d.get("overall_diameter"), (int, float)):
+        out["diameter"] = d["overall_diameter"]
+    elif out.get("width") and out.get("aspect") and out.get("rim_in"):
+        out["diameter"] = out["rim_in"] * 0.0254 + 2 * out["width"] * out["aspect"]
+    return out
+
+
+WHEEL_SIZE = re.compile(r"(?<![\d.])(\d{2})x(\d{1,2}(?:\.\d+)?)(?![\d.])")      # 15x7: rim diameter x width, inches
+TYRE_SIZE = re.compile(r"(?<!\d)(\d{3})_(\d{2})_(\d{2})(?!\d)")                 # 195_55_15: width mm, aspect %, rim in
+
+
 def svj_values(svj, study=None, base_mr=None):
     """Per axle ("front", "rear"): {"wheel_rate", "spring_mr", "coil_rate", "damp_bump", "damp_bump_fast",
     "damp_rebound", "damp_rebound_fast", "damp_split", "tyre_radius", "tyre_width"} from the SVJ's FL / RL
@@ -105,8 +132,11 @@ def svj_values(svj, study=None, base_mr=None):
         tire = c.get("tire") or {}
         unloaded = tire.get("unloaded_radius") or wheel.get("unloaded_radius")
         loaded = tire.get("loaded_radius") or wheel.get("loaded_radius")
+        size = tyre_size(svj, c)
+        if not unloaded and not loaded and size.get("diameter"):
+            unloaded = size["diameter"] / 2                # the tyre set the corner refers to (tires.sets)
         v["tyre_radius"] = round(unloaded, 4) if unloaded else (round(loaded + DEFLECTION, 4) if loaded else None)
-        v["tyre_width"] = tire.get("width") or tire.get("section_width") or wheel.get("tire_width")
+        v["tyre_width"] = tire.get("width") or tire.get("section_width") or wheel.get("tire_width") or size.get("width")
         out[axle] = v
     return out
 
@@ -167,7 +197,7 @@ def springs_and_dampers(model, configured):
             if not kind:
                 continue
             y = (nodes[a][1] + nodes[b][1]) / 2
-            keys = ("beamSpring",) if kind == "spring" else ("beamDamp", "beamDampRebound", "beamDampFast", "beamDampReboundFast", "beamDampVelocitySplit")
+            keys = ("beamSpring", "precompressionRange") if kind == "spring" else ("beamDamp", "beamDampRebound", "beamDampFast", "beamDampReboundFast", "beamDampVelocitySplit")
             out.append({"part": name, "row": i, "kind": kind, "axle": _axle_of(y, yf, yr), "a": a, "b": b,
                         "values": {k: rec.get(k) for k in keys if k in rec}})
     return out
@@ -388,6 +418,23 @@ def _set_inline(row, values):
         row.append(dict(values))
 
 
+def _axle_load_ratio(model, configured, svj, take):
+    """{axle: new static load / base static load}, from the mass and CG taken from the SVJ (1 where not)."""
+    sm, sy, _ = svj_mass(svj)
+    if not ((take.get("mass") and sm) or (take.get("cg_y") and sy is not None)):
+        return {}
+    base = mass_and_cg(model, configured)
+    wb = (configured.get("measure") or {}).get("wheelbase")
+    if not base.get("mass") or not wb or base.get("cg_behind_front_axle") is None:
+        return {}
+    m0, y0 = base["mass"], base["cg_behind_front_axle"]
+    m1 = sm if take.get("mass") and sm else m0
+    y1 = sy if take.get("cg_y") and sy is not None else y0
+    f0, f1 = m0 * (1 - y0 / wb), m1 * (1 - y1 / wb)
+    r0, r1 = m0 * y0 / wb, m1 * y1 / wb
+    return {"front": f1 / f0 if f0 > 0 else 1.0, "rear": r1 / r0 if r0 > 0 else 1.0}
+
+
 def apply(model, configured, svj, take, study=None, length_factors=None):
     """What taking values changes: ({part: {row index: {property: value}}} for beams, {part: {"radius",
     "tireWidth", "scale"}} for tyres, {"$var": value} for the configuration, {part: {row index: kg}} for
@@ -395,11 +442,19 @@ def apply(model, configured, svj, take, study=None, length_factors=None):
     from beamforge import kinematics
     sv = svj_values(svj, study, kinematics.motion_ratios(model, configured)[0])
     beams, tyre, pcvars = {}, {}, {}
+    vars_ = {x["name"]: x["value"] for x in configured["variables"] if isinstance(x["value"], (int, float))}
+    load = _axle_load_ratio(model, configured, svj, take)
     for r in springs_and_dampers(model, configured):
         s = sv.get(r["axle"]) or {}
         new = {}
         if r["kind"] == "spring" and take.get(f"spring_{r['axle']}") and s.get("coil_rate"):
             new["beamSpring"] = s["coil_rate"]
+            # the spring's preload (precompressionRange, metres it starts compressed) holds the car up at its
+            # ride height: the same force over the new rate, times the axle's load change
+            k0 = _num_or(r["values"].get("beamSpring"), vars_, None)
+            pr = _num_or(r["values"].get("precompressionRange"), vars_, None)
+            if k0 and pr:
+                new["precompressionRange"] = round(pr * k0 / s["coil_rate"] * load.get(r["axle"], 1.0), 4)
         if r["kind"] == "damper":
             if take.get(f"damp_bump_{r['axle']}") and s.get("damp_bump"):
                 new.update(beamDamp=s["damp_bump"], beamDampFast=s["damp_bump_fast"], beamDampVelocitySplit=s["damp_split"])
@@ -570,16 +625,55 @@ def suggest_parts(model, configured_json, svj_json):
                 same = [o for o in opts if want in o]
                 if same:
                     pick, why = min(same, key=len), f"{sp['layout']} layout: {want}"
+        elif ("differential" in slot.lower() and cur and sp["driven"] in ("rear", "front")
+              and re.search(r"_F$" if sp["driven"] == "rear" else r"_R$", slot)):
+            pick, why = "", f"{sp['driven']} wheels driven only: no {'front' if sp['driven'] == 'rear' else 'rear'} differential"
         elif "differential" in text and opts and sp["diff_type"] == "open" and re.search(r"lsd|locker|welded|bias|active", cur, re.I):
             same = [o for o in opts if not re.search(r"lsd|locker|welded|bias|active|race", o, re.I)]
             if same:
                 pick, why = min(same, key=len), "open differential, as the SVJ"
-        if pick and pick != cur:
+        elif opts and (WHEEL_SIZE.search(cur) or TYRE_SIZE.search(cur)) and re.search(r"(^|_)(wheel|tire|tyre)", slot + " " + cur, re.I):
+            pick, why = _closest_wheel(slot, cur, opts, svj)
+        if pick is not None and pick != cur and (pick or why):
             out.append({"slot": slot, "current": cur, "suggested": pick, "why": why})
         for c in n.get("children", []):
             walk(c)
     walk(configured["tree"])
     return json.dumps(out)
+
+
+def _closest_wheel(slot, cur, opts, svj):
+    """The wheel (rim) or tyre option closest to the SVJ's size on that axle: (part, why) or (None, "")."""
+    axle = "R" if re.search(r"(^|_)R(_|\d|$)|rear", slot + " " + cur) else "F"
+    susp = svj.get("suspension") or {}
+    corner = next((susp[k] for k in (("RL", "RR") if axle == "R" else ("FL", "FR")) if isinstance(susp.get(k), dict)), None)
+    size = tyre_size(svj, corner) if corner else {}
+    if not size.get("rim_in"):
+        return None, ""
+    side = [o for o in opts if re.search(rf"(^|_){axle}(_|$)", o) or not re.search(r"(^|_)[FR](_|$)", o)] or opts
+    if TYRE_SIZE.search(cur):
+        cands = [(o, TYRE_SIZE.search(o)) for o in side]
+        cands = [(o, m) for o, m in cands if m and int(m.group(3)) == size["rim_in"]]
+        if not cands:
+            return None, ""
+        w, a = (size.get("width") or 0.2) * 1000, (size.get("aspect") or 0.55) * 100
+        gap = lambda m: abs(int(m.group(1)) - w) / 10 + abs(int(m.group(2)) - a) / 5  # noqa: E731
+        best = min(cands, key=lambda c: (gap(c[1]), len(c[0])))
+        mc = TYRE_SIZE.search(cur)
+        if int(mc.group(3)) == size["rim_in"] and gap(mc) <= gap(best[1]):
+            return None, ""                                # the current tyre is as close: kept (its compound too)
+        m = best[1]
+        return best[0], f"tyre {m.group(1)}/{m.group(2)} R{m.group(3)}, nearest to the SVJ's {w:.0f}/{a:.0f} R{size['rim_in']}"
+    if int(WHEEL_SIZE.search(cur).group(1)) == size["rim_in"]:
+        return None, ""                                    # the rim diameter already matches: the wheel stays
+    cands = [(o, WHEEL_SIZE.search(o)) for o in side]
+    cands = [(o, m) for o, m in cands if m and int(m.group(1)) == size["rim_in"]]
+    if not cands:
+        return None, ""
+    target = (size.get("width") or 0.2) / 0.0254 - 1.0     # rim width, inches: about the tyre's less an inch
+    same_family = re.sub(WHEEL_SIZE, "", cur)
+    best = min(cands, key=lambda c: (abs(float(c[1].group(2)) - target), re.sub(WHEEL_SIZE, "", c[0]) != same_family, len(c[0])))
+    return best[0], f"{best[1].group(1)}x{best[1].group(2)} wheel for the SVJ's R{size['rim_in']} tyre"
 
 
 def powertrain_changes(model, configured, svj, take):

@@ -203,6 +203,10 @@ PANELS = [("trunk", re.compile(r"trunk|boot(?!h)|tailgate|hatch(?!back)|rear_?li
            re.compile(r"_bumper_F(_|$)", re.I)),
           ("bumper_R", re.compile(r"rear\w*_?bumper|^r_?bumper|bumper_?(rear|r\b|ra)|paraurti[ _]?post", re.I),
            re.compile(r"_bumper_R(_|$)", re.I))]
+# panels named by the SVJ convention (SVJ::body::<id>, docs/naming_convention.md): read before the names above
+SVJ_PANEL = re.compile(r"^SVJ::body::(door_(fl|fr|rl|rr|l|r)|hood|bonnet|trunk|tailgate|hatch|bumper_(f|r|front|rear))$", re.I)
+SVJ_KIND = {"door": "door", "hood": "hood", "bonnet": "hood", "trunk": "trunk", "tailgate": "trunk", "hatch": "trunk",
+            "bumper_f": "bumper_F", "bumper_front": "bumper_F", "bumper_r": "bumper_R", "bumper_rear": "bumper_R"}
 PANEL_MIN = 0.4     # m: the bounding-box diagonal of the smallest thing taken as a panel
 PANEL_ANY = re.compile("|".join(f"(?:{p.pattern})" for _, p, _ in PANELS), re.I)
 # where panels are looked for: everywhere but the running gear and helpers (some cars keep their doors
@@ -212,7 +216,9 @@ PANEL_SKIP = re.compile(r"^(wheel|tyre|tire|rim|disc|disk|brake|caliper|susp|fly
 
 def _panels(v, svj, files, place, chassis):
     """The body mesh's panels as attach rows of their own: [{"path", "node", "mesh_ref", "part",
-    "groups"}], each on the base flexbody of its kind whose node group is nearest to it."""
+    "groups"}], each on the base flexbody of its kind whose node group is nearest to it. Nodes named
+    by the SVJ convention (SVJ::body::door_fl, hood, trunk, bumper_f...) are taken when the file has
+    them; else the panels are found by the names modders use (PANELS)."""
     path = files.get(chassis["mesh_ref"]) or (next(iter(files.values())) if len(files) == 1 else None)
     if not path or not place:
         return []
@@ -228,8 +234,15 @@ def _panels(v, svj, files, place, chassis):
             members.setdefault(g, []).append(geo["nodes"][n])
     centre = lambda ps: [sum(p[i] for p in ps) / len(ps) for i in range(3)]  # noqa: E731
     out = []
-    for name in gltf.named(data, PANEL_ANY, glb, skip=PANEL_SKIP):
-        kind, _, base_re = next(k for k in PANELS if k[1].search(name))
+    names = gltf.named(data, SVJ_PANEL, glb, skip=PANEL_SKIP)
+    by_name = not names                                    # no SVJ panel nodes: the modders' names
+    for name in names or gltf.named(data, PANEL_ANY, glb, skip=PANEL_SKIP):
+        if by_name:
+            kind, _, base_re = next(k for k in PANELS if k[1].search(name))
+        else:
+            ident = name.split("::")[-1].lower()
+            kind = SVJ_KIND.get("door" if ident.startswith("door") else ident)
+            base_re = next(b for k, _, b in PANELS if k == kind)
         pts = gltf.positions(data, is_glb=glb, under=name, limit=4000)
         if not pts:
             continue
@@ -262,9 +275,9 @@ def svj_attach(configured_json, svj_json, mapping_json=None, files_json=None, pl
     "part", "groups"}]. A suspension corner goes to the part and node groups of its tied hub nodes
     (fit mapping), else to the wheel's axle nodes; everything else to the body part (the part with
     the most nodes) and its most common node group. With the mesh files and the SVJ's place on the
-    vehicle (files: {mesh id: path}; place: {"yf", "ground"}), a body without its own node is split:
-    its doors, hood, trunk and bumpers (by node name) go to the base's part of that kind nearest to
-    them (_panels), and the body row lists them in "exclude"."""
+    vehicle (files: {mesh id: path}; place: {"yf", "ground"}), the body is split into its panels:
+    its doors, hood, trunk and bumpers (SVJ::body::door_fl..., else by the names modders use) go to the
+    base's part of that kind nearest to them (_panels), and the body row lists them in "exclude"."""
     v, svj = json.loads(configured_json), json.loads(svj_json)
     mapping = json.loads(mapping_json) if mapping_json else []
     geo = v["geometry"]
@@ -298,12 +311,8 @@ def svj_attach(configured_json, svj_json, mapping_json=None, files_json=None, pl
     body = next((r for r in out if r["path"] == "chassis"), None)
     if body and files and place:
         path = files.get(body["mesh_ref"]) or (next(iter(files.values())) if len(files) == 1 else None)
-        own = False
-        if path and body["node"]:
-            with open(path, "rb") as fh:
-                own = gltf.has_node(fh.read(), body["node"], path.lower().endswith(".glb"))
-        if path and not own:
-            panels = _panels(v, svj, files, place, body)
+        if path:                                           # (a body with its own node: its SVJ-named panels,
+            panels = _panels(v, svj, files, place, body)   # or the modders' names inside it)
             body["exclude"] = sorted({p["node"] for p in panels})
             out[out.index(body) + 1:out.index(body) + 1] = panels
     return json.dumps(out)
@@ -333,8 +342,9 @@ def svj_meshes(svj, files, place, attach, new_id):
             if a["path"] != "chassis":
                 continue                                   # the file has no such node: nothing to add
             under, skip = None, gltf.NOT_BODY              # the body: the whole mesh but the wheels and such
-            if a.get("exclude"):                           # and but the panels that go on their own parts
-                skip = re.compile(f"(?:{gltf.NOT_BODY.pattern})|^(?:{'|'.join(re.escape(x) for x in a['exclude'])})$", re.I)
+        if a.get("exclude"):                               # and but the panels that go on their own parts
+            names = "|".join(re.escape(x) for x in a["exclude"])
+            skip = re.compile(f"(?:{skip.pattern})|^(?:{names})$" if skip else f"^(?:{names})$", re.I)
         pos, uvs, prims = gltf.textured(data, is_glb=glb, under=under, skip=skip)
         if not any(len(i) >= 3 for _, i in prims):
             continue
@@ -465,17 +475,48 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     parts = beamng._parts_held(model)
     active = {n for n, _ in _walk(v["tree"], [])}
 
-    # flexbody shifts: each fitted part's flexbody follows the node nearest to it (configured positions)
+    # flexbody shifts: a flexbody follows the nodes it is skinned to (its node groups: the mean move of
+    # their nodes; a wheel's groups, whose nodes the game builds, the move of its axle nodes); without
+    # groups, the node nearest to it. A wheel's meshes (rim, tyre, hubcap) must follow their wheel, so their
+    # parts are written with the shift whatever was chosen for them.
     rest = geo["rest"]
-    shifts, seen = {}, {}
+    members = {}
+    for n, gs in (geo.get("groups") or {}).items():
+        for g in gs:
+            members.setdefault(g, []).append(n)
+    zero = [0.0, 0.0, 0.0]
+    wheel_move = {}
+    for w in v.get("wheels", []):
+        d = [(deltas.get(w["node1"], zero)[i] + deltas.get(w["node2"], zero)[i]) / 2 for i in range(3)]
+        for g in (w.get("group"), w.get("hubGroup")):
+            if g:
+                wheel_move[g] = d
+    shifts, seen, follow = {}, {}, set()
     for f in v.get("flexbodies", []):
         k = seen.get(f["part"], 0)
         seen[f["part"]] = k + 1
-        if choices.get(f["part"]) != "fit" or not rest:
+        if not rest:
             continue
-        near = min(rest, key=lambda n: math.dist(rest[n], f["pos"]))
-        if math.dist(rest[near], f["pos"]) < 0.5 and near in deltas:
-            shifts.setdefault(f["part"], {})[k] = deltas[near]
+        moves, on_wheel = [], False
+        for g in f.get("groups") or []:
+            if g in wheel_move:
+                moves.append(wheel_move[g])
+                on_wheel = True
+            elif members.get(g):
+                ms = members[g]
+                moves.append([sum(deltas.get(n, zero)[i] for n in ms) / len(ms) for i in range(3)])
+        if moves:
+            d = [sum(m[i] for m in moves) / len(moves) for i in range(3)]
+        else:
+            near = min(rest, key=lambda n: math.dist(rest[n], f["pos"]))
+            d = deltas.get(near) if math.dist(rest[near], f["pos"]) < 0.5 else None
+        if not d or not any(abs(x) > 1e-6 for x in d):
+            continue
+        if on_wheel and choices.get(f["part"]) != "fit":
+            follow.add(f["part"])
+            choices[f["part"]] = "fit"
+        if choices.get(f["part"]) == "fit":
+            shifts.setdefault(f["part"], {})[k] = d
 
     renames = {n: f"{new_id}_{n}" for n in active
                if parts.get(n, {}).get("model") == "common" and choices.get(n) in ("copy", "fit")}

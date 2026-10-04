@@ -189,6 +189,9 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
     "place": {"yf", "ground"} where the SVJ was placed, "notes": [...]}.
     """
     out = {k: list(v) for k, v in nodes.items()}
+    # each wheel's own offset from its axle nodes' midpoint (wheelOffset), on the base before any stage
+    wheels = [dict(w, axle_offset=[w["centre"][i] - (nodes[w["node1"]][i] + nodes[w["node2"]][i]) / 2 for i in range(3)])
+              if w.get("centre") and w.get("node1") in nodes and w.get("node2") in nodes else w for w in wheels]
     report, notes = [], []
     ax = axles(nodes, wheels)
     if ax is None:
@@ -303,7 +306,8 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
                         seen_n.add(r["nodes"][0])
                         ups.append(r)
                 src = [mid(wheel)] + [out[r["nodes"][0]] for r in ups]
-                dst = [wheel_row["target"]] + [r["target"] for r in ups]
+                aim = _axle_aim(wheel_row)                 # where the axle nodes' midpoint goes
+                dst = [aim] + [r["target"] for r in ups]
                 move = rigid_fit(src, dst)
                 rms = math.sqrt(sum(math.dist(move(p), q) ** 2 for p, q in zip(src, dst)) / len(src))
                 hub, _ = corner_roles(out, beams, bp, parts, wheel)
@@ -321,7 +325,7 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
                     for n in hub:
                         targets[n] = move(out[n])
                 elif why is not None:
-                    t = [wheel_row["target"][i] - c0[i] for i in range(3)]
+                    t = [aim[i] - c0[i] for i in range(3)]
                     for n in hub:
                         targets[n] = [out[n][i] + t[i] for i in range(3)]
                     for r in rows:
@@ -332,7 +336,7 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
                 # a different upright: only its tied nodes are set; the rest of the hub follows them through
                 # the displacement field, so the base hub is reshaped towards the SVJ upright
                 al = ((svj.get("suspension") or {}).get(corner) or {}).get("alignment") or {}
-                for n, p in _place_wheel(out, wheel, wheel_row["target"], al).items():
+                for n, p in _place_wheel(out, wheel, aim, al).items():
                     targets[n] = p
             for row in mapping:
                 if row["kind"] == "wheel":                 # the wheel centre: set with its hub above
@@ -344,7 +348,7 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
             for row in mapping:                            # a wheel whose hub was not found: shifted only
                 if row["kind"] == "wheel" and row["nodes"][0] not in targets:
                     a, b = (out[n] for n in row["nodes"])
-                    shift = [row["target"][i] - (a[i] + b[i]) / 2 for i in range(3)]
+                    shift = [_axle_aim(row)[i] - (a[i] + b[i]) / 2 for i in range(3)]
                     for n in row["nodes"]:
                         targets[n] = [out[n][i] + shift[i] for i in range(3)]
             try:
@@ -373,7 +377,7 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
             for row in mapping:
                 if row["nodes"]:
                     pts = [out[n] for n in row["nodes"]]
-                    at = [sum(p[i] for p in pts) / len(pts) for i in range(3)]
+                    at = [sum(p[i] for p in pts) / len(pts) + (row.get("axle_offset") or [0, 0, 0])[i] for i in range(3)]
                     row["after"] = round(math.dist(at, row["target"]), 4)
             far = [f"{r['corner']} {r['name'].replace('_', ' ')} ({r['nodes'][0]}, {r['distance'] * 1000:.0f} mm)"
                    for r in mapping if r["by"] == "user" and r["distance"] > 0.25]
@@ -498,8 +502,12 @@ def map_hardpoints(nodes, beams, beam_parts, parts, wheels, hps, overrides=None)
         mid = lambda w: [(nodes[w["node1"]][i] + nodes[w["node2"]][i]) / 2 for i in range(3)]  # noqa: E731
         wheel = min((w for w in wheels if w["node1"] in nodes and w["node2"] in nodes),
                     key=lambda w: math.dist(mid(w), wc["pos"]))
+        # the wheel sits off its axle nodes' midpoint by its wheelOffset (along the axle): that offset stays
+        off = wheel.get("axle_offset") or [0.0, 0.0, 0.0]   # (measured on the base, before the stages moved it)
+        at = [mid(wheel)[i] + off[i] for i in range(3)]
         rows.append({"corner": corner, "name": "wheel_center", "kind": "wheel", "nodes": [wheel["node1"], wheel["node2"]],
-                     "target": wc["pos"], "distance": round(math.dist(mid(wheel), wc["pos"]), 4), "by": "wheel"})
+                     "target": wc["pos"], "distance": round(math.dist(at, wc["pos"]), 4), "by": "wheel",
+                     "axle_offset": [round(x, 5) for x in off]})
         up, side = corner_roles(nodes, beams, beam_parts, parts, wheel)
         inner = [h["pos"] for h in mine if h["kind"] == "chassis"]
         todo, same = [], []
@@ -754,6 +762,13 @@ def svj_alignment(al):
     return out[0], out[1], deg
 
 
+def _axle_aim(row):
+    """Where a wheel's axle nodes' midpoint goes so the wheel itself (offset by its wheelOffset) lands on
+    the SVJ wheel centre."""
+    off = row.get("axle_offset") or [0.0, 0.0, 0.0]
+    return [row["target"][i] - off[i] for i in range(3)]
+
+
 def _place_wheel(nodes, wheel, centre, alignment):
     """The two axle nodes with their midpoint on `centre`: the axis set to the SVJ static camber and
     toe (radians, alignment) where the file has both, else kept as the base vehicle's."""
@@ -804,7 +819,7 @@ def upright_check(before, after, mapping, wheels, svj, beams, beam_parts, parts)
         mid = lambda N: [(N[wheel["node1"]][i] + N[wheel["node2"]][i]) / 2 for i in range(3)]  # noqa: E731
         ups = [r for r in rows if r["kind"] == "upright"]
         names = ["wheel_center"] + [r["name"] for r in ups]
-        base = [mid(before)] + [before[(r["nodes"] or r["kept"])[0]] for r in ups]
+        base = [[mid(before)[i] + (wrow.get("axle_offset") or [0, 0, 0])[i] for i in range(3)]] +             [before[(r["nodes"] or r["kept"])[0]] for r in ups]
         svjp = [wrow["target"]] + [r["target"] for r in ups]
         row = {"corner": corner, "points": names, "shape_rms_mm": None, "shape_max_mm": None, "worst_pair": None}
         if len(base) >= 3:
@@ -834,12 +849,13 @@ def base_points(nodes, mapping, place):
     """The base vehicle's points tied to the SVJ hardpoints, for the suspension study:
     {corner: {hardpoint: [x, y, z]}} in the study's frame (left side, front axle at y 0, ground at
     z 0; a right corner mirrored). nodes: the base vehicle without moves (geometry "rest"); mapping:
-    map_hardpoints() rows; place: fit()'s "place". A wheel centre is the middle of its axle nodes."""
+    map_hardpoints() rows; place: fit()'s "place". A wheel centre is the middle of its axle nodes plus the
+    wheel's own offset along them (wheelOffset)."""
     out = {}
     for r in mapping:
         if not r["nodes"] or any(n not in nodes for n in r["nodes"]):
             continue
-        p = [sum(nodes[n][i] for n in r["nodes"]) / len(r["nodes"]) for i in range(3)]
+        p = [sum(nodes[n][i] for n in r["nodes"]) / len(r["nodes"]) + (r.get("axle_offset") or [0, 0, 0])[i] for i in range(3)]
         q = [abs(p[0]), p[1] - place["yf"], p[2] - place["ground"]]
         out.setdefault(r["corner"], {})[r["name"]] = [round(v, 6) for v in q]
     return out

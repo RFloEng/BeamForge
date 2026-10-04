@@ -30,7 +30,8 @@ import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, reme
 
 // repo files copied into Pyodide's file system under /bf (add new Python modules here)
 const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py',
-  'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py', 'beamforge/dae.py', 'beamforge/values.py'];
+  'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py', 'beamforge/dae.py', 'beamforge/values.py',
+  'beamforge/rigidity.py', 'beamforge/kinematics.py'];
 const REPO = new URL('../', import.meta.url);
 
 const $ = (id) => document.getElementById(id);
@@ -997,8 +998,13 @@ function valuesPanel() {
 
 function bindFitPanel() {
   if ($('usesugg')) $('usesugg').onclick = () => {
-    for (const x of JSON.parse(valpy.suggest_parts(veh.model, JSON.stringify(veh), JSON.stringify(svjDoc.svj)))) vehEdit.parts[x.slot] = x.suggested;
-    configureVehicle();
+    for (let round = 0; round < 4; round++) {        // a new wheel brings its own tyre slot: ask again
+      const sugg = JSON.parse(valpy.suggest_parts(veh.model, JSON.stringify(veh), JSON.stringify(svjDoc.svj)))
+        .filter((x) => vehEdit.parts[x.slot] !== x.suggested);
+      if (!sugg.length) break;
+      for (const x of sugg) vehEdit.parts[x.slot] = x.suggested;
+      configureVehicle();
+    }
     if (Object.keys(vehEdit.fit || {}).length) runFit();
   };
   document.querySelectorAll('[data-take]').forEach((c) => c.onchange = () => { takeValues[c.dataset.take] = c.checked; });
