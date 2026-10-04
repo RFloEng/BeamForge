@@ -132,9 +132,18 @@ Group A Subaru SVJ, all four corners:
   static solve gives the archetype less brake steer than the vanilla (0.78 against 1.96 deg/kN, 2.5
   against 28 mm/kN back). Every vanilla part the archetype drops is to be checked for what it did, not
   only for its nodes.
+- Every node the archetype makes is weighed against all that loads it (`_size_nodes`): each beam's
+  spring, or its limit spring if |BOUNDED and stiffer; its largest damping (slow, rebound, fast); slide
+  node springs on the slide node and its rail's ends. Kept within k dt^2 / m 4.0 and c dt / m 1.0 (the
+  vanilla front-drive compact's nodes reach 6.8 and 2.3). rigidity's check counts only beamSpring and beamDamp,
+  and missed it: v5's new rear strut tops (2.5 kg) carried the dampers' rebound at c dt / m 2.75, more
+  than any vanilla node, and the car shook at high frequency braking to a stop and broke its fuel tank
+  on load (the tank's trigger beam tank nodes breaks at 200 N on 20 N s/m of damping, next to the rear
+  pivots). v6: 6.9 kg, as the vanilla's 7.
 
 In the game: v2 steers (still the wheel wobble, since found: the axle tilted at spawn); v4 no wobble,
-but the front wheels steer under braking; v5 (steering dampers) to be driven.
+but the front wheels steer under braking; v5 (steering dampers) still shook braking to a stop, front and rear, and broke its fuel tank on load;
+v6 (strut tops weighed for their dampers) to be driven.
 
 Not yet: anti-roll bars (the base's go with the hubs), suspension meshes (none in this SVJ; the base's
 hub and arm meshes are dropped with their nodes).

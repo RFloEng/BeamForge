@@ -36,6 +36,8 @@ MOUNT_REACH = 0.45    # m: no farther body nodes
 PIVOT_KG, TOP_KG, RACK_KG = 2.5, 2.5, 3.0
 HUB_SHARE = {"h1": 0.3, "h2": 0.1, "h3": 0.2, "h4": 0.2, "h5": 0.2}   # of the corner's unsprung kg
 STEER_C, STEER_C_FAST = 80, 800   # N s/m: steering dampers, slow and fast (the front-drive compact's)
+NODE_K_INDEX = 4.0    # an archetype node's k dt^2 / m at most (the vanilla front-drive compact's nodes reach 6.8)
+NODE_C_INDEX = 1.0    # and its c dt / m (the vanilla's reach 2.3; ~2 is where the step rings)
 SLIDE_AT = 0.6        # h4: this share of the way from the strut bottom to its top
 RACK_INSET = 0.1      # m: the rack's slide nodes inboard of its ends
 
@@ -522,6 +524,12 @@ def apply(files, model, configured, svj, place, loads, built, axles=None):
     elif front_rack:
         notes.append("only one front corner is a strut archetype: no steering rack written")
 
+    # every node the archetype made, heavy enough for all that loads it (_size_nodes)
+    heavier = _size_nodes([where[n][1] for n in active if n in where])
+    if heavier:
+        notes.append("archetype nodes made heavier for the physics step (all their damping and springs counted): "
+                     + ", ".join(f"{n} {kg:.1f} kg" for n, kg in sorted(heavier.items())))
+
     # the weight the mounts need on the body nodes, in their rows
     if room["kg"]:
         for n, kg in room["kg"].items():
@@ -561,6 +569,72 @@ def _add_weight(part, node, kg, current):
                 row.append({"nodeWeight": round(current + kg, 3)})
             return True
     return False
+
+
+def _size_nodes(parts, dt=1 / 2000):
+    """The archetype's own nodes (bf...) given at least the weight that keeps them within the physics
+    step's limits, counting everything that loads them: each beam's spring, or its limit spring if
+    |BOUNDED and stiffer; its largest damping (slow, rebound, fast); slide node springs on the slide
+    node and its rail's ends. rigidity's check counts only beamSpring and beamDamp, and a 2.5 kg strut
+    top carrying a damper's rebound rang (the Subaru's rear: c dt / m 2.75, above any vanilla node's).
+    Returns {node: new kg}."""
+    rows, k, c = {}, {}, {}
+    for part in parts:
+        t = part.get("nodes")
+        if isinstance(t, list) and t and isinstance(t[0], list):
+            head = _head(t)
+            props = {}
+            for row in t[1:]:
+                if isinstance(row, dict):
+                    props.update(row)
+                elif isinstance(row, list) and row and str(row[0]).startswith("bf"):
+                    inl = row[-1] if isinstance(row[-1], dict) else {}
+                    rows[row[0]] = (row, _num(inl.get("nodeWeight", props.get("nodeWeight")), 25.0))
+        t = part.get("beams")
+        if isinstance(t, list) and t and isinstance(t[0], list):
+            head = _head(t)
+            props = {}
+            for row in t[1:]:
+                if isinstance(row, dict):
+                    props.update(row)
+                    continue
+                if not isinstance(row, list):
+                    continue
+                inl = row[-1] if isinstance(row[-1], dict) else {}
+                rec = dict(props)
+                rec.update(inl)
+                rec.update(zip(head, row[:-1] if inl else row))
+                a, b = str(rec.get("id1")), str(rec.get("id2"))
+                if not (a.startswith("bf") or b.startswith("bf")):
+                    continue
+                bounded = "BOUNDED" in str(rec.get("beamType", ""))
+                ks = _num(rec.get("beamSpring"), 4300000.0)
+                if bounded:
+                    ks = max(ks, _num(rec.get("beamLimitSpring"), 0.0))
+                cs = max(_num(rec.get(x), 0.0) for x in ("beamDamp", "beamDampRebound", "beamDampFast", "beamDampReboundFast"))                     if bounded else _num(rec.get("beamDamp"), 580.0)
+                for n in (a, b):
+                    k[n] = k.get(n, 0.0) + ks
+                    c[n] = c.get(n, 0.0) + cs
+        rails = part.get("rails") if isinstance(part.get("rails"), dict) else {}
+        t = part.get("slidenodes")
+        if isinstance(t, list) and t and isinstance(t[0], list):
+            head = _head(t)
+            for row in t[1:]:
+                if isinstance(row, list) and len(row) > 1:
+                    rec = dict(zip(head, row))
+                    links = (rails.get(rec.get("railName")) or {}).get("links:") or []
+                    for n in [rec.get("id")] + list(links):
+                        k[str(n)] = k.get(str(n), 0.0) + _num(rec.get("spring"), 0.0)
+    out = {}
+    for n, (row, kg) in rows.items():
+        need = max(k.get(n, 0.0) * dt * dt / NODE_K_INDEX, c.get(n, 0.0) * dt / NODE_C_INDEX)
+        if need > kg + 1e-6:
+            if isinstance(row[-1], dict):
+                row[-1]["nodeWeight"] = round(need, 2)
+            else:
+                row.append({"nodeWeight": round(need, 2)})
+            out[n] = round(need, 2)
+    return out
 
 
 def _num(v, default):

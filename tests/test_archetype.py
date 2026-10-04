@@ -70,5 +70,14 @@ class TestSurgery(unittest.TestCase):
         self.assertAlmostEqual(room["k"]["n"], 0.0)
 
 
+    def test_node_weighed_by_all_its_damping(self):
+        part = {"nodes": [["id", "posX", "posY", "posZ"], ["bfRLt", 0, 0, 0, {"nodeWeight": 2.5}], ["x", 1, 0, 0]],
+                "beams": [["id1:", "id2:"], {"beamType": "|BOUNDED", "beamSpring": 0, "beamDamp": 4500},
+                          ["bfRLt", "x", {"beamDampRebound": 8400, "beamDampFast": 1700}]]}
+        out = archetype._size_nodes([part])
+        self.assertAlmostEqual(out["bfRLt"], 8400 / 2000 / archetype.NODE_C_INDEX, places=2)   # rebound counted
+        self.assertNotIn("x", out)                                                            # base nodes left
+
+
 if __name__ == "__main__":
     unittest.main()
