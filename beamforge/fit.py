@@ -312,8 +312,8 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
                 dst = [aim] + [r["target"] for r in ups]
                 move = rigid_fit(src, dst)
                 rms = math.sqrt(sum(math.dist(move(p), q) ** 2 for p, q in zip(src, dst)) / len(src))
-                hub, _ = corner_roles(out, beams, bp, parts, wheel)
-                hub -= tied_chassis                        # a node with its own chassis tie follows that tie
+                hub_all, side = corner_roles(out, beams, bp, parts, wheel)
+                hub = hub_all - tied_chassis               # a node with its own chassis tie follows that tie
                 c0 = mid(wheel)
                 turn = max(math.degrees(math.acos(max(-1.0, min(1.0, sum(
                     (move([c0[k] + e[k] for k in range(3)])[k] - move(c0)[k]) * e[k] for k in range(3))))))
@@ -328,9 +328,12 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
                         targets[n] = move(out[n])
                     rigid_hubs[corner] = (wheel, hub)
                 elif why is not None:
-                    rigid_hubs[corner] = (wheel, hub)
+                    # another design (or too few points to tell): the base upright is kept and moved whole to the
+                    # SVJ wheel centre, with its strut top (the strut keeps its line); the links' inner pivots
+                    # are tied by nearest node (by role once the base suspension's roles are known)
+                    rigid_hubs[corner] = (wheel, hub_all)
                     t = [aim[i] - c0[i] for i in range(3)]
-                    for n in hub:
+                    for n in hub_all:
                         targets[n] = [out[n][i] + t[i] for i in range(3)]
                     for r in rows:
                         if r["kind"] == "upright":
@@ -408,7 +411,7 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
         for w in wheels:
             if w["node1"] in nodes and w["node2"] in nodes:
                 rigid_hubs[w["name"]] = (w, corner_roles(nodes, beams, bp, parts, w)[0])
-    restored = []
+    restored, protected = [], set()
     for corner, (wheel, hub) in sorted(rigid_hubs.items()):
         axle = [wheel["node1"], wheel["node2"]]
         group = [n for n in sorted(set(hub) | set(axle)) if n in nodes and n in out]
@@ -422,6 +425,7 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
         worst = max(math.dist(out[n], [new[n][i] + shift[i] for i in range(3)]) for n in group)
         for n in group:
             out[n] = [new[n][i] + shift[i] for i in range(3)]
+        protected.update(group)
         restored.append(f"{corner} ({worst * 1000:.0f} mm)")
     if restored:
         changes.append("uprights given back their exact shape after the body stage had bent them: " + ", ".join(restored))
@@ -458,14 +462,16 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
         dev = {x: math.dist(mv[x], mv[n]) for x in (a, b)}
         far, near_ = (a, b) if dev[a] >= dev[b] else (b, a)
         pn = out[n]
+        if far in protected and n in protected:
+            continue                                       # a restored upright's own rail: as the base had it
         if (dev[far] > max(0.005, 2 * dev[near_]) and per_rail[(a, b)] == 1 and ends[far] == 1
-                and math.dist(out[near_], pn) > 1e-3):
+                and far not in protected and math.dist(out[near_], pn) > 1e-3):
             L = math.dist(out[near_], out[far])
             u = [pn[i] - out[near_][i] for i in range(3)]
             lu = math.sqrt(sum(x * x for x in u))
             out[far] = [out[near_][i] + u[i] / lu * L for i in range(3)]
             on_rail.append((far, gap))
-        else:
+        elif n not in protected:
             out[n] = q
             on_rail.append((n, gap))
     if on_rail:
