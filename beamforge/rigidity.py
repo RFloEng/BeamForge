@@ -64,7 +64,7 @@ def beams(model, configured):
             if a not in nodes or b not in nodes:
                 continue
             vals, var = {}, set()
-            for k in ("beamSpring", "beamDamp", "beamDeform", "beamStrength"):
+            for k in ("beamSpring", "beamDamp", "beamDeform", "beamStrength", "beamPrecompression"):
                 raw = rec.get(k, DEFAULTS.get(k))
                 if isinstance(raw, str) and raw.startswith("$") and not raw.startswith("$="):
                     var.add(k)

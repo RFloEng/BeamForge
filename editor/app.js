@@ -31,7 +31,8 @@ import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, reme
 // repo files copied into Pyodide's file system under /bf (add new Python modules here)
 const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py',
   'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py', 'beamforge/dae.py', 'beamforge/values.py',
-  'beamforge/rigidity.py', 'beamforge/kinematics.py', 'beamforge/roles.py', 'beamforge/convert.py'];
+  'beamforge/rigidity.py', 'beamforge/kinematics.py', 'beamforge/roles.py', 'beamforge/convert.py',
+  'beamforge/archetype.py'];
 const REPO = new URL('../', import.meta.url);
 
 const $ = (id) => document.getElementById(id);
@@ -1300,6 +1301,9 @@ async function runExport() {
       try { rows = JSON.parse(valpy.table(veh.model, JSON.stringify(veh), JSON.stringify(svjDoc.svj), JSON.stringify({ corners: svjSusp?.corners || {} }))); } catch (err) { rows = []; }
       const take = Object.fromEntries(rows.filter((r) => r.svj !== null && takeValues[r.key] !== false).map((r) => [r.key, true]));
       svjOpt = { ...(svjOpt || { svj: svjDoc.svj }), take, study: { corners: svjSusp?.corners || {} } };
+    }
+    if (svjOpt && Object.keys(vehEdit.fit || {}).length && vehEdit.fitReport?.axles) {
+      svjOpt.axles = vehEdit.fitReport.axles;        // the wheels' camber and toe, set by preloading the upright's beams
     }
     const out = JSON.parse(exppy.build(veh.model, id, name, JSON.stringify(veh), JSON.stringify(exportForm.choices), brand || null,
       svjOpt ? JSON.stringify(svjOpt) : null));

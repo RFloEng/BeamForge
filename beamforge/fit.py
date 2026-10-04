@@ -503,21 +503,58 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
         changes.append(f"{len(on_rail)} slide nodes put back on their rails, turning the rail where its end had gone its "
                        f"own way (largest gap {worst[1] * 1000:.0f} mm, at {worst[0]})")
 
+    # the wheels spawn with their axle as the base's (square); their camber and toe are a target the
+    # export preloads the upright's beams to (square_axles)
+    axles_out = square_axles(out, nodes, wheels)
+    if axles_out:
+        changes.append("wheels spawn with their axle square, their camber and toe set by preloading the upright's beams "
+                       "to the wheel: " + ", ".join(sorted(axles_out)))
+
     moves = {}
     for n, p in out.items():
         d = [round(p[i] - nodes[n][i], 4) for i in range(3)]
         if any(d):
             moves[n] = d
     return {"nodes": out, "moves": moves, "report": report, "mapping": mapping, "uprights": uprights, "notes": notes,
-            "changes": changes,
+            "changes": changes, "axles": axles_out,
             "place": {"yf": round(yf, 4), "ground": round(ax["ground"], 4)}}
+
+
+def square_axles(out, nodes, wheels):
+    """Each wheel's axle nodes in out turned back to the base's direction (nodes), about their middle;
+    returns {corner: {"node1", "node2", "target": {node: position as fitted}}} for those turned.
+
+    Never spawn a wheel with its axle tilted: BeamNG builds the wheel (its rim and tyre nodes) round the
+    axle it spawns with, and a wheel built on a tilted axle wobbles once a turn, worse when steering
+    (a wheel mesh turned to match does not help; it is the physics). Vanilla cars spawn the axle square
+    and set camber and toe by preloading beams (beamPrecompression): the export does the same with
+    these targets (export.axle_preload, archetype.apply). See docs/fitting.md."""
+    axles_out = {}
+    for w in wheels:
+        a, b = w["node1"], w["node2"]
+        if a not in out or b not in out or a not in nodes or b not in nodes:
+            continue
+        d0 = [nodes[b][i] - nodes[a][i] for i in range(3)]
+        d1 = [out[b][i] - out[a][i] for i in range(3)]
+        l0, l1 = math.sqrt(sum(x * x for x in d0)), math.sqrt(sum(x * x for x in d1))
+        if l0 < 1e-9 or l1 < 1e-9:
+            continue
+        cos = max(-1.0, min(1.0, sum(x * y for x, y in zip(d0, d1)) / (l0 * l1)))
+        if math.degrees(math.acos(cos)) < 0.01:
+            continue
+        axles_out[w["name"]] = {"node1": a, "node2": b, "target": {a: [round(x, 5) for x in out[a]],
+                                                                   b: [round(x, 5) for x in out[b]]}}
+        mid = [(out[a][i] + out[b][i]) / 2 for i in range(3)]
+        out[a] = [mid[i] - d0[i] / l0 * l1 / 2 for i in range(3)]
+        out[b] = [mid[i] + d0[i] / l0 * l1 / 2 for i in range(3)]
+    return axles_out
 
 
 def fit_json(geometry_json, wheels_json, svj_json, files_json, stages_json, overrides_json=None):
     """fit() for the editor. geometry: beamng.configure()["geometry"] ("rest" positions are used, so
     hand moves stay out of the fit); files: {mesh asset id: path} of the SVJ meshes in the Python file
     system; stages: ["wheelbase", "body", "pickups"]; overrides: the user's hardpoint ties. Returns
-    {"moves", "report", "mapping", "place", "notes"} as JSON."""
+    {"moves", "report", "mapping", "place", "axles", "notes"} as JSON."""
     geo, wheels, svj = json.loads(geometry_json), json.loads(wheels_json), json.loads(svj_json)
     stages = json.loads(stages_json)
     nodes = geo.get("rest") or geo["nodes"]
@@ -543,7 +580,7 @@ def fit_json(geometry_json, wheels_json, svj_json, files_json, stages_json, over
     r = fit(nodes, geo["parts"], wheels, svj, mesh, stages, geo.get("beams"), geo.get("beam_parts"),
             json.loads(overrides_json) if overrides_json else None, geo.get("slides"))
     return json.dumps({"moves": r["moves"], "report": r["report"], "mapping": r["mapping"], "uprights": r["uprights"],
-                       "changes": r["changes"],
+                       "changes": r["changes"], "axles": r["axles"],
                        "place": r["place"],
                        "notes": notes + r["notes"]})
 

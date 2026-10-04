@@ -518,6 +518,33 @@ def _drop_body_meshes(n, part):
     return dropped
 
 
+def axle_preload(model, configured, bl, axles):
+    """{(part, row): {"beamPrecompression", "beamPrecompressionTime"}} for the |NORMAL beams from each
+    wheel's axle nodes to the nodes that follow that wheel (its upright): each preloaded to the length it
+    has with the axle at its target (fit()'s "axles": {corner: {"node1", "node2", "target": {node: pos}}}),
+    in place of the precompression it had (a vanilla camber setting: the SVJ's geometry is the whole
+    alignment). configured: with the axle as spawned."""
+    from beamforge import kinematics
+    nodes = configured["geometry"]["nodes"]
+    out = {}
+    for w in configured.get("wheels") or []:
+        ax = axles.get(w["name"])
+        if not ax:
+            continue
+        ends = {ax["node1"], ax["node2"]}
+        hub = kinematics.follows_wheel(model, configured, w, bl)
+        for b in bl:
+            if "BOUNDED" in b["type"] or "SUPPORT" in b["type"] or "PRESSURED" in b["type"]:
+                continue
+            for e, o in ((b["a"], b["b"]), (b["b"], b["a"])):
+                if e in ends and o in hub and o not in ends:
+                    l0 = math.dist(nodes[o], nodes[e])
+                    l1 = math.dist(nodes[o], ax["target"][e])
+                    if l0 > 1e-6 and abs(l1 / l0 - 1) > 1e-5:
+                        out[(b["part"], b["row"])] = {"beamPrecompression": round(l1 / l0, 6), "beamPrecompressionTime": 0.5}
+    return out
+
+
 def build(model, new_id, name, configured_json, choices_json, brand=None, svj_json=None):
     """The text files of the new vehicle: {"files": {path: text}, "renamed": {old: new}, "notes": [...],
     "counts": {...}}. configured: beamng.configure() of the edited vehicle (with its moves); choices:
@@ -568,6 +595,11 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     for (part, row), f in stiff.items():
         if f > 1.0 + 1e-3 and "beamSpring" in by_key[(part, row)]["values"]:
             taken_beams.setdefault(part, {}).setdefault(row, {})["beamSpring"] = round(by_key[(part, row)]["values"]["beamSpring"] * f)
+    # the wheels' camber and toe (fit()'s "axles"): spawned square, the upright's beams to the wheel are
+    # preloaded so it settles at the SVJ's alignment (as vanilla cars set theirs)
+    preloaded = axle_preload(model, v, bl, (opt or {}).get("axles") or {})
+    for (part, row), vals in preloaded.items():
+        taken_beams.setdefault(part, {}).setdefault(row, {}).update(vals)
     for n in list(taken_beams) + list(taken_tyres) + list(taken_weights) + list(taken_pt):   # a part that takes values must be written
         if choices.get(n) == "reuse":
             choices[n] = "copy"

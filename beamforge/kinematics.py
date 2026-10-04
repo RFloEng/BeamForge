@@ -245,6 +245,35 @@ def stiffen(model, configured, bl=None, springs=None, weights=None, tolerance=0.
     return out, report
 
 
+def follows_wheel(model, configured, wheel, bl=None, springs=None, share=0.2):
+    """The suspension nodes that move with a wheel (hub, strut bottom, the anti-roll bar's link): pushed
+    up in the static solve, those that move at least this share of its travel. The wheel's own nodes
+    are left out; the body side (subframe, pivots, strut top) stays still."""
+    geo = configured["geometry"]
+    nodes, owner = geo["nodes"], geo.get("parts") or {}
+    if wheel["node1"] not in nodes or wheel["node2"] not in nodes:
+        return set()
+    bl = bl if bl is not None else beam_list(model, configured)
+    springs = springs if springs is not None else values.springs_and_dampers(model, configured)
+    measured = {(r["part"], r["row"]) for r in springs}
+    load = [b for b in bl if (b["part"], b["row"]) not in measured and not NO_LOAD.search(b["type"])
+            and b["values"].get("beamSpring", 0) > 0]
+    axle = [wheel["node1"], wheel["node2"]]
+    centre = [(nodes[axle[0]][i] + nodes[axle[1]][i]) / 2 for i in range(3)]
+    A, idx, kmax = _system(nodes, owner, load, axle, [centre], slides=geo.get("slides"))
+    if not kmax:
+        return set()
+    f = [0.0] * len(A)
+    big = kmax * 1e3
+    for n in axle:
+        i = 3 * idx[n] + 2
+        A[i][i] += big
+        f[i] += big * STEP
+    x = _solve(A, f)
+    return {n for n in idx if n not in axle
+            and math.sqrt(sum(x[3 * idx[n] + i] ** 2 for i in range(3))) >= share * STEP}
+
+
 def corner_ratios(model, configured, wheels, bl=None, springs=None):
     """{(part, row): motion ratio} for the spring and damper beams at the wheels of one axle (pushed
     up together): the beam's length change over the wheel travel (positive: shortens as it goes up)."""

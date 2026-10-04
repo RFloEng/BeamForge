@@ -203,5 +203,31 @@ class TestMeshPoints(unittest.TestCase):
                 self.assertAlmostEqual(a, b, places=5)
 
 
+
+class TestSquareAxles(unittest.TestCase):
+    """A wheel never spawns on a tilted axle (it wobbles once a turn): the fit's camber and toe become a
+    target for the upright's preloaded beams."""
+
+    def test_tilted_axle_spawns_square_with_its_target_kept(self):
+        base = {"o": [0.85, -1.3, 0.3], "i": [0.6, -1.3, 0.3]}
+        c = math.radians(1.3)
+        mid, half = [0.72, -1.25, 0.31], 0.125
+        out = {"o": [mid[0] + half * math.cos(c), mid[1], mid[2] + half * math.sin(c)],
+               "i": [mid[0] - half * math.cos(c), mid[1], mid[2] - half * math.sin(c)]}
+        tilted = {n: list(p) for n, p in out.items()}
+        ax = fit.square_axles(out, base, [{"name": "FL", "node1": "o", "node2": "i"}])
+        self.assertEqual(ax["FL"]["target"], {n: [round(x, 5) for x in p] for n, p in tilted.items()})
+        self.assertAlmostEqual(out["o"][2], out["i"][2], places=9)            # square, as the base's
+        self.assertAlmostEqual(out["o"][1], out["i"][1], places=9)
+        for k in range(3):                                                       # same middle and length
+            self.assertAlmostEqual((out["o"][k] + out["i"][k]) / 2, mid[k], places=9)
+        self.assertAlmostEqual(math.dist(out["o"], out["i"]), 2 * half, places=9)
+
+    def test_square_axle_left_alone(self):
+        out = {"o": [0.85, -1.2, 0.3], "i": [0.6, -1.2, 0.3]}
+        self.assertEqual(fit.square_axles(out, {"o": [0.8, -1.3, 0.3], "i": [0.55, -1.3, 0.3]},
+                                          [{"name": "FL", "node1": "o", "node2": "i"}]), {})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -93,6 +93,41 @@ Each stage is a row in the SVJ panel, as in roadmap step 3. It shows the base va
 
 The fit gives each node a new final position. A generated copy of each changed part is written to a local mod folder. Its node positions are the new positions minus the slot offsets the part gets (`nodeOffset` with x mirrored by side, `nodeMove`), so the game rebuilds the same shape. The flexbody `pos` values are written the same way. These files are made on the user's machine from their own install and are never committed here (see the roadmap).
 
+## Wheels spawn square: camber and toe come from preloaded beams
+
+**Rule: never write a wheel whose axle is tilted at spawn.** BeamNG builds each wheel's rim and tyre
+nodes round the axle nodes (`node1`, `node2` of `pressureWheels`) as they are when the vehicle spawns.
+A wheel built on a tilted axle wobbles: its axis precesses once per wheel turn, faster with speed and
+worse when steering. Vanilla cars always spawn the axle square to the car and set static camber and
+toe afterwards, by preloading beams (`beamPrecompression` with a `beamPrecompressionTime`, e.g. the
+front-drive compact's `$camber_F` on `fhub4`–`fwhl1ll`, `$toe_F` on the tie rods).
+
+BeamForge does the same:
+
+- The fit places the upright exactly at the SVJ's geometry, the SVJ's camber and toe included
+  (convert.corner, archetype). Then `fit.square_axles` turns only the two axle nodes back to the base's
+  direction, about their middle, and keeps the tilted positions as a target (`fit()["axles"]`).
+- On export, every `|NORMAL` beam from an axle node to a node that follows the wheel (its upright,
+  `kinematics.follows_wheel`) gets `beamPrecompression` = its length with the axle at the target over its
+  length at spawn, and `beamPrecompressionTime` 0.5 (`export.axle_preload`). It replaces any vanilla
+  camber setting on that beam, because the SVJ's geometry is the whole alignment (multiplying the two
+  gave −1.56° for −1.3°). The archetype preloads its own hub-to-wheel beams the same way.
+- Check: hub held, the wheel nodes settle where the preloaded beams put them. On the Subaru 555 SVJ
+  (front-drive compact base, both suspensions) they settle at the SVJ's −1.3° camber and 0.13° toe at the front,
+  0° and 0.18° at the rear.
+
+How it was found (October 2026), so the wrong turns are not taken again:
+
+| Tried | Result |
+| --- | --- |
+| Stiffer suspension members, mass floors, damper floors, rails and uprights restored | Wobble unchanged: the corner was never the cause (the hub holds the axle like the vanilla one, ~270 against ~290 kN m/rad in camber) |
+| Other tyres (a wobble in the sidewall?) | Not it: the wheel's axis wobbles, not the tyre |
+| Wheel meshes turned to the tilted axle (flexbody `rot`) | Still wobbles, more when steering: it is the physics, not the mesh |
+| Same car spawned with 0° camber and toe | No wobble: the tilted axle at spawn is the cause |
+
+The diagnosis was made with a set of builds that differ in one thing each, named for what they test.
+Do that again for the next symptom that does not move with the obvious fixes.
+
 ## Results so far
 
 RWD saloon fitted to the BMW E30 example, with a real car body mesh as the target (the E30 example ships none):
