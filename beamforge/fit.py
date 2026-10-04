@@ -26,7 +26,7 @@ import math
 import os
 import re
 
-from beamforge import gltf
+from beamforge import convert, gltf, roles
 from beamforge import svj as svjmod
 
 # parts measured out of stage 2 (they move with the body, but their nodes are not the body's shape)
@@ -283,6 +283,7 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
 
     mapping, uprights, changes = [], [], []
     rigid_hubs = {}                                        # corner: (wheel, hub nodes) of uprights kept rigid
+    converted = []                                         # corners converted by role (roles.py, convert.py)
     if "pickups" in stages:
         hps = svjmod.hardpoints(svj, yf, ax["ground"])
         if not beams or not hps:
@@ -290,13 +291,33 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
         else:
             bp = beam_parts or ["" for _ in beams]
             mapping = map_hardpoints(out, beams, bp, parts, wheels, hps, overrides)
+            # corners whose base suspension has a role table (roles.py) are converted by role (convert.py);
+            # the others are tied by nearest node, as below
+            by_role = {}
+            for w in wheels:
+                rt = roles.for_corner(parts, nodes, w)
+                if rt and w["name"] in (svj.get("suspension") or {}):
+                    by_role[w["name"]] = (w, rt)
+            mapping = [r for r in mapping if r["corner"] not in by_role]
             targets, kept = {}, []
             tw = _twins(out)
             tied_chassis = {n for r in mapping if r["kind"] == "chassis" for n in r["nodes"]}
             tied_chassis |= {t for n in tied_chassis for t in tw.get(n, ())}   # and the nodes at their place
             # the rest of each hub moves rigidly with its tied points (a hub is one piece)
             mid = lambda w: [(out[w["node1"]][i] + out[w["node2"]][i]) / 2 for i in range(3)]  # noqa: E731
-            for corner in {r["corner"] for r in mapping}:
+            for corner, (w, rt) in sorted(by_role.items()):
+                al = ((svj.get("suspension") or {}).get(corner) or {}).get("alignment") or {}
+                c, t_, _ = svj_alignment(al)
+                side = 1.0 if (nodes[w["node1"]][0] + nodes[w["node2"]][0]) > 0 else -1.0
+                waxis = ([side * math.cos(c) * math.cos(t_), -math.cos(c) * math.sin(t_), -math.sin(c)]
+                         if c is not None and t_ is not None else None)
+                tg, info = convert.corner(nodes, rt, w, svj, corner, [h for h in hps if h["corner"] == corner], waxis)
+                targets.update(tg)
+                mapping.extend(info["rows"])
+                notes.extend(info["notes"])
+                rigid_hubs[corner] = (w, set(info["upright"]) - {w["node1"], w["node2"]})
+                converted.append(f"{corner} ({rt['part']})")
+            for corner in {r["corner"] for r in mapping if r["corner"] not in by_role}:
                 rows = [r for r in mapping if r["corner"] == corner and r["nodes"] and r["kind"] in ("wheel", "upright")]
                 wheel_row = next((r for r in rows if r["kind"] == "wheel"), None)
                 if not wheel_row:
@@ -346,7 +367,7 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
                 for n, p in _place_wheel(out, wheel, aim, al).items():
                     targets[n] = p
             for row in mapping:
-                if row["kind"] == "wheel":                 # the wheel centre: set with its hub above
+                if row["kind"] == "wheel" or row.get("by") == "role":   # set above (hub, or the role conversion)
                     continue
                 else:
                     for n in row["nodes"]:
@@ -402,6 +423,9 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
                 report.append({"stage": "pickups", "label": "Pickups, largest gap", "unit": "m",
                                "base": max(r["distance"] for r in done), "target": 0.0, "after": max(r["after"] for r in done)})
 
+    if converted:
+        changes.append("suspension converted to the SVJ's by role (upright: the SVJ's camber, toe and wheel centre, caster towards its "
+                       "steering axis; strut top and link pivots on the SVJ's): " + ", ".join(converted))
     # the uprights kept as the base's get their exact shape back: the body stage scaled them with
     # everything else (slice widths, piecewise heights), and an upright bent that way wobbles in camber.
     # The base upright with its axle nodes is laid on its fitted place by the best rigid move, then
