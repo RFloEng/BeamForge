@@ -38,6 +38,9 @@ class TestRigidity(unittest.TestCase):
         n = next(iter(base["geometry"]["nodes"]))
         conf = json.loads(bng.configure("toycar", None, None, None, json.dumps({"nodes": {n: [0.0, 0.0, 0.3]}})))
         bl = rigidity.beams("toycar", conf)
+        self.assertEqual(rigidity.length_factors("toycar", conf, bl=bl), {})   # off by default: the base's structure
+        self.addCleanup(setattr, rigidity, "LENGTH", rigidity.LENGTH)
+        rigidity.LENGTH = True
         lf = rigidity.length_factors("toycar", conf, bl=bl)
         self.assertGreater(lf[n], 1.0)
         w = values.weight_changes("toycar", conf, length_factors=lf)

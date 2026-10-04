@@ -48,6 +48,19 @@ class TestKinematics(unittest.TestCase):
         sv = values.svj_values({"suspension": {"FL": {"spring": {"rate": 20000}}}}, None, {"front": {"spring": 0.5}})
         self.assertEqual(sv["front"]["coil_rate"], 80000)                    # wheel rate / 0.5^2
 
+    def test_corner_stiffness(self):
+        """The benchmark: a corner's stiffness at the wheel, and twice as stiff with links twice as stiff."""
+        bng.reset()
+        bng.add_files(json.dumps(LEVER))
+        conf = json.loads(bng.configure("lever"))
+        w = {"name": "FL", "node1": "w1", "node2": "w2", "centre": [0.7, -1.5, 0.3]}
+        from beamforge import rigidity
+        bl = rigidity.beams("lever", conf)
+        k = kinematics.corner_stiffness("lever", conf, w, bl=bl)
+        self.assertGreater(k["longitudinal"], 0)
+        k2 = kinematics.corner_stiffness("lever", conf, w, bl=bl, kscale={id(b): 2.0 for b in bl})
+        self.assertAlmostEqual(k2["longitudinal"] / k["longitudinal"], 2.0, places=1)
+
 
 if __name__ == "__main__":
     unittest.main()

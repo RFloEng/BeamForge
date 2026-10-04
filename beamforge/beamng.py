@@ -261,7 +261,8 @@ def _delta(v):
 def geometry(parts, tree, vars_, moves=None):
     """Nodes and beams of the configured vehicle, for drawing: {"nodes": {id: [x, y, z]}, "beams": [[a, b]],
     "parts": {node id: part}, "beam_parts": [part of each beam], "rest": {id: [x, y, z] without the
-    user's moves}, "groups": {id: [node groups]}, "ops": {part: [nodeOffset, nodeMove]} (the slot
+    user's moves}, "groups": {id: [node groups]}, "slides": [[slide node, rail start, rail end, spring]],
+    "ops": {part: [nodeOffset, nodeMove]} (the slot
     shifts the part gets, summed down the tree)}. Slot nodeOffset / nodeMove are applied to the part in
     the slot and its children (nodeOffset x mirrored by each node's side, as the game does).
     Expressions that cannot be evaluated offline count as 0. "rest", "groups" and "ops" place the
@@ -275,6 +276,7 @@ def geometry(parts, tree, vars_, moves=None):
     moves = moves or {}
     part_moves, node_moves = moves.get("parts") or {}, moves.get("nodes") or {}
     nodes, owner, beams, beam_parts, rest, groups, ops = {}, {}, [], [], {}, {}, {}
+    rails, slides = {}, []
 
     def walk(node, off, move, user):
         name = node["part"]
@@ -310,6 +312,15 @@ def geometry(parts, tree, vars_, moves=None):
                 if isinstance(a, str) and isinstance(b, str):
                     beams.append([a, b])
                     beam_parts.append(name)
+        for rn, rail in (part.get("rails") or {}).items() if isinstance(part.get("rails"), dict) else ():
+            links = rail.get("links:") or rail.get("links") if isinstance(rail, dict) else None
+            if isinstance(links, list) and len(links) >= 2:
+                rails[rn] = [str(links[0]), str(links[-1])]
+        srows = part.get("slidenodes") or []
+        if srows and isinstance(srows[0], list):
+            for r in jbeam.expand_table(srows):
+                if r.get("id") and r.get("railName"):
+                    slides.append([str(r["id"]), str(r["railName"]), _num(r.get("spring", 0), vars_)])
         slots = {s["name"]: s for s in slot_rows(part)}
         for child in node["children"]:
             s = slots.get(child["slot"], {"options": {}})
@@ -321,8 +332,10 @@ def geometry(parts, tree, vars_, moves=None):
 
     walk(tree, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
     keep = [i for i, b in enumerate(beams) if b[0] in nodes and b[1] in nodes]
+    slid = [[n, rails[r][0], rails[r][1], k] for n, r, k in slides
+            if r in rails and n in nodes and rails[r][0] in nodes and rails[r][1] in nodes]
     return {"nodes": nodes, "beams": [beams[i] for i in keep], "parts": owner, "beam_parts": [beam_parts[i] for i in keep],
-            "rest": rest, "groups": groups, "ops": ops}
+            "rest": rest, "groups": groups, "ops": ops, "slides": slid}
 
 
 def _vec(d, vars_, default=0.0):

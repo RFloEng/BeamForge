@@ -176,7 +176,8 @@ def size(points):
 
 # ---------------------------------------------------------------- the fit
 
-def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beams=None, beam_parts=None, overrides=None):
+def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beams=None, beam_parts=None, overrides=None,
+        slides=None):
     """Fit the vehicle to the SVJ.
 
     nodes: {id: [x, y, z]} without moves (the configured vehicle); parts: {id: part}; wheels:
@@ -281,6 +282,7 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
                            "target": round(target["rear"] - yr, 4), "after": round(after["rear"] - yr, 4)})
 
     mapping, uprights, changes = [], [], []
+    rigid_hubs = {}                                        # corner: (wheel, hub nodes) of uprights kept rigid
     if "pickups" in stages:
         hps = svjmod.hardpoints(svj, yf, ax["ground"])
         if not beams or not hps:
@@ -324,7 +326,9 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
                 if why is None and rms <= HUB_TOLERANCE:
                     for n in hub:
                         targets[n] = move(out[n])
+                    rigid_hubs[corner] = (wheel, hub)
                 elif why is not None:
+                    rigid_hubs[corner] = (wheel, hub)
                     t = [aim[i] - c0[i] for i in range(3)]
                     for n in hub:
                         targets[n] = [out[n][i] + t[i] for i in range(3)]
@@ -395,6 +399,80 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
                 report.append({"stage": "pickups", "label": "Pickups, largest gap", "unit": "m",
                                "base": max(r["distance"] for r in done), "target": 0.0, "after": max(r["after"] for r in done)})
 
+    # the uprights kept as the base's get their exact shape back: the body stage scaled them with
+    # everything else (slice widths, piecewise heights), and an upright bent that way wobbles in camber.
+    # The base upright with its axle nodes is laid on its fitted place by the best rigid move, then
+    # shifted so the wheel sits where the fit put it.
+    if "pickups" not in stages and beams:
+        bp = beam_parts or ["" for _ in beams]
+        for w in wheels:
+            if w["node1"] in nodes and w["node2"] in nodes:
+                rigid_hubs[w["name"]] = (w, corner_roles(nodes, beams, bp, parts, w)[0])
+    restored = []
+    for corner, (wheel, hub) in sorted(rigid_hubs.items()):
+        axle = [wheel["node1"], wheel["node2"]]
+        group = [n for n in sorted(set(hub) | set(axle)) if n in nodes and n in out]
+        if len(group) < 3:
+            continue
+        move = rigid_fit([nodes[n] for n in group], [out[n] for n in group])
+        new = {n: move(nodes[n]) for n in group}
+        mid_now = [(out[axle[0]][i] + out[axle[1]][i]) / 2 for i in range(3)]
+        mid_new = [(new[axle[0]][i] + new[axle[1]][i]) / 2 for i in range(3)]
+        shift = [mid_now[i] - mid_new[i] for i in range(3)]
+        worst = max(math.dist(out[n], [new[n][i] + shift[i] for i in range(3)]) for n in group)
+        for n in group:
+            out[n] = [new[n][i] + shift[i] for i in range(3)]
+        restored.append(f"{corner} ({worst * 1000:.0f} mm)")
+    if restored:
+        changes.append("uprights given back their exact shape after the body stage had bent them: " + ", ".join(restored))
+
+    # rails: a slide node (a strut's hub end sliding up the strut, BeamNG's MacPherson) must stay on its
+    # rail, or its stiff spring pulls the hub over at spawn (camber wobble, the wheel moving on braking);
+    # the fit can tilt a rail (its top tied to the SVJ strut top, the hub moved whole): back on the line
+    on_rail = []
+    slides = [x for x in slides or [] if all(y in out and y in nodes for y in x[:3])]
+    per_rail, ends = {}, {}
+    for n, a, b, _ in slides:
+        per_rail[(a, b)] = per_rail.get((a, b), 0) + 1
+        for e in (a, b):
+            ends[e] = ends.get(e, 0) + 1
+
+    def gap_of(pos, n, a, b):
+        pa, pb, pn = pos[a], pos[b], pos[n]
+        d = [pb[i] - pa[i] for i in range(3)]
+        dd = sum(x * x for x in d)
+        if dd < 1e-9:
+            return 0.0, pa
+        t = max(0.0, min(1.0, sum((pn[i] - pa[i]) * d[i] for i in range(3)) / dd))
+        q = [pa[i] + t * d[i] for i in range(3)]
+        return math.dist(pn, q), q
+    for n, a, b, _ in slides:
+        before, _ = gap_of(nodes, n, a, b)
+        gap, q = gap_of(out, n, a, b)
+        if gap <= before + 0.001:                          # as the base had it (some sit off their rail by design)
+            continue
+        # which moved apart: a rail end that went its own way (a strut top tied to the SVJ's, the hub moved
+        # whole) turns about the other end through the slide node, keeping its length, when the rail
+        # carries this node only and that end no other rail; else the node goes onto the rail
+        mv = {x: [out[x][i] - nodes[x][i] for i in range(3)] for x in (n, a, b)}
+        dev = {x: math.dist(mv[x], mv[n]) for x in (a, b)}
+        far, near_ = (a, b) if dev[a] >= dev[b] else (b, a)
+        pn = out[n]
+        if (dev[far] > max(0.005, 2 * dev[near_]) and per_rail[(a, b)] == 1 and ends[far] == 1
+                and math.dist(out[near_], pn) > 1e-3):
+            L = math.dist(out[near_], out[far])
+            u = [pn[i] - out[near_][i] for i in range(3)]
+            lu = math.sqrt(sum(x * x for x in u))
+            out[far] = [out[near_][i] + u[i] / lu * L for i in range(3)]
+            on_rail.append((far, gap))
+        else:
+            out[n] = q
+            on_rail.append((n, gap))
+    if on_rail:
+        worst = max(on_rail, key=lambda x: x[1])
+        changes.append(f"{len(on_rail)} slide nodes put back on their rails, turning the rail where its end had gone its "
+                       f"own way (largest gap {worst[1] * 1000:.0f} mm, at {worst[0]})")
+
     moves = {}
     for n, p in out.items():
         d = [round(p[i] - nodes[n][i], 4) for i in range(3)]
@@ -433,7 +511,7 @@ def fit_json(geometry_json, wheels_json, svj_json, files_json, stages_json, over
         except (OSError, ValueError, KeyError, IndexError) as exc:
             notes.append(f"could not read the SVJ body mesh: {exc}")
     r = fit(nodes, geo["parts"], wheels, svj, mesh, stages, geo.get("beams"), geo.get("beam_parts"),
-            json.loads(overrides_json) if overrides_json else None)
+            json.loads(overrides_json) if overrides_json else None, geo.get("slides"))
     return json.dumps({"moves": r["moves"], "report": r["report"], "mapping": r["mapping"], "uprights": r["uprights"],
                        "changes": r["changes"],
                        "place": r["place"],

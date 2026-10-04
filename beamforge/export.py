@@ -560,6 +560,14 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     for part, rows in rig.items():
         for row, vals in rows.items():
             taken_beams.setdefault(part, {}).setdefault(row, {}).update(vals)
+    # the benchmark: each corner as stiff at the wheel as the base's in its own geometry (kinematics.stiffen)
+    from beamforge import kinematics
+    stiff, bench = kinematics.stiffen(model, v, bl, values.springs_and_dampers(model, v), taken_weights) \
+        if any(abs(x) > 1e-6 for d in _deltas(v["geometry"]).values() for x in d) else ({}, [])
+    by_key = {(b["part"], b["row"]): b for b in bl}
+    for (part, row), f in stiff.items():
+        if f > 1.0 + 1e-3 and "beamSpring" in by_key[(part, row)]["values"]:
+            taken_beams.setdefault(part, {}).setdefault(row, {})["beamSpring"] = round(by_key[(part, row)]["values"]["beamSpring"] * f)
     for n in list(taken_beams) + list(taken_tyres) + list(taken_weights) + list(taken_pt):   # a part that takes values must be written
         if choices.get(n) == "reuse":
             choices[n] = "copy"
@@ -618,6 +626,13 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
                                 "base_meshes_dropped": 0, "values": 0, "rigidity_beams": 0}, []
     if mass_note:
         notes.append(mass_note)
+    for r in bench:
+        soft = max(r["base"][k] / r["fitted"][k] for k in r["base"])
+        if soft > 1.05:
+            what = f"its links stiffened x{r['factor']}" if r["factor"] > 1.0 else "its links could not be stiffened"
+            notes.append(f"{r['wheel']}: the fitted suspension holds the wheel {100 * (1 - 1 / soft):.0f} % softer than the base's; "
+                         + what + (" (its nodes are at the physics step's limit: still softer)" if r["capped"] else ""))
+    counts["corners_stiffened"] = sum(1 for r in bench if r["factor"] > 1.0)
     if rig_stats:
         counts["rigidity_beams"] = rig_stats["beams"]
         if rig_stats["softened"]:

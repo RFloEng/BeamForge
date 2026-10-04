@@ -388,7 +388,13 @@ def weight_changes(model, configured, mass=None, cg_y=None, cg_z=None, length_fa
     node may get only as light as the physics step allows); the others take what they cannot."""
     lf = length_factors or {}
     rows, wheel_kg = node_weights(model, configured)
-    rows = [(p, i, n, kg * lf.get(n, 1.0), pos) for p, i, n, kg, pos in rows]
+    geo = configured.get("geometry") or {}
+    mounts = set()
+    for (a, b), bp in zip(geo.get("beams") or [], geo.get("beam_parts") or []):
+        if UNSPRUNG.search(bp):
+            mounts.update((a, b))
+    # the length change moves the body's weights; the suspension's and its mounts' stay as they are
+    rows = [(p, i, n, kg * (1.0 if UNSPRUNG.search(p) or n in mounts else lf.get(n, 1.0)), pos) for p, i, n, kg, pos in rows]
     m = sum(r[3] for r in rows)
     if not rows or not m:
         return {}
@@ -396,11 +402,6 @@ def weight_changes(model, configured, mass=None, cg_y=None, cg_z=None, length_fa
     yf, zg = meas.get("front_axle_y") or 0.0, meas.get("ground_z") or 0.0
     total = (mass - wheel_kg) if mass is not None else m             # the target, without the wheels
     # the suspension's nodes and the body nodes its beams hold on to (the mounts) keep their weight
-    geo = configured.get("geometry") or {}
-    mounts = set()
-    for (a, b), bp in zip(geo.get("beams") or [], geo.get("beam_parts") or []):
-        if UNSPRUNG.search(bp):
-            mounts.update((a, b))
     # the suspension and its mounts; if that leaves the body too little, the suspension alone; else all scale
     for fixed in ([UNSPRUNG.search(r[0]) is not None or r[2] in mounts for r in rows],
                   [UNSPRUNG.search(r[0]) is not None for r in rows], [False] * len(rows)):
@@ -465,21 +466,32 @@ def _set_inline(row, values):
         row.append(dict(values))
 
 
-def _axle_load_ratio(model, configured, svj, take):
-    """{axle: new static load / base static load}, from the mass and CG taken from the SVJ (1 where not)."""
-    sm, sy, _ = svj_mass(svj)
-    if not ((take.get("mass") and sm) or (take.get("cg_y") and sy is not None)):
+def _axle_loads(model, configured, weights=None):
+    """(front, rear) static axle loads in kg, from the node weights (the new ones where given) and the
+    wheels: each node's weight split between the axles by where it sits along the car."""
+    rows, wheel_kg = node_weights(model, configured)
+    meas = configured.get("measure") or {}
+    yf, wb = meas.get("front_axle_y"), meas.get("wheelbase")
+    if yf is None or not wb:
+        return None
+    front = rear = wheel_kg / 2
+    for part, row, _, kg, pos in rows:
+        kg = ((weights or {}).get(part) or {}).get(row, kg)
+        x = min(1.0, max(0.0, (pos[1] - yf) / wb))      # 0 at the front axle, 1 at the rear
+        front += kg * (1 - x)
+        rear += kg * x
+    return front, rear
+
+
+def _axle_load_ratio(model, configured, weights):
+    """{axle: new static load / base static load}: the node weights the car is given (weights, which may
+    stop short of the SVJ's mass) against the base's."""
+    if not weights:
         return {}
-    base = mass_and_cg(model, configured)
-    wb = (configured.get("measure") or {}).get("wheelbase")
-    if not base.get("mass") or not wb or base.get("cg_behind_front_axle") is None:
+    a0, a1 = _axle_loads(model, configured), _axle_loads(model, configured, weights)
+    if not a0 or not a1:
         return {}
-    m0, y0 = base["mass"], base["cg_behind_front_axle"]
-    m1 = sm if take.get("mass") and sm else m0
-    y1 = sy if take.get("cg_y") and sy is not None else y0
-    f0, f1 = m0 * (1 - y0 / wb), m1 * (1 - y1 / wb)
-    r0, r1 = m0 * y0 / wb, m1 * y1 / wb
-    return {"front": f1 / f0 if f0 > 0 else 1.0, "rear": r1 / r0 if r0 > 0 else 1.0}
+    return {"front": a1[0] / a0[0] if a0[0] > 0 else 1.0, "rear": a1[1] / a0[1] if a0[1] > 0 else 1.0}
 
 
 def apply(model, configured, svj, take, study=None, length_factors=None, floors=None):
@@ -487,10 +499,22 @@ def apply(model, configured, svj, take, study=None, length_factors=None, floors=
     "tireWidth", "scale"}} for tyres, {"$var": value} for the configuration, {part: {row index: kg}} for
     node weights). take: {row key: True}."""
     from beamforge import kinematics
-    sv = svj_values(svj, study, kinematics.motion_ratios(model, configured)[0])
+    base_mr = kinematics.motion_ratios(model, configured)[0]
+    sv = svj_values(svj, study, base_mr)
     beams, tyre, pcvars = {}, {}, {}
     vars_ = {x["name"]: x["value"] for x in configured["variables"] if isinstance(x["value"], (int, float))}
-    load = _axle_load_ratio(model, configured, svj, take)
+    sm, sy, sz = svj_mass(svj)
+    weights = {}
+    if (take.get("mass") and sm) or (take.get("cg_y") and sy is not None) or (take.get("cg_z") and sz is not None):
+        weights = weight_changes(model, configured, sm if take.get("mass") else None,
+                                 sy if take.get("cg_y") else None, sz if take.get("cg_z") else None, length_factors,
+                                 floors)
+    # the load each axle will carry: the weights the car is given (short of the SVJ's mass where the
+    # structure would not allow lighter), so the springs' preload holds the car at its ride height
+    load = _axle_load_ratio(model, configured, weights)
+    a0 = _axle_loads(model, configured)
+    a1 = _axle_loads(model, configured, weights) if weights else a0
+    axle_kg = {"front": (a0[0], a1[0]), "rear": (a0[1], a1[1])} if a0 and a1 else {}
     sd = springs_and_dampers(model, configured)
     spring_k = {r["axle"]: _num_or(r["values"].get("beamSpring"), vars_, None) for r in sd if r["kind"] == "spring"}
     damp_floor = set()
@@ -499,12 +523,18 @@ def apply(model, configured, svj, take, study=None, length_factors=None, floors=
         new = {}
         if r["kind"] == "spring" and take.get(f"spring_{r['axle']}") and s.get("coil_rate"):
             new["beamSpring"] = s["coil_rate"]
-            # the spring's preload (precompressionRange, metres it starts compressed) holds the car up at its
-            # ride height: the same force over the new rate, times the axle's load change
+            # the ride height: a vanilla car is designed sitting on its springs, each compressed by its load
+            # beyond its preload (precompressionRange, metres it starts compressed): that sag is kept, so
+            # the car settles where the base did. The spring's share of its axle's load: (axle kg x g / 2)
+            # over the spring's motion ratio, as the base and as the new car will carry it.
             k0 = _num_or(r["values"].get("beamSpring"), vars_, None)
             pr = _num_or(r["values"].get("precompressionRange"), vars_, None)
-            if k0 and pr:
-                new["precompressionRange"] = round(pr * k0 / s["coil_rate"] * load.get(r["axle"], 1.0), 4)
+            if k0 and pr is not None and axle_kg.get(r["axle"]):
+                mr = ((base_mr or {}).get(r["axle"]) or {}).get("spring") or 1.0
+                f0 = axle_kg[r["axle"]][0] * 9.81 / 2 / mr
+                f1 = axle_kg[r["axle"]][1] * 9.81 / 2 / mr
+                sag = f0 / k0 - pr
+                new["precompressionRange"] = round(max(0.002, f1 / s["coil_rate"] - sag), 4)
         if r["kind"] == "damper":
             if take.get(f"damp_bump_{r['axle']}") and s.get("damp_bump"):
                 new.update(beamDamp=s["damp_bump"], beamDampFast=s["damp_bump_fast"], beamDampVelocitySplit=s["damp_split"])
@@ -537,12 +567,6 @@ def apply(model, configured, svj, take, study=None, length_factors=None, floors=
         if take.get(f"tyre_radius_{axle}") and s.get("tyre_radius") and t.get("radius"):
             k = s["tyre_radius"] / t["radius"]
             tyre[t["part"]] = {"radius": s["tyre_radius"], "scale": [1.0, k, k]}
-    sm, sy, sz = svj_mass(svj)
-    weights = {}
-    if (take.get("mass") and sm) or (take.get("cg_y") and sy is not None) or (take.get("cg_z") and sz is not None):
-        weights = weight_changes(model, configured, sm if take.get("mass") else None,
-                                 sy if take.get("cg_y") else None, sz if take.get("cg_z") else None, length_factors,
-                                 floors)
     return beams, tyre, pcvars, weights
 
 
