@@ -125,9 +125,16 @@ Group A Subaru SVJ, all four corners:
   fallback for a base whose rack ends are not found.
 - Wheels spawn square, the hub's beams to the wheel preloaded to the SVJ's camber and toe (see
   fitting.md, *Wheels spawn square*).
+- Steering dampers, as the vanilla's (the front-drive compact's `fhub3`-`fsub2`, `fhub5`-`fsub2`: |BOUNDED, no spring,
+  damping 80, fast 800): the tie rod end and the node across the hub to the nearest lower arm pivot.
+  v4 had none (the vanilla's went with the hub nodes) and its front wheels steered back and forth
+  under braking, while the converted front-drive compact, which keeps its own, did not. Not a compliance: the
+  static solve gives the archetype less brake steer than the vanilla (0.78 against 1.96 deg/kN, 2.5
+  against 28 mm/kN back). Every vanilla part the archetype drops is to be checked for what it did, not
+  only for its nodes.
 
-In the game: v2 steers (still the wheel wobble, since found: the axle tilted at spawn); v4, with the
-wheels spawning square, is to be driven.
+In the game: v2 steers (still the wheel wobble, since found: the axle tilted at spawn); v4 no wobble,
+but the front wheels steer under braking; v5 (steering dampers) to be driven.
 
 Not yet: anti-roll bars (the base's go with the hubs), suspension meshes (none in this SVJ; the base's
 hub and arm meshes are dropped with their nodes).

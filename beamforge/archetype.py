@@ -35,6 +35,7 @@ ROOM = 1.0            # of a body node's stiffness limit that its mounts may fil
 MOUNT_REACH = 0.45    # m: no farther body nodes
 PIVOT_KG, TOP_KG, RACK_KG = 2.5, 2.5, 3.0
 HUB_SHARE = {"h1": 0.3, "h2": 0.1, "h3": 0.2, "h4": 0.2, "h5": 0.2}   # of the corner's unsprung kg
+STEER_C, STEER_C_FAST = 80, 800   # N s/m: steering dampers, slow and fast (the front-drive compact's)
 SLIDE_AT = 0.6        # h4: this share of the way from the strut bottom to its top
 RACK_INSET = 0.1      # m: the rack's slide nodes inboard of its ends
 
@@ -413,6 +414,14 @@ def apply(files, model, configured, svj, place, loads, built, axles=None):
             bt.append([nm[k], nm["h1"], dict(_on_base(nm[k], ARM_K, 1500, room), dampCutoffHz=500)])
         bt.append(dict(BEAM_RESET, beamSpring=TIE_K, beamDamp=150, beamDeform=75500, beamStrength=127500))
         bt.append([nm["h3"], nm["tie"], _on_base(nm["tie"], TIE_K, 150, room)])
+        if pts["steer"]:
+            # steering dampers, as the vanilla's (the front-drive compact's fhub3-fsub2, fhub5-fsub2): the steered hub's toe
+            # damped against the lower arm's pivots; without them the front wheels shimmy under braking
+            bt.append(dict(BEAM_RESET, **BOUNDED, beamSpring=0, beamDamp=STEER_C, beamDeform=20000, beamStrength=35000,
+                           beamLimitSpring=0, beamLimitDamp=0))
+            for k in ("h3", "h5"):
+                piv = min(("p0", "p1"), key=lambda q: math.dist(pts[k], pts[q]))
+                bt.append([nm[k], nm[piv], {"beamDampFast": STEER_C_FAST, "beamDampVelocitySplit": 0.1, "dampCutoffHz": 750}])
         bt.append(dict(BEAM_RESET, beamSpring=MOUNT_K, beamDamp=MOUNT_C, beamDeform=25000, beamStrength=170000))
         for k, _ in body:
             for m in _mounts(pts[k], nodes, kept, weights, side, room):
