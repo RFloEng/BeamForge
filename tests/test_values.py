@@ -112,6 +112,30 @@ class TestValues(unittest.TestCase):
         pick, _ = values._closest_wheel("tire_F_15x7", "tire_F_206_51_15_sport", ["tire_F_206_51_15_sport", "tire_F_196_61_15_sport"], svj)
         self.assertEqual(pick, "tire_F_196_61_15_sport")
 
+    def test_final_drive_through_the_driveline(self):
+        """The final drive is every reduction between the gearbox and the wheels; a final drive part sets it
+        with a section named after a device; taking the SVJ's changes that one, not the differential."""
+        import json
+        from beamforge import beamng as bng
+        files = {"vehicles/dl/dl.jbeam": json.dumps({
+            "dl_body": {"information": {"name": "Body"}, "slotType": "main",
+                        "slots": [["type", "default", "description"], ["dl_final", "dl_final_425", "Final drive"]],
+                        "powertrain": [["type", "name", "inputName", "inputIndex"],
+                                       ["manualGearbox", "gearbox", "mainEngine", 1],
+                                       ["torsionReactor", "torsionReactorF", "gearbox", 1],
+                                       ["differential", "differential_F", "torsionReactorF", 1, {"gearRatio": 1}],
+                                       ["shaft", "wheelaxleFL", "differential_F", 1]]},
+            "dl_final_425": {"information": {"name": "4.25"}, "slotType": "dl_final", "torsionReactorF": {"gearRatio": 4.25}}}),
+            "vehicles/dl/info.json": json.dumps({"Name": "DL", "Type": "Car"})}
+        bng.reset()
+        bng.add_files(json.dumps(files))
+        v = json.loads(bng.configure("dl"))
+        prod, chain = values.driveline("dl", v, "front")
+        self.assertEqual(prod, 4.25)
+        svj = {"powertrain": {"layout": "FF", "differentials": [{"location": "front", "final_drive": 4.4}]}}
+        self.assertEqual(values.powertrain_changes("dl", v, svj, {"final_drive": True}),
+                         {"dl_final_425": {"torsionReactorF.gearRatio": 4.4}})
+
     def test_slopes(self):
         self.assertEqual(values._slopes([[0, 0], [0.1, 1000]]), (10000.0, 10000.0, 0.1))
         self.assertIsNone(values._slopes([[0, 0]]))

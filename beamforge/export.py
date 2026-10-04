@@ -182,10 +182,12 @@ def _rename_refs(part, renames):
                 row[i] = renames[row[i]]
 
 
-# flexbodies kept when the SVJ body replaces the base's: running gear, interior, engine bay
-KEEP = re.compile(r"wheel|tire|tyre|brake|hub|rotor|caliper|seat|interior|_int|dash|steer|gauge|carpet|engine|intake|"
-                  r"exhaust|radiator|transmission|driveshaft|halfshaft|axle|diff|suspension|strut|spring|shock|coilover|"
-                  r"swaybar|fueltank|battery|pedal|shifter|roll_?cage", re.I)
+# flexbodies kept when the SVJ body replaces the base's: the mechanical parts (running gear, engine bay,
+# tank). The body, glass (inner faces too) and interior go: the SVJ body brings its own (its low-detail
+# cockpit), and the base's would float inside a body of another shape.
+KEEP = re.compile(r"(?<!steer_)(?<!steering_)wheel|tire|tyre|brake|hub|rotor|caliper|engine|intake|exhaust|muffler|"
+                  r"radiator|transmission|transaxle|driveshaft|halfshaft|axle|diff|suspension|subframe|strut|spring|"
+                  r"shock|coilover|swaybar|tierod|_steering$|fueltank|battery", re.I)
 
 
 def _safe(name):
@@ -270,6 +272,59 @@ def _panels(v, svj, files, place, chassis):
     return out
 
 
+GLASS = re.compile(r"glass|window|windscreen|windshield|vetro|cristal|finestr|lunotto|parabrezza|screen", re.I)
+NOT_GLASS = re.compile(r"light|lamp|lens|fari|faro|indicator|signal|led|gauge|mirror_?glass|dmg|damage", re.I)
+BASE_GLASS = re.compile(r"glass|windshield|windscreen|window", re.I)
+
+
+def _has(path, node):
+    with open(path, "rb") as fh:
+        return gltf.has_node(fh.read(), node, path.lower().endswith(".glb"))
+
+
+def _glass(v, svj, path, place, body):
+    """The body mesh's window glass as attach rows of its own: [{"path", "node": None, "mesh_ref",
+    "part", "groups", "prims": [primitive index in the body], "exclude", "glass_of": base mesh}], each
+    pane on the base's glass flexbody nearest to it, so it breaks as glass (the base's deform group
+    and damaged material) instead of bending with the body. Glass: a transparent (BLEND) material, or
+    one named like glass, and not a light's."""
+    with open(path, "rb") as fh:
+        data = fh.read()
+    glb = path.lower().endswith(".glb")
+    names = body.get("exclude") or []
+    pattern = f"(?:{gltf.NOT_BODY.pattern})"
+    if names:
+        pattern += "|^(?:" + "|".join(re.escape(x) for x in names) + ")$"
+    skip = re.compile(pattern, re.I)
+    mats, _ = gltf.materials(data, glb)
+    pos, _, prims = gltf.textured(data, is_glb=glb, under=None, skip=skip)
+    axes = svjmod.gltf_axes(svj)
+    off = svjmod.mesh_offset(svj, data, glb)[0] or [0.0, 0.0, 0.0]
+    geo = v["geometry"]
+    members = {}
+    for n, gs in (geo.get("groups") or {}).items():
+        for g in gs:
+            members.setdefault(g, []).append(geo["nodes"][n])
+    centre = lambda ps: [sum(p[i] for p in ps) / len(ps) for i in range(3)]  # noqa: E731
+    cands = [f for f in v.get("flexbodies", []) if BASE_GLASS.search(f["part"]) and not f["mesh"].lower().endswith("_int")
+             and f.get("groups") and all(g in members for g in f["groups"])]
+    if not cands:
+        return []
+    rows = {}
+    for i, (k, idx) in enumerate(prims):
+        m = mats[k] if k is not None and k < len(mats) else None
+        if not m or NOT_GLASS.search(m["name"]) or not (m["alpha"] == "BLEND" or GLASS.search(m["name"])) or len(idx) < 3:
+            continue
+        c = centre([svjmod.from_sae([x + o for x, o in zip(svjmod.gltf_to_sae(pos[j], axes), off)], place["yf"], place["ground"])
+                    for j in set(idx)])
+        best = min(cands, key=lambda f: math.dist(c, centre([p for g in f["groups"] for p in members[g]])))
+        r = rows.setdefault((best["part"], best["mesh"]), {
+            "path": f"chassis.glass.{best['part']}", "node": None, "mesh_ref": body["mesh_ref"], "part": best["part"],
+            "groups": list(best["groups"]), "prims": [], "exclude": list(names), "glass_of": best["mesh"]})
+        r["prims"].append(i)
+    return list(rows.values())
+
+
 def svj_attach(configured_json, svj_json, mapping_json=None, files_json=None, place_json=None):
     """Where each SVJ mesh binding goes on the new vehicle by default: [{"path", "node", "mesh_ref",
     "part", "groups"}]. A suspension corner goes to the part and node groups of its tied hub nodes
@@ -314,7 +369,10 @@ def svj_attach(configured_json, svj_json, mapping_json=None, files_json=None, pl
         if path:                                           # (a body with its own node: its SVJ-named panels,
             panels = _panels(v, svj, files, place, body)   # or the modders' names inside it)
             body["exclude"] = sorted({p["node"] for p in panels})
-            out[out.index(body) + 1:out.index(body) + 1] = panels
+            glass = _glass(v, svj, path, place, body) if not body["node"] or not _has(path, body["node"]) else []
+            if glass:
+                body["exclude_prims"] = sorted({i for g in glass for i in g["prims"]})
+            out[out.index(body) + 1:out.index(body) + 1] = panels + glass
     return json.dumps(out)
 
 
@@ -339,13 +397,19 @@ def svj_meshes(svj, files, place, attach, new_id):
         data, off, (gmats, imgs), fi = cache[path]
         under, skip = a["node"], None
         if not under or not gltf.has_node(data, under, glb):
-            if a["path"] != "chassis":
+            if a["path"] != "chassis" and not a.get("prims"):
                 continue                                   # the file has no such node: nothing to add
             under, skip = None, gltf.NOT_BODY              # the body: the whole mesh but the wheels and such
         if a.get("exclude"):                               # and but the panels that go on their own parts
             names = "|".join(re.escape(x) for x in a["exclude"])
             skip = re.compile(f"(?:{skip.pattern})|^(?:{names})$" if skip else f"^(?:{names})$", re.I)
         pos, uvs, prims = gltf.textured(data, is_glb=glb, under=under, skip=skip)
+        if a.get("prims") is not None:                     # glass panes taken out of the body
+            keep = set(a["prims"])
+            prims = [p for i, p in enumerate(prims) if i in keep]
+        elif a.get("exclude_prims"):
+            drop = set(a["exclude_prims"])
+            prims = [p for i, p in enumerate(prims) if i not in drop]
         if not any(len(i) >= 3 for _, i in prims):
             continue
         pos = [[round(c, 5) for c in svjmod.from_sae([x + o for x, o in zip(svjmod.gltf_to_sae(p, axes), off)],
@@ -366,6 +430,7 @@ def svj_meshes(svj, files, place, attach, new_id):
                                    image_id=(fi, g["texture"]), normal_id=(fi, g["normal"]))
         all_idx = [v for i in subs.values() for v in i]
         out.append({"name": name, "material": f"{name}_mat", "part": a["part"], "groups": a.get("groups") or [],
+                    "glass_of": a.get("glass_of"),
                     "positions": pos, "indices": all_idx, "uvs": uvs, "path": a["path"],
                     "submeshes": [{"material": m, "indices": i} for m, i in subs.items()], "materials": mats})
     return out
@@ -413,18 +478,37 @@ def svj_materials(svjm, new_id):
     return mats, images
 
 
-def _add_flexbody(part, mesh, groups):
-    """Add a flexbody row for `mesh` following `groups` to a part (in place)."""
+def _add_flexbody(part, mesh, groups, extra=None):
+    """Add a flexbody row for `mesh` following `groups` to a part (in place); extra: more properties."""
     rows = part.get("flexbodies")
     if not (isinstance(rows, list) and rows and isinstance(rows[0], list)):
         rows = [["mesh", "[group]:", "nonFlexMaterials"]]
         part["flexbodies"] = rows
-    rows.append([mesh, list(groups), [], {"pos": {"x": 0, "y": 0, "z": 0}, "rot": {"x": 0, "y": 0, "z": 0},
-                                           "scale": {"x": 1, "y": 1, "z": 1}}])
+    props = {"pos": {"x": 0, "y": 0, "z": 0}, "rot": {"x": 0, "y": 0, "z": 0}, "scale": {"x": 1, "y": 1, "z": 1}}
+    props.update(extra or {})
+    rows.append([mesh, list(groups), [], props])
+
+
+def _deform_props(part, mesh):
+    """The deform* properties (glass breaking: deformGroup, deformMaterialBase, deformMaterialDamaged...)
+    of a part's flexbody row for `mesh`, from its property rows and its own."""
+    rows = part.get("flexbodies") if isinstance(part, dict) else None
+    if not (isinstance(rows, list) and rows and isinstance(rows[0], list)):
+        return {}
+    props = {}
+    for row in rows[1:]:
+        if isinstance(row, dict):
+            props.update(row)
+        elif isinstance(row, list) and row and row[0] == mesh:
+            p = dict(props)
+            if isinstance(row[-1], dict):
+                p.update(row[-1])
+            return {k: v for k, v in p.items() if k.startswith("deform") and v not in (None, "")}
+    return {}
 
 
 def _drop_body_meshes(n, part):
-    """Leave out a part's body flexbodies (KEEP: running gear, interior); returns how many were dropped."""
+    """Leave out a part's body flexbodies (all but KEEP: the mechanical parts); returns how many were dropped."""
     rows = part.get("flexbodies")
     if KEEP.search(n) or not (isinstance(rows, list) and rows and isinstance(rows[0], list)):
         return 0
@@ -550,7 +634,14 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
             counts["base_meshes_dropped"] += _drop_body_meshes(n, part)
         for m in svjm:
             if m["part"] == n:
-                _add_flexbody(part, m["name"], m["groups"])
+                extra = {}
+                if m.get("glass_of"):                      # glass: breaks as the base's glass did
+                    extra = _deform_props((parts.get(n) or {}).get("part"), m["glass_of"])
+                    if "deformMaterialBase" in extra and m.get("submeshes"):   # the see-through one breaks
+                        mats_ = m.get("materials") or {}
+                        clear = [x["material"] for x in m["submeshes"] if (mats_.get(x["material"]) or {}).get("alpha") == "BLEND"]
+                        extra["deformMaterialBase"] = (clear or [m["submeshes"][0]["material"]])[0]
+                _add_flexbody(part, m["name"], m["groups"], extra)
                 counts["svj_meshes"] += 1
 
     # the base vehicle's jbeam files, all their parts (inactive ones as they are)

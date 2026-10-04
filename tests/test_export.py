@@ -154,10 +154,12 @@ class TestExport(unittest.TestCase):
             self.assertEqual([len(m["indices"]) for m in meshes], [3, 3])                 # one triangle each, no overlap
 
     def test_body_meshes_dropped_running_gear_kept(self):
+        """The SVJ body brings its own body, glass and cockpit: only the mechanical meshes stay."""
         part = {"flexbodies": [["mesh", "[group]:", "nonFlexMaterials"], ["car_body", ["b"]], ["car_door_FL", ["d"]],
-                               ["car_seat_FL", ["s"]], {"deformGroup": ""}, ["brake_disc", ["w"]]]}
-        self.assertEqual(export._drop_body_meshes("car_body", part), 2)
-        self.assertEqual([r[0] for r in part["flexbodies"][1:] if isinstance(r, list)], ["car_seat_FL", "brake_disc"])
+                               ["car_seat_FL", ["s"]], ["car_windshield_int", ["g"]], {"deformGroup": ""}, ["brake_disc", ["w"]],
+                               ["car_exhaust_heatshield", ["b"]]]}
+        self.assertEqual(export._drop_body_meshes("car_body", part), 4)
+        self.assertEqual([r[0] for r in part["flexbodies"][1:] if isinstance(r, list)], ["brake_disc", "car_exhaust_heatshield"])
         self.assertEqual(export._drop_body_meshes("car_wheel_F", {"flexbodies": [["mesh"], ["rim", []]]}), 0)
 
     def test_new_vehicle_builds(self):

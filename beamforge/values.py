@@ -569,7 +569,68 @@ def powertrain_base(model, configured, driven=None):
                         "front" if re.search(r"_F(\b|$)|front", str(rec.get("name")), re.I) else None
                     if "differential" not in out or (driven and axle == driven):
                         out.update(differential=(name, i), final_drive=inline["gearRatio"], diff_axle=axle)
+    # the final drive: every reduction between the gearbox and the driven wheels (a final drive part may
+    # set it on the differential or on a torsion reactor before it)
+    for ax in ((driven,) if driven in ("front", "rear") else ("rear", "front")):
+        prod, chain = driveline(model, configured, ax)
+        if prod is not None:
+            out.update(final_drive=prod, final_chain=chain, diff_axle=ax)
+            break
     return out
+
+
+GEARBOX = re.compile(r"gearbox|torqueConverter|frictionClutch|viscousClutch|centrifugalClutch", re.I)
+
+
+def driveline(model, configured, axle):
+    """The gear reduction between the gearbox and a driven wheel of one axle ("front" / "rear"):
+    (product of the gearRatio of every device on the way, [(part, key, ratio, device)]) or (None, []).
+    A device's ratio is its powertrain row's gearRatio, overridden by a section of the same name in a
+    later part (BeamNG's final drive parts: "torsionReactorF": {"gearRatio": 4.25}); key is
+    ("powertrain", row) for a row, "<device>.gearRatio" for a section."""
+    parts = beamng._parts_held(model)
+    vars_ = {x["name"]: x["value"] for x in configured["variables"] if isinstance(x["value"], (int, float))}
+    active = _active(configured)
+    dev = {}
+    for name in active:
+        pt = (parts.get(name) or {}).get("part", {}).get("powertrain")
+        if not (isinstance(pt, list) and pt and isinstance(pt[0], list)):
+            continue
+        head, props = [str(h) for h in pt[0]], {}
+        for i, row in enumerate(pt[1:], 1):
+            if isinstance(row, dict):
+                props.update(row)
+                continue
+            if not isinstance(row, list) or not row:
+                continue
+            inline = row[-1] if isinstance(row[-1], dict) else {}
+            rec = dict(props)
+            rec.update(inline)
+            rec.update(zip(head, row[:-1] if inline else row))
+            if rec.get("name"):
+                dev[rec["name"]] = {"type": str(rec.get("type", "")), "input": rec.get("inputName"),
+                                    "ratio": rec.get("gearRatio"), "src": (name, ("powertrain", i)) if "gearRatio" in inline else None}
+    for name in active:                                   # sections named after a device: later parts win
+        for key, val in (parts.get(name) or {}).get("part", {}).items():
+            if key in dev and isinstance(val, dict) and "gearRatio" in val:
+                dev[key].update(ratio=val["gearRatio"], src=(name, f"{key}.gearRatio"))
+    tag = "F" if axle == "front" else "R"
+    start = next((n for n in sorted(dev) if re.match(rf"(wheelaxle|spindle){tag}[LR]", n)), None)
+    chain, seen, n = [], set(), start
+    while n and n in dev and n not in seen:
+        seen.add(n)
+        d = dev[n]
+        if GEARBOX.search(d["type"]) or n == "gearbox":
+            break
+        r = _num_or(d["ratio"], vars_, 1.0) if d["ratio"] is not None else 1.0
+        chain.append((d["src"][0] if d["src"] else None, d["src"][1] if d["src"] else None, r, n))
+        n = d["input"]
+    if not chain or n not in dev:
+        return None, []
+    prod = 1.0
+    for c in chain:
+        prod *= c[2]
+    return round(prod, 4), chain
 
 
 def svj_powertrain(svj):
@@ -702,9 +763,19 @@ def powertrain_changes(model, configured, svj, take):
         old = base["ratios"]
         lead = [r for r in old[:2] if isinstance(r, (int, float)) and r <= 0]   # reverse and neutral, as they were
         ch.setdefault(base["gearbox"], {})["gearbox.gearRatios"] = lead + list(sp["ratios"])
-    if take.get("final_drive") and sp["final_drive"] and base.get("differential"):
-        part, row = base["differential"]
-        ch.setdefault(part, {})[("powertrain", row)] = {"gearRatio": sp["final_drive"]}
+    if take.get("final_drive") and sp["final_drive"]:
+        axles = ("front", "rear") if sp["driven"] == "both" else (sp["driven"],) if sp["driven"] else (base.get("diff_axle"),)
+        for ax in axles:
+            prod, chain = driveline(model, configured, ax) if ax else (None, [])
+            cands = [c for c in chain if c[0]]
+            if not prod or not cands:
+                continue
+            # the one reduction to change: a final drive part's, else the largest, else the differential
+            pick = next((c for c in cands if re.search(r"final", c[0], re.I)), None) or                 max(cands, key=lambda c: (abs(c[2] - 1) > 1e-6, c[2]))
+            others = prod / pick[2] if pick[2] else 1.0
+            value = round(sp["final_drive"] / others, 4)
+            key = pick[1] if isinstance(pick[1], str) else pick[1]
+            ch.setdefault(pick[0], {})[key] = value if isinstance(key, str) else {"gearRatio": value}
     return ch
 
 
