@@ -124,6 +124,103 @@ def direction(model, configured, bl=None):
     return out
 
 
+def tune_tie_rods(model, new_id, files, base=None, min_gain=0.3):
+    """Bump steer out of the built vehicle: each front wheel's rack end (the node its tie rod ends on, direction())
+    is moved, in height and fore-aft place, to where the wheel's toe changes least over its travel
+    (kinematics.bump_toe), the rack end of the opposite wheel the mirror image, and the slide nodes on the rack's
+    rail onto the new rail. A conversion keeps the SVJ's link vectors but not the instant centre they came from,
+    and the toe changed 0.1-0.4 deg per 10 mm of bump (a vanilla car's 0.02): the cars steered themselves as the front
+    dived. Applied only where it cuts the bump steer by min_gain or more. Returns (notes, wheels tuned); the files are
+    changed in place. The vehicle's files are read back with beamng.add_files."""
+    import json
+    from . import export
+    from .convert import _nelder_mead
+    beamng.add_files(json.dumps(files))
+    configured = json.loads(beamng.configure(new_id))
+    N = configured["geometry"]["nodes"]
+    dirs = direction(new_id, configured)
+    bl = rigidity.beams(new_id, configured)
+    springs = values.springs_and_dampers(new_id, configured)
+    notes, tuned, deltas = [], [], {}
+    owner = configured["geometry"].get("parts") or {}
+    for w in configured.get("wheels") or []:
+        if w["centre"][0] <= 0:                             # the left wheels are solved, the right ones mirror them
+            continue
+        twin = next((x for x in configured["wheels"] if x["name"][0] == w["name"][0] and x["centre"][0] < 0), None)
+        e, e2 = _tie_inner(new_id, configured, w, dirs, owner), None
+        if twin:
+            e2 = _tie_inner(new_id, configured, twin, dirs, owner)
+        if not e:
+            continue
+        base_toe = kinematics_bump(new_id, configured, w, None, bl, springs)
+        if base_toe is None or abs(base_toe) < 0.03:
+            continue
+        e0 = N[e]
+
+        def cost(v):
+            n2 = dict(N)
+            n2[e] = [e0[0], v[0], v[1]]
+            t = kinematics_bump(new_id, configured, w, n2, bl, springs)
+            return 1e3 if t is None else t * t + 2.0 * math.dist(n2[e], e0) ** 2
+        best, _ = _nelder_mead(cost, [e0[1], e0[2]], 0.03)
+        if math.dist([e0[0], best[0], best[1]], e0) > 0.15:
+            continue
+        n2 = dict(N)
+        n2[e] = [e0[0], best[0], best[1]]
+        after = kinematics_bump(new_id, configured, w, n2, bl, springs)
+        if after is None or abs(after) > (1 - min_gain) * abs(base_toe):
+            continue
+        for node, pos in ((e, n2[e]), (e2, [N[e2][0], best[0], best[1]] if e2 else None)):
+            if node and pos:
+                deltas[node] = [pos[i] - N[node][i] for i in range(3)]
+        notes.append(f"{w['name']}: rack end {e} moved {math.dist(e0, n2[e]) * 1000:.0f} mm for the least bump steer "
+                     f"({base_toe:+.3f} deg per 10 mm of bump, {after:+.3f} now)")
+        tuned.append(w["name"])
+    if not deltas:
+        return notes, tuned
+    # the slide nodes on the rack's rail follow the new rail
+    moved = {n: [N[n][i] + d[i] for i in range(3)] for n, d in deltas.items()}
+    for sn, ra, rb, _ in configured["geometry"].get("slides") or []:
+        if (ra in moved or rb in moved) and sn in N and ra in N and rb in N:
+            a, b = moved.get(ra, N[ra]), moved.get(rb, N[rb])
+            ab = [b[i] - a[i] for i in range(3)]
+            l2 = sum(t * t for t in ab)
+            if l2 > 1e-9:
+                t = max(0.0, min(1.0, sum((N[sn][i] - a[i]) * ab[i] for i in range(3)) / l2))
+                q = [a[i] + t * ab[i] for i in range(3)]
+                deltas[sn] = [q[i] - N[sn][i] for i in range(3)]
+    for path, text in list(files.items()):
+        if not path.endswith(".jbeam"):
+            continue
+        doc = json.loads(text)
+        hit = False
+        for part in doc.values():
+            if isinstance(part, dict) and export._fit_nodes(part, deltas, {}):
+                hit = True
+        if hit:
+            files[path] = json.dumps(doc, indent=1)
+    return notes, tuned
+
+
+def _tie_inner(model, configured, wheel, dirs, owner):
+    """The node a wheel's tie rod (a toe link at the rear) ends on, inboard: a front wheel's rack end (direction());
+    else the inner node the role table names for its suspension (roles.for_corner), else the archetype's own."""
+    d = dirs.get(wheel["name"])
+    if d:
+        return d["rack_end"]
+    N = configured["geometry"]["nodes"]
+    from . import roles
+    rt = roles.for_corner(owner, N, wheel)
+    if rt and rt["pivots"].get("tie_rod"):
+        return rt["pivots"]["tie_rod"][0]
+    own = f"bf{wheel['name']}tie"
+    return own if own in N else None
+
+
+def kinematics_bump(model, configured, wheel, nodes, bl, springs):
+    return kinematics.bump_toe(model, configured, wheel, nodes, bl, springs)
+
+
 def fix_files(model, base_configured, new_id, files):
     """Check the written vehicle's steering against its base's and reverse what turns the other way (fix). The
     vehicle's files are read back with beamng.add_files, so they must be what is written. Returns (notes, wheels

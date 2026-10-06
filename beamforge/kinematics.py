@@ -287,6 +287,40 @@ def follows_wheel(model, configured, wheel, bl=None, springs=None, share=0.2):
     return moving
 
 
+def bump_toe(model, configured, wheel, nodes=None, bl=None, springs=None):
+    """Bump steer of a wheel: the toe change (degrees) of its axle for 10 mm of the wheel's travel up, from the
+    static solve (the body held, the wheel's average height pushed, its tilt free). Positive turns the wheel's
+    front outwards. nodes: positions to test in place of the configured ones (a rack end moved). The solve is
+    linear, so this is the slope: over 80 mm of bump, eight times it. A vanilla car's is about +-0.02."""
+    geo = configured["geometry"]
+    nodes, owner = nodes or geo["nodes"], geo.get("parts") or {}
+    bl = bl if bl is not None else beam_list(model, configured)
+    springs = springs if springs is not None else values.springs_and_dampers(model, configured)
+    measured = {(r["part"], r["row"]) for r in springs if r["kind"] == "damper"}
+    spring_rows = {(r["part"], r["row"]) for r in springs if r["kind"] == "spring"}
+    load = [b for b in bl if (b["part"], b["row"]) not in measured and b["values"].get("beamSpring", 0) > 0
+            and ((b["part"], b["row"]) in spring_rows or not NO_LOAD.search(b["type"]))]
+    axle = [wheel["node1"], wheel["node2"]]
+    if not all(n in nodes for n in axle):
+        return None
+    centre = [(nodes[axle[0]][i] + nodes[axle[1]][i]) / 2 for i in range(3)]
+    A, idx, kmax = _system(nodes, owner, load, axle, [centre], None, geo.get("slides"))
+    if not kmax:
+        return None
+    f = [0.0] * len(A)
+    big = kmax * 1e3
+    io, ii = 3 * idx[axle[0]] + 2, 3 * idx[axle[1]] + 2        # the axle's average height is pushed, its tilt is free
+    for p in (io, ii):
+        for q in (io, ii):
+            A[p][q] += big / 4
+        f[p] += big / 2 * STEP
+    x = _solve(A, f)
+    o, i_ = (axle[0], axle[1]) if abs(nodes[axle[0]][0]) > abs(nodes[axle[1]][0]) else (axle[1], axle[0])
+    d0 = [nodes[o][k] - nodes[i_][k] for k in range(3)]
+    d1 = [d0[k] + x[3 * idx[o] + k] - x[3 * idx[i_] + k] for k in range(3)]
+    return math.degrees(math.atan2(d1[1], d1[0]) - math.atan2(d0[1], d0[0])) * (0.01 / STEP)
+
+
 def corner_ratios(model, configured, wheels, bl=None, springs=None):
     """{(part, row): motion ratio} for the spring and damper beams at the wheels of one axle (pushed
     up together): the beam's length change over the wheel travel (positive: shortens as it goes up)."""

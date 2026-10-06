@@ -128,6 +128,43 @@ How it was found (October 2026), so the wrong turns are not taken again:
 The diagnosis was made with a set of builds that differ in one thing each, named for what they test.
 Do that again for the next symptom that does not move with the obvious fixes.
 
+## Ride height: the springs hold the SVJ's static pose
+
+The nodes are placed where the SVJ's hardpoints are, its static (loaded) pose. A spring's preload
+(`precompressionRange`, metres it starts compressed) must therefore hold the car there: it carries the corner's
+sprung weight over its motion ratio, `((axle kg / 2) - the wheel and what follows it) x g / mr`, over the new spring
+rate. The first version kept the base's *sag* (the base is designed sitting on its springs, compressed by its load
+beyond the preload) and so lowered the car a second time, 4-5 cm below the SVJ's ride height: the Miata scraped its
+floor. Checked on the written cars as the spring's force at the wheel over the sprung weight: 1.00 on all of them
+(the bases are 0.78 to 1.16). The archetype's own springs have always been set this way; the wheel's own mass
+(its tyre nodes) counts as unsprung there too.
+
+## Bump steer: the toe must hold over the travel
+
+A converted suspension keeps the SVJ's link vectors (each from its own joint) but the base's upright, so the links
+no longer share the instant centre they had on the SVJ's, and the wheel's toe changes as it moves. Measured as the
+toe change per 10 mm of the wheel's travel (`kinematics.bump_toe`, the static solve with the body held; vanilla
+cars are +-0.02 deg): the converted E30 was +0.39 at the front and +0.77 at the rear (6 deg over 80 mm), the Z4 and
+E92 fronts -0.14 and +0.11, the Miata's rear +0.07, the Subaru's front -0.15 as built. A front that steers itself
+by a degree as it dives under braking or cornering is the "dives when turning" and the wobble.
+
+- `steering.tune_tie_rods`, on every build: each tie rod's inner node (the rack end at the front, the toe link's at
+  the rear: the base's, or the archetype's own) is moved in height and fore-aft place, 4-14 mm, to where the wheel's
+  toe changes least; the opposite side mirrors it, and the slide nodes on the rack's rail follow. After it every car
+  is within +-0.06 (the Civic +0.02 front, the Subaru -0.00 and -0.003).
+- `convert.bump_steer_tie_rod`, for a double wishbone corner converted from a double wishbone base (the Civic's
+  front), before the build: the same, with the project's kinematics (`suspension.study_svj` on a copy of the SVJ with
+  the converted points; 0.76 deg over +-60 mm down to 0.07).
+- `keep_arms` in roles.py (the E30): the SVJ's arm points are of another layout than the base's arm (its real front
+  arm is an L-arm located by the anti-roll bar, its rear a semi-trailing arm; the SVJ gives wishbone points), and
+  moving the base's arms onto them wrecked the geometry. The arms keep the base's own place, moved with the corner.
+  The E30's wheel hold went from 17 % to 102 % laterally of the base's.
+
+The kinematics solver (`suspension.study_svj`) can be trusted for double wishbones (the vanilla small hatchback and the SVJ
+both give sane roll centres, camber gain and kingpin) but not for MacPherson fronts as set up from the nodes of a
+base: the vanilla front-drive compact and RWD coupe come out with roll centres of 2-3 m and 17-30 deg of camber change. So an SVJ's
+strut front cannot be called inconsistent by it; the bump test on the built beams is the check there.
+
 ## Results so far
 
 RWD saloon fitted to the BMW E30 example, with a real car body mesh as the target (the E30 example ships none):

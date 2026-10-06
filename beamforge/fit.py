@@ -311,7 +311,8 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
                 side = 1.0 if (nodes[w["node1"]][0] + nodes[w["node2"]][0]) > 0 else -1.0
                 waxis = ([side * math.cos(c) * math.cos(t_), -math.cos(c) * math.sin(t_), -math.sin(c)]
                          if c is not None and t_ is not None else None)
-                tg, info = convert.corner(nodes, rt, w, svj, corner, [h for h in hps if h["corner"] == corner], waxis)
+                tg, info = convert.corner(nodes, rt, w, svj, corner, [h for h in hps if h["corner"] == corner], waxis,
+                                         {"yf": yf, "ground": ax["ground"]})
                 targets.update(tg)
                 mapping.extend(info["rows"])
                 notes.extend(info["notes"])

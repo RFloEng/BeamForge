@@ -517,24 +517,36 @@ def apply(model, configured, svj, take, study=None, length_factors=None, floors=
     axle_kg = {"front": (a0[0], a1[0]), "rear": (a0[1], a1[1])} if a0 and a1 else {}
     sd = springs_and_dampers(model, configured)
     spring_k = {r["axle"]: _num_or(r["values"].get("beamSpring"), vars_, None) for r in sd if r["kind"] == "spring"}
+    # what a wheel's spring does not carry: the wheel and everything that follows it (hub, arms' outer ends)
+    node_rows, wheel_kg = node_weights(model, configured)
+    nw = {}
+    for _, _, nid, kg, _ in node_rows:
+        nw[nid] = nw.get(nid, 0.0) + kg
+    yf_, yr_ = _axles(configured)
+    each = {}
+    for w_ in configured.get("wheels") or []:
+        ax_ = _axle_of(w_["centre"][1], yf_, yr_)
+        each.setdefault(ax_, []).append(sum(nw.get(n, 0.0) for n in kinematics.follows_wheel(model, configured, w_))
+                                        + wheel_kg / max(1, len(configured["wheels"])))
+    unsprung = {ax_: sum(v) / len(v) for ax_, v in each.items()}
     damp_floor = set()
     for r in sd:
         s = sv.get(r["axle"]) or {}
         new = {}
         if r["kind"] == "spring" and take.get(f"spring_{r['axle']}") and s.get("coil_rate"):
             new["beamSpring"] = s["coil_rate"]
-            # the ride height: a vanilla car is designed sitting on its springs, each compressed by its load
-            # beyond its preload (precompressionRange, metres it starts compressed): that sag is kept, so
-            # the car settles where the base did. The spring's share of its axle's load: (axle kg x g / 2)
-            # over the spring's motion ratio, as the base and as the new car will carry it.
+            # the ride height: the nodes are placed where the SVJ's hardpoints are, its static (loaded) pose, so
+            # the springs' preload (precompressionRange, metres it starts compressed) holds the car there: the
+            # spring carries the corner's sprung weight over its motion ratio, no more and no less. (Keeping
+            # the base's sag, as this did, put it on top of that: the car settled 4-5 cm below the SVJ's ride
+            # height and scraped its floor.) The sprung weight: (axle kg x g / 2) less the wheel and what
+            # follows it, as the new car will carry it.
             k0 = _num_or(r["values"].get("beamSpring"), vars_, None)
             pr = _num_or(r["values"].get("precompressionRange"), vars_, None)
             if k0 and pr is not None and axle_kg.get(r["axle"]):
                 mr = ((base_mr or {}).get(r["axle"]) or {}).get("spring") or 1.0
-                f0 = axle_kg[r["axle"]][0] * 9.81 / 2 / mr
-                f1 = axle_kg[r["axle"]][1] * 9.81 / 2 / mr
-                sag = f0 / k0 - pr
-                new["precompressionRange"] = round(max(0.002, f1 / s["coil_rate"] - sag), 4)
+                f1 = (axle_kg[r["axle"]][1] / 2 - unsprung.get(r["axle"], 0.0)) * 9.81 / mr
+                new["precompressionRange"] = round(max(0.002, f1 / s["coil_rate"]), 4)
         if r["kind"] == "damper":
             if take.get(f"damp_bump_{r['axle']}") and s.get("damp_bump"):
                 new.update(beamDamp=s["damp_bump"], beamDampFast=s["damp_bump_fast"], beamDampVelocitySplit=s["damp_split"])

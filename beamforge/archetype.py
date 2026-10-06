@@ -32,6 +32,8 @@ HUB_K, WHEEL_K, ARM_K, TIE_K, MOUNT_K, RACK_K, SLIDE_K = 7501000, 9001000, 17001
 MOUNTS = 5            # body nodes each mounted node is beamed to
 MOUNTS_MIN = 4        # at least this many, or the reach grows
 MOUNTS_PIVOT = 8      # an arm pivot's mounts: it takes the arm's whole load, in every direction
+MOUNT_K_PIVOT = 9001000   # N/m each: the vanilla arm's legs are 10-17 MN/m straight onto the subframe, and a pivot
+                          # on eight 4.5 MN/m beams to far nodes was softer than that
 MOUNT_CLOSE = 0.03    # m: the closest a subframe node may be to a pivot it is mounted to
 MOUNT_KG = 2.0        # kg: lighter nodes (flexbody helpers) are not mounted to
 REUSE_NEAR = 0.10     # m: the base's own node this close to an archetype point is the point, moved onto it
@@ -40,7 +42,7 @@ MOUNT_NEAR = 0.10     # m: closer body nodes are not mounted to (a short stiff b
 MOUNT_C = 80          # N s/m: the mounts' damping (light: the body nodes' damping is near its limit)
 ROOM = 1.0            # of a body node's stiffness limit that its mounts may fill
 MOUNT_REACH = 0.45    # m: no farther body nodes
-PIVOT_KG, TOP_KG, RACK_KG = 2.5, 2.5, 3.0
+PIVOT_KG, TOP_KG, RACK_KG = 5.0, 2.5, 3.0
 HUB_SHARE = {"h1": 0.3, "h2": 0.1, "h3": 0.2, "h4": 0.2, "h5": 0.2}   # of the corner's unsprung kg
 STEER_C, STEER_C_FAST = 80, 800   # N s/m: steering dampers, slow and fast (the front-drive compact's)
 NODE_K_INDEX = 4.0    # an archetype node's k dt^2 / m at most (the vanilla front-drive compact's nodes reach 6.8)
@@ -124,7 +126,7 @@ def _take(room, node, k, c):
     room["c"][node] = room["c"].get(node, 0.0) - c
 
 
-def _mounts(at, nodes, kept, weights, side, room, near_ok=frozenset(), count=MOUNTS):
+def _mounts(at, nodes, kept, weights, side, room, near_ok=frozenset(), count=MOUNTS, k=MOUNT_K):
     """The body nodes a mounted node is beamed to: the MOUNTS nearest that stay, within MOUNT_REACH, on
     its side of the car (or near the middle), not lighter than MOUNT_KG, not closer than MOUNT_NEAR.
     near_ok: nodes it may be mounted to closer than MOUNT_NEAR (down to MOUNT_CLOSE): the subframe's, which
@@ -146,7 +148,7 @@ def _mounts(at, nodes, kept, weights, side, room, near_ok=frozenset(), count=MOU
     while _rank(unit(dirs(out))) < 3 and rest:
         out.append(rest.pop(0))
     for n in out:
-        _take(room, n, MOUNT_K, MOUNT_C)
+        _take(room, n, k, MOUNT_C)
     return out
 
 
@@ -336,10 +338,13 @@ def apply(files, model, configured, svj, place, loads, built, axles=None, only=N
     # the exported parts, by name
     docs = {p: json.loads(t) for p, t in files.items() if p.endswith(".jbeam")}
     where = {}
+    new_id = next((p.split("/")[1] for p in docs if p.startswith("vehicles/")), "")
     for p, doc in docs.items():
         for name, part in doc.items():
             if isinstance(part, dict):
                 where.setdefault(name, (p, part))
+                if new_id and name.startswith(new_id + "_"):         # a shared part regenerated under the new id: also
+                    where.setdefault(name[len(new_id) + 1:], (p, part))     # by the base's name, which the active parts use
     active = set(owner.values()) | {r["part"] for r in springs}
     for n, _ in _walk_tree(configured.get("tree") or {}):
         active.add(n)
@@ -417,8 +422,9 @@ def apply(files, model, configured, svj, place, loads, built, axles=None, only=N
 
     # per corner: the archetype's nodes and beams, in the base's suspension part of that corner
     unsprung = {}
+    wheel_each = values.node_weights(*built)[1] / max(1, len(configured.get("wheels") or []))   # a wheel's own kg
     for c, (w, pts, moving) in corners.items():
-        unsprung[c] = sum(weights.get(n, 0.0) for n in moving) or 20.0
+        unsprung[c] = sum(weights.get(n, 0.0) for n in moving) or 20.0      # the hub's nodes' weight (hub, arms' ends)
     names_of, host_of, host_name_of = {}, {}, {}
     taken, moved = set(), {}                       # base nodes the archetype uses as its points, and their moves
     base_tags = {}                                 # and the mesh groups they join (_tag_base)
@@ -428,6 +434,24 @@ def apply(files, model, configured, svj, place, loads, built, axles=None, only=N
     for sn, ra, rb, _ in geo.get("slides") or []:
         if not ({sn, ra, rb} & removed):            # (a rail that goes with the hub is deleted, its nodes are free)
             on_rails |= {sn, ra, rb}
+    # Nodes no arm pivot or strut top may be mounted to. A mounted node's load goes through its anchors, so these
+    # would be loaded wrongly: the steering rack's slide nodes (the rack moves with the steering and drags the pivot
+    # along: v11's Subaru pivots hung on fsub5, and the front broke), nodes a hydro or a torsion bar drives, and the
+    # engine's mount nodes (the arm's load through the engine's own mounts: the Z3 hung its pivot on fsub3 / fsub4 and
+    # the oil message came) unless the base's own arm hangs on them (the front-drive compact's lower arm is on fsub1 / fsub2,
+    # which are its engine mounts too).
+    mech = set()
+    for name in active:
+        part_ = (where.get(name) or (None, None))[1]
+        if part_:
+            for sec in ("hydros", "torsionbars"):
+                if sec in part_:
+                    mech |= set(re.findall(r'"([A-Za-z0-9_]+)"', json.dumps(part_[sec])))
+    base_anchors = {o for b in bl for a, o in ((b["a"], b["b"]), (b["b"], b["a"]))
+                    if a in removed and o not in removed and not kinematics.NO_LOAD.search(b["type"])
+                    and b["values"].get("beamSpring", 0) >= 4e6}
+    avoid = on_rails | mech | (mount_nodes - base_anchors)
+    mount_pool = [n for n in kept if n not in avoid]
     front_rack = []
     for c, (w, pts, moving) in sorted(corners.items()):
         hosts = {}
@@ -551,9 +575,13 @@ def apply(files, model, configured, svj, place, loads, built, axles=None, only=N
                 bt.append([nm[k], nm[piv], {"beamDampFast": STEER_C_FAST, "beamDampVelocitySplit": 0.1, "dampCutoffHz": 750}])
         bt.append(dict(BEAM_RESET, beamSpring=MOUNT_K, beamDamp=MOUNT_C, beamDeform=25000, beamStrength=170000))
         for k, _ in body:
-            sub = frozenset(n for n in kept if owner.get(n) == host_name_of[c] and n not in mount_nodes and n not in on_rails)
-            for m in _mounts(pts[k], nodes, kept, weights, side, room, sub, MOUNTS_PIVOT if k in ("p0", "p1") else MOUNTS):
-                bt.append([nm[k], m])
+            # the subframe's nodes may be mounted to from as close as MOUNT_CLOSE, the engine's mount nodes too when the
+            # base's own arm hangs on them (base_anchors): loading them is the vanilla way, moving them was the oil
+            sub = frozenset(n for n in mount_pool if owner.get(n) == host_name_of[c] and (n not in mount_nodes or n in base_anchors))
+            pivot = k in ("p0", "p1")
+            for m in _mounts(pts[k], nodes, mount_pool, weights, side, room, sub, MOUNTS_PIVOT if pivot else MOUNTS,
+                             MOUNT_K_PIVOT if pivot else MOUNT_K):
+                bt.append([nm[k], m, {"beamSpring": MOUNT_K_PIVOT}] if pivot else [nm[k], m])
         # the strut: its rail, spring, damper, bump stop and travel limit
         rails = part.get("rails") if isinstance(part.get("rails"), dict) else {}
         part["rails"] = rails
@@ -615,7 +643,7 @@ def apply(files, model, configured, svj, place, loads, built, axles=None, only=N
         rebound_f = damp("beamDampReboundFast", "damp_rebound_fast", rebound * 0.5)
         split = sv.get("damp_split") or _num(dv.get("beamDampVelocitySplit"), 0.1)
         # the preload: the corner's sprung weight on the spring at the SVJ's ride height
-        load = (loads or {}).get(c, 0.0) - unsprung[c] * 9.81
+        load = (loads or {}).get(c, 0.0) - (unsprung[c] + wheel_each) * 9.81        # the spring does not carry the wheel
         pre = round(max(0.002, load / mr / k), 4)
         bottom = "h2" if "h2" in pts else "h1"
         bt = part["beams"]

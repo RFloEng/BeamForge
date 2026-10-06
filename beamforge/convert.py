@@ -17,7 +17,10 @@ Pivots with no SVJ counterpart (a trailing arm against an SVJ without one) are l
 displacement field, with the rest of the body.
 """
 
+import copy
 import math
+
+from . import suspension, svj as svjmod
 
 # SVJ link names and upright points -> roles
 LINK_ROLE = (("semi_trailing", "semi_trailing_arm"), ("trailing", "trailing_arm"), ("upper", "upper_arm"),
@@ -100,11 +103,112 @@ def _mean(ps):
     return [sum(p[i] for p in ps) / len(ps) for i in range(3)]
 
 
-def corner(nodes, roles, wheel, svj, corner_name, hps, wheel_axis=None):
+BUMP_TRAVEL = (-60, -40, -20, 20, 40, 60)     # mm of wheel travel the bump steer is judged over
+BUMP_STAY = 40.0                              # weight of the tie rod point staying near the SVJ's (deg^2 per m^2)
+
+
+def _nelder_mead(f, x0, step, iters=60):
+    """A small Nelder-Mead minimiser for f over a few variables (pure python)."""
+    n = len(x0)
+    pts = [list(x0)] + [[x0[j] + (step if j == i else 0.0) for j in range(n)] for i in range(n)]
+    vals = [f(p) for p in pts]
+    for _ in range(iters):
+        order = sorted(range(n + 1), key=lambda i: vals[i])
+        pts, vals = [pts[i] for i in order], [vals[i] for i in order]
+        c = [sum(p[j] for p in pts[:-1]) / n for j in range(n)]
+        refl = [c[j] + (c[j] - pts[-1][j]) for j in range(n)]
+        fr = f(refl)
+        if fr < vals[0]:
+            exp = [c[j] + 2 * (c[j] - pts[-1][j]) for j in range(n)]
+            fe = f(exp)
+            pts[-1], vals[-1] = (exp, fe) if fe < fr else (refl, fr)
+        elif fr < vals[-2]:
+            pts[-1], vals[-1] = refl, fr
+        else:
+            con = [c[j] + 0.5 * (pts[-1][j] - c[j]) for j in range(n)]
+            fc = f(con)
+            if fc < vals[-1]:
+                pts[-1], vals[-1] = con, fc
+            else:
+                pts = [pts[0]] + [[pts[0][j] + 0.5 * (p[j] - pts[0][j]) for j in range(n)] for p in pts[1:]]
+                vals = [vals[0]] + [f(p) for p in pts[1:]]
+        if max(abs(pts[-1][j] - pts[0][j]) for j in range(n)) < 5e-4:
+            break
+    i = min(range(n + 1), key=lambda k: vals[k])
+    return pts[i], vals[i]
+
+
+def bump_steer_tie_rod(svj, corner_name, site, outer, tie_end, lower_piv, upper_piv, tie0):
+    """The tie rod's inner point (BeamNG) that keeps the wheel's toe steadiest over its travel, for a double wishbone
+    corner whose outer points and arm pivots are as the conversion put them, found with the project's own kinematics
+    (suspension.study_svj on a copy of the SVJ with those points): (point, bump steer before, after) in degrees
+    (the largest toe change over BUMP_TRAVEL), or None where it cannot be solved or does no better. The lateral
+    place of the point (the rack's) stays; its height and fore-aft place are free, held near the SVJ's by a small
+    penalty. outer: {"wheel_center", "lower_ball_joint", "upper_ball_joint"}; lower_piv / upper_piv: the arms' inner
+    points, front to rear; all BeamNG, of the left-hand side (the right side is mirrored by the caller). site: the
+    SVJ's {"yf", "ground"} on the vehicle."""
+    tpl = (svj.get("suspension") or {}).get(corner_name)
+    if not tpl or "topology" not in tpl:
+        return None
+    sae = lambda p: [round(v, 5) for v in svjmod.to_sae(p, site["yf"], site["ground"])]   # noqa: E731
+
+    def doc(inner):
+        d = copy.deepcopy(svj)
+        d["suspension"] = {corner_name: copy.deepcopy(tpl)}
+        topo = d["suspension"][corner_name]["topology"]
+        up = topo["upright"]["hardpoints"]
+        for k, p in outer.items():
+            up[k] = sae(p)
+        if "toe_link_outer" in up:
+            up["toe_link_outer"] = sae(tie_end)
+        up["steering_tie_rod_end"] = sae(tie_end)
+        for link in topo["links"]:
+            role = _role(link.get("name", ""))
+            if role == "lower_arm":
+                link["inboard_points"] = [sae(p) for p in lower_piv]
+            elif role == "upper_arm":
+                link["inboard_points"] = [sae(p) for p in upper_piv]
+            elif role == "tie_rod":
+                link["inboard_points"] = [sae(inner)]
+        return d
+
+    axle = "front" if corner_name.startswith("F") else "rear"
+
+    def toes(inner):
+        try:
+            cv = suspension.study_svj(doc(inner), 70)["corners"][axle]["curves"]
+        except Exception:                                                   # a pose the solver cannot reach
+            return None
+        out = []
+        for t in BUMP_TRAVEL:
+            i = min(range(len(cv["travel_mm"])), key=lambda k: abs(cv["travel_mm"][k] - t))
+            out.append(cv["toe_deg"][i])
+        return out
+
+    def cost(v):
+        inner = [tie0[0], v[0], v[1]]
+        t = toes(inner)
+        if t is None:
+            return 1e6
+        return sum(x * x for x in t) + BUMP_STAY * (math.dist(inner, tie0) ** 2)
+
+    before = toes(list(tie0))
+    if before is None:
+        return None
+    best, _ = _nelder_mead(cost, [tie0[1], tie0[2]], 0.04)
+    inner = [tie0[0], best[0], best[1]]
+    after = toes(inner)
+    if after is None or max(abs(x) for x in after) >= max(abs(x) for x in before):
+        return None
+    return inner, max(abs(x) for x in before), max(abs(x) for x in after)
+
+
+def corner(nodes, roles, wheel, svj, corner_name, hps, wheel_axis=None, site=None):
     """The converted corner: ({node: target position}, {"upright": [nodes kept rigid], "rows": mapping
     rows for the report, "notes": [...]}). nodes: the base's positions (the rest geometry); roles:
     roles.for_corner(); hps: this corner's svj.hardpoints() rows; wheel_axis: the wheel's outward axis
-    the SVJ asks for (static camber and toe), else the base's kept relative to the upright."""
+    the SVJ asks for (static camber and toe), else the base's kept relative to the upright; site: the SVJ's
+    {"yf", "ground"} on the vehicle, which lets a double wishbone corner's tie rod be put where its bump steer is least."""
     up_svj, links_svj = _svj_points(svj, corner_name, hps)
     if "wheel_center" not in up_svj:
         return {}, {"upright": [], "rows": [], "notes": [f"{corner_name}: the SVJ has no wheel centre"]}
@@ -175,6 +279,16 @@ def corner(nodes, roles, wheel, svj, corner_name, hps, wheel_axis=None):
             notes.append(f"{corner_name}: {role} ({', '.join(base_nodes)}) has no SVJ counterpart: left to the field")
             continue
         joint = JOINT_OF.get(role)
+        if roles.get("keep_arms") and role in ("lower_arm", "upper_arm") and joint and jb.get(joint):
+            # the base's arm as it is, moved with its ball joint (the SVJ's points are not used)
+            landed = _mean([targets[n] for n in jb[joint] if n in targets] or [place(nodes[n]) for n in jb[joint]])
+            was = _mean([nodes[n] for n in jb[joint]])
+            for n in base_nodes:
+                targets[n] = [nodes[n][i] + landed[i] - was[i] for i in range(3)]
+                rows.append({"corner": corner_name, "name": role, "kind": "chassis", "nodes": [n], "target": targets[n],
+                             "distance": round(math.dist(nodes[n], targets[n]), 4), "by": "role"})
+            notes.append(f"{corner_name}: {role} kept as the base's, moved with its ball joint (the SVJ's arm points do not suit it)")
+            continue
         shift = [0.0, 0.0, 0.0]
         if joint and jb.get(joint) and up_svj.get(joint):
             landed = _mean([targets[n] for n in jb[joint] if n in targets] or [place(nodes[n]) for n in jb[joint]])
@@ -190,4 +304,29 @@ def corner(nodes, roles, wheel, svj, corner_name, hps, wheel_axis=None):
             targets[n] = p
             rows.append({"corner": corner_name, "name": role, "kind": "chassis", "nodes": [n], "target": p,
                          "distance": round(math.dist(nodes[n], p), 4), "by": "role"})
+    # a double wishbone corner's tie rod: the base upright's shape is kept, so the SVJ's link vectors, each from its own
+    # joint, no longer share the SVJ's instant centre, and the toe changes over the travel (the Civic's, 0.2 deg in the
+    # SVJ, came out 1 deg at 80 mm of bump: the car steered itself as the front dived). The inner point of the rod is
+    # put where the project's kinematics give the steadiest toe.
+    tie_nodes = roles["pivots"].get("tie_rod") or []
+    if site and tie_nodes and roles["pivots"].get("lower_arm") and roles["pivots"].get("upper_arm") \
+            and jb.get("upper_ball_joint") and jb.get("lower_ball_joint") and jb.get("tie_rod_end") \
+            and all(n in targets for n in tie_nodes + roles["pivots"]["lower_arm"] + roles["pivots"]["upper_arm"]):
+        side = 1.0 if W1[0] >= 0 else -1.0
+        mirror = lambda p: [side * p[0], p[1], p[2]]                       # the left-hand side's frame   # noqa: E731
+        tg = lambda ns: [mirror(targets[n]) for n in sorted(ns, key=lambda n: targets[n][1])]     # noqa: E731
+        pos = lambda ns: mirror(_mean([targets[n] for n in ns]))                                 # noqa: E731
+        res = bump_steer_tie_rod(svj, corner_name[0] + "L", site,
+                                 {"wheel_center": mirror(W1), "lower_ball_joint": pos(jb["lower_ball_joint"]),
+                                  "upper_ball_joint": pos(jb["upper_ball_joint"])},
+                                 pos(jb["tie_rod_end"]), tg(roles["pivots"]["lower_arm"]), tg(roles["pivots"]["upper_arm"]),
+                                 mirror(targets[tie_nodes[0]]))
+        if res:
+            inner, before, after = res
+            targets[tie_nodes[0]] = mirror(inner)
+            for r in rows:
+                if r.get("nodes") == [tie_nodes[0]]:
+                    r["target"], r["distance"] = targets[tie_nodes[0]], round(math.dist(nodes[tie_nodes[0]], targets[tie_nodes[0]]), 4)
+            notes.append(f"{corner_name}: tie rod inner point placed for the least bump steer (toe change over +-60 mm of "
+                         f"travel {before:.2f} deg as converted, {after:.2f} deg now)")
     return targets, {"upright": upright, "rows": rows, "notes": notes}

@@ -199,6 +199,13 @@ stiff bracket of beams to the nearest subframe nodes, the engine-mount nodes inc
 moved. The 10 cm minimum of `_mounts` stays out of that (it kept the first build's short stiff beams off the
 fuel tank's trigger beam).
 
+Where a pivot or strut top may be mounted (`_mounts`): never to the steering rack's slide nodes, nodes a hydro
+or a torsion bar drives, or the engine's mount nodes (`avoid`), unless the base's own lower arm hangs on them
+(the front-drive compact's is on `fsub1` / `fsub2`, its engine mounts too). v11 mounted pivots to `fsub5` (the rack's slide node:
+steering dragged the pivot, and the Subaru's front broke) and the Z3's to `fsub3` / `fsub4` (engine mounts; the oil
+message). The reuse loop and the mount list used the same variable name for a while, which hid the filter: the
+audit (pivots and tops by the nodes they are anchored to) is the check.
+
 A steered corner needs the base's steering rack (a steering part with hydros) for its tie rod. A base
 without one, the older RWD saloon's pitman arm and idler (the E30), keeps its own suspension at that corner: an archetype
 rack of its own left the steering free in the game.

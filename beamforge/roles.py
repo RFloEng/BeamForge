@@ -15,6 +15,9 @@ Node ids are given without their side letter: "l" or "r" is added per corner. Pe
   pivots       inner pivots of each link by role (lower_arm, upper_arm, tie_rod, trailing_arm),
                front to rear
   strut        a MacPherson strut: its top node(s) and the upright node its rail starts from
+  keep_arms    True where the SVJ's arm points are no use to this base's arm (the SVJ's layout is another kind of
+               arm, or its points are inconsistent): the arms' pivots keep the base's own place relative to the
+               ball joint, and move with it
   caster       False for an upright that is a trailing arm (long, pivoting at its front): not turned to
                the SVJ's steering axis, which would swing its pivot up or down
 """
@@ -77,6 +80,10 @@ ROLES = {
         # point the linkage binds and the car does not turn
         "pivots": {"lower_arm": ["fsub1", "fsub2"]},
         "strut": {"top": ["ftop1"], "rail_start": "fhub1"},
+        # the SVJ's lower arm is not a wishbone's (the E30's real one is an L-arm located by the anti-roll bar): on
+        # the SVJ's two points the base's upright and strut moved 0.39 deg of toe per 10 mm of bump (a vanilla car's
+        # 0.02). The arm keeps the base's own geometry, moved with the corner
+        "keep_arms": True,
     },
     # older RWD saloon: semi-trailing arm rear, the hub rigid on the arm. As a lower arm (an SVJ wishbone rear):
     # its two pivots on the SVJ's lower arm's, measured from the hub's bottom
@@ -84,6 +91,8 @@ ROLES = {
         "upright": ["rhub1", "rhub2", "rhub4", "rhub5", "rhub6"],
         "joints": {"lower_ball_joint": ["rhub1"]},
         "pivots": {"lower_arm": ["rsub1ll", "rsub1"]},
+        # a semi-trailing arm on an SVJ wishbone's points: 0.77 deg of toe per 10 mm of bump (6 deg over 80 mm)
+        "keep_arms": True,
     },
     # small hatchback: double wishbone front, a lateral arm and a torque rod (the lower arm), the upper
     # arm's pivots on the body
@@ -121,6 +130,8 @@ def for_corner(parts, nodes, wheel):
                "pivots": {k: sided(v) for k, v in t.get("pivots", {}).items()}}
         if "caster" in t:
             out["caster"] = t["caster"]
+        if t.get("keep_arms"):
+            out["keep_arms"] = True
         if t.get("strut"):
             out["strut"] = {"top": sided(t["strut"]["top"]), "rail_start": t["strut"]["rail_start"] + side}
         return out
