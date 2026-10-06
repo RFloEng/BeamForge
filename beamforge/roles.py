@@ -72,7 +72,10 @@ ROLES = {
     "saloon2_suspension_F": {
         "upright": ["fhub1", "fhub3", "fhub4", "fhub5", "fwhl2"],
         "joints": {"lower_ball_joint": ["fhub1", "fwhl2"], "tie_rod_end": ["fhub3"]},
-        "pivots": {"lower_arm": ["fsub1", "fsub2"], "tie_rod": ["steer1"]},
+        # the tie rod's inner end (steer1) is left where it is: it hangs on the steering box's idler and pitman
+        # linkage (a rail with torsion bars to the pitman), which does not move with it: moved onto the SVJ's
+        # point the linkage binds and the car does not turn
+        "pivots": {"lower_arm": ["fsub1", "fsub2"]},
         "strut": {"top": ["ftop1"], "rail_start": "fhub1"},
     },
     # older RWD saloon: semi-trailing arm rear, the hub rigid on the arm. As a lower arm (an SVJ wishbone rear):
