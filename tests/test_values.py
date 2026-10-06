@@ -2,6 +2,7 @@
 
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -82,6 +83,17 @@ class TestValues(unittest.TestCase):
                                                   ("powertrain", 1): {"gearRatio": 3.73}}})
         self.assertEqual((part["mainEngine"]["idleRPM"], part["gearbox"]["gearRatios"]), (750, [-3.3, 0, 3.83]))
         self.assertEqual(part["powertrain"][1][-1]["gearRatio"], 3.73)
+
+    def test_gear_list_keeps_reverse_and_neutral(self):
+        """A gearbox's list is [reverse, neutral, 1st, ...]: the SVJ's forward ratios go after both, reverse written as a
+        template string ("$=-$gear_R") included (dropped, every gear sat one slot low: no reverse, 2nd as 1st)."""
+        svj = {"powertrain": {"layout": "FR", "gearbox": {"type": "manual", "ratios": [3.8, 2.2, 1.4]},
+                              "differentials": [{"location": "rear", "final_drive": 3.7}]}}
+        for old in ([-3.3, 0, 4.7, 3.1], ["$=-$gear_R", 0, "$gear_1", "$gear_2"]):
+            base = {"gearbox": "g", "ratios": old, "engine": None}
+            with mock.patch.object(values, "powertrain_base", return_value=base):
+                ch = values.powertrain_changes("m", {}, svj, {"gears": True})
+            self.assertEqual(ch["g"]["gearbox.gearRatios"], old[:2] + [3.8, 2.2, 1.4])
 
     def test_steering_turns(self):
         self.assertEqual(values.svj_steering({"steering": {"lock_to_lock_turns": 3.5, "overall_ratio": 20.5}}), (3.5, 20.5))

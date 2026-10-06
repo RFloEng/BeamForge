@@ -193,3 +193,18 @@ Uprights: the RWD saloon's front hub is 32 mm (rms) off the E30 upright after st
 2. ~~Stage 3: the role-based hardpoint-to-node mapping, the hardpoint table with click-to-retie, and the local displacement field.~~ Done.
 3. ~~Writing the fitted parts into the game~~: done as a new vehicle mod (see beamng-vehicles.md, *Make a new vehicle*). ~~The ties saved per suspension part~~: done.
 4. ~~The base vehicle's own suspension studied with the solver~~: done. After a fit, the suspension panel solves the SVJ's layout a second time on the base vehicle's tied nodes (before the fit) and shows both, static values side by side and curves overlaid. RWD saloon against the E30, front: kingpin inclination 10.1° against 5.3°, caster 6.7° against 0°, scrub radius 1 mm against 91 mm, roll centre 147 mm against 16 mm. Where the base's own layout differs (its multi-link rear against the E30's semi-trailing arm), the base values are an approximation, and the panel says so.
+
+## Steering lock: the rack's travel scales with its width
+
+A steering hydro moves its rack end by its `factor` times the length of the beam it works on (rack end to the opposite
+slider). Widening the rack to the SVJ's track lengthens that beam, so the same factor turns the wheels further: the
+Civic's lock went from 28 to 35 degrees, where the tie rod is nearly over centre. `steering.lock` rescales every rack
+hydro's factor so each steered wheel's full-lock angle is the base's (checked against a nonlinear static solve of the
+corner: the wheel centre's height change at lock is a few millimetres, as the base's).
+
+## Gear list: reverse and neutral are slots, not values
+
+A gearbox's `gearRatios` is `[reverse, neutral, 1st, ...]`. The base's reverse can be a template string
+(`"$=-$gear_R"`), so the SVJ's forward ratios are written after everything up to the neutral `0`, whatever is in front.
+Keeping only the numeric entries dropped the reverse and moved every gear one slot down (no reverse, neutral held the
+first ratio, the engine stalled in turns above first).

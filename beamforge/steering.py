@@ -228,8 +228,55 @@ def fix_files(model, base_configured, new_id, files):
     import json
     beamng.add_files(json.dumps(files))
     built = json.loads(beamng.configure(new_id))
-    notes, flipped = fix(files, new_id, direction(model, base_configured), direction(new_id, built))
-    return notes, flipped
+    base_dir = direction(model, base_configured)
+    notes, flipped = fix(files, new_id, base_dir, direction(new_id, built))
+    if flipped:
+        beamng.add_files(json.dumps(files))
+        built = json.loads(beamng.configure(new_id))
+    lnotes = lock(files, model, base_configured, base_dir, new_id, built, direction(new_id, built))
+    return notes + lnotes, flipped
+
+
+def lock(files, model, base_configured, base, new_id, built_configured, built):
+    """The rack hydros' factors rescaled so every steered wheel turns as far at full lock as the base's: a hydro moves
+    its rack end by its factor times the length of the beam it works on, and a rack wider than the base's (the SVJ's
+    track, an archetype's rack ends) lengthens that beam: the Civic's lock went from 28 to 35 degrees, to where the tie
+    rod is nearly over centre. Changes the files in place; returns notes."""
+    import json
+    notes = []
+    bN, nN = base_configured["geometry"]["nodes"], built_configured["geometry"]["nodes"]
+    bdr = {e: (s, f) for e, s, f in rack_drives(model, base_configured)}
+    ndr = {e: (s, f) for e, s, f in rack_drives(new_id, built_configured)}
+    scale = {}
+    for name, b in built.items():
+        a = base.get(name)
+        if not a or not b["turn"] or a["rack_end"] not in bdr or b["rack_end"] not in ndr:
+            continue
+        (sb, fb), (sn, fn) = bdr[a["rack_end"]], ndr[b["rack_end"]]
+        if not (a["rack_end"] in bN and sb in bN and b["rack_end"] in nN and sn in nN):
+            continue
+        lock_base = abs(a["turn"] * fb) * math.dist(bN[a["rack_end"]], bN[sb])
+        k = lock_base / (abs(b["turn"]) * math.dist(nN[b["rack_end"]], nN[sn]) * abs(fn))
+        if abs(k - 1) > 0.03 and 0.3 < k < 3:
+            scale[b["rack_end"]] = k
+            notes.append(f"{name}: lock {math.degrees(abs(b['turn'] * fn) * math.dist(nN[b['rack_end']], nN[sn])):.0f} deg of the "
+                         f"wider rack brought back to the base's {math.degrees(lock_base):.0f} deg (rack drive of {b['rack_end']} x {k:.2f})")
+    for path, text in list(files.items()):
+        if not scale or not path.endswith(".jbeam"):
+            continue
+        doc = json.loads(text)
+        hit = False
+        for part in doc.values():
+            t = part.get("hydros") if isinstance(part, dict) else None
+            if not (isinstance(t, list) and t and isinstance(t[0], list)):
+                continue
+            for row in t[1:]:
+                if isinstance(row, list) and row and row[0] in scale and isinstance(row[-1], dict)                         and isinstance(row[-1].get("factor"), (int, float)):
+                    row[-1]["factor"] = round(row[-1]["factor"] * scale[row[0]], 5)
+                    hit = True
+        if hit:
+            files[path] = json.dumps(doc, indent=1)
+    return notes
 
 
 def fix(files, new_id, base, built):

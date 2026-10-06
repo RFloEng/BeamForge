@@ -863,7 +863,9 @@ def powertrain_changes(model, configured, svj, take):
                 ch.setdefault(base["ecu"], {})["mainEngine.revLimiterRPM"] = sp["max_rpm"]
     if take.get("gears") and sp["ratios"] and base.get("gearbox"):
         old = base["ratios"]
-        lead = [r for r in old[:2] if isinstance(r, (int, float)) and r <= 0]   # reverse and neutral, as they were
+        # reverse and neutral, as they were: everything up to the neutral 0 (a reverse can be a template string, "$=-$gear_R")
+        neutral = next((i for i, r in enumerate(old[:3]) if isinstance(r, (int, float)) and r == 0), None)
+        lead = list(old[:neutral + 1]) if neutral is not None else [r for r in old[:2] if isinstance(r, (int, float)) and r <= 0]
         ch.setdefault(base["gearbox"], {})["gearbox.gearRatios"] = lead + list(sp["ratios"])
     if take.get("final_drive") and sp["final_drive"]:
         axles = ("front", "rear") if sp["driven"] == "both" else (sp["driven"],) if sp["driven"] else (base.get("diff_axle"),)
