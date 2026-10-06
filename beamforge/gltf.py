@@ -285,6 +285,64 @@ def named(data, pattern, is_glb=True, skip=None):
     return out
 
 
+# The suspension's visible parts (hub, arm, strut, steering rod), as the converters and modders name their
+# nodes, by role. A glTF has no skeleton or animation here (none of the AC conversions has a skin or a clip):
+# the parts are separate rigid nodes at the static pose, and which nodes they follow is for the exporter to
+# decide (a flexbody on the node groups of the part's role). Tested in order: a name takes the first role.
+PIECE_ROLES = (("tie", re.compile(r"(steer|tie).*(lever|rod|arm|link|beam)|(lever|rod|arm|link).*steer", re.I)),
+               ("hub", re.compile(r"hub|knuckle|upright|spindle", re.I)),
+               ("arm", re.compile(r"wishbone|lever|(^|[_.])arm|link|(^|[_.])rod|beam|control", re.I)),
+               ("strut", re.compile(r"strut|damper|amort|dump|spring|shock|susp", re.I)))
+# running gear, trim and other things that merely have such a word in their name
+PIECE_NOT = re.compile(r"caliper|disc|disk|rotor|pad|brake|wheel|tyre|tire|rim|wiper|cockpit|dash|steer_hr|steer_lr|_hr$|"
+                       r"damage|gear|seat|interior|cinture|bolt|bullone|badge|logo|light|lamp|glass|window|door|hood|bonnet|"
+                       r"bumper|mirror|exhaust|engine|motor", re.I)
+
+
+def susp_pieces(data, is_glb=True):
+    """[(node name, role)] of the suspension's visible parts in a file: the topmost mesh-bearing nodes whose
+    names read as a hub, arm, strut or steering rod (PIECE_ROLES), outside running gear and trim (PIECE_NOT);
+    each name once, in file order."""
+    doc, _ = _document(data, is_glb, None)
+    return _pieces(doc)
+
+
+def _pieces(doc):
+    nodes = doc.get("nodes", [])
+    out = []
+
+    def has_mesh(ni):                    # a mesh of its own at or below, not counting running gear and trim
+        if PIECE_NOT.search(nodes[ni].get("name") or ""):
+            return False
+        return "mesh" in nodes[ni] or any(has_mesh(c) for c in nodes[ni].get("children", []))
+
+    def role_of(name):
+        return None if PIECE_NOT.search(name) else next((r for r, rx in PIECE_ROLES if rx.search(name)), None)
+
+    def finer(ni):                       # a node below this one that is a piece too (the corner's group holds its parts)
+        for c in nodes[ni].get("children", []):
+            nm = nodes[c].get("name") or ""
+            if not PIECE_NOT.search(nm) and ((role_of(nm) and has_mesh(c)) or finer(c)):
+                return True
+        return False
+
+    def walk(ni):
+        name = nodes[ni].get("name") or ""
+        if PIECE_NOT.search(name):
+            return
+        role = role_of(name)
+        if role and has_mesh(ni) and not finer(ni):
+            if all(name != n for n, _ in out):
+                out.append((name, role))
+            return
+        for c in nodes[ni].get("children", []):
+            walk(c)
+    scenes = doc.get("scenes") or [{"nodes": list(range(len(nodes)))}]
+    for ni in scenes[doc.get("scene", 0)].get("nodes", []):
+        walk(ni)
+    return out
+
+
 def positions(data, is_glb=True, under=None, buffers=None, limit=60000, skip=None):
     """World-space vertex positions of the meshes in a .glb (or .gltf JSON) file, in the file's own axes.
 

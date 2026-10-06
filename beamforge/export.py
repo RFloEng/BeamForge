@@ -325,6 +325,36 @@ def _glass(v, svj, path, place, body):
     return list(rows.values())
 
 
+PIECE_REACH = 0.9      # m: a suspension piece belongs to a wheel when its middle is this close to its centre
+PIECE_MID = 0.1        # m: a piece across the centre line (a front beam, both springs in one mesh) is no wheel's
+
+
+def susp_pieces(v, svj, path, place):
+    """The suspension's visible parts in an SVJ mesh file (gltf.susp_pieces) that belong to one wheel:
+    [{"node", "role", "corner"}], corner being the wheel nearest to the part's middle, in the placed
+    vehicle's frame; a part across the centre line or far from every wheel is left out (it stays in the body)."""
+    glb = path.lower().endswith(".glb")
+    with open(path, "rb") as fh:
+        data = fh.read()
+    axes = svjmod.gltf_axes(svj)
+    off = svjmod.mesh_offset(svj, data, glb)[0] or [0.0, 0.0, 0.0]
+    wheels = [(w["name"], w["centre"]) for w in v.get("wheels") or [] if w.get("centre")]
+    out = []
+    for name, role in gltf.susp_pieces(data, glb):
+        pos = gltf.positions(data, glb, under=name)
+        if not pos or not wheels:
+            continue
+        pts = [svjmod.from_sae([x + o for x, o in zip(svjmod.gltf_to_sae(p, axes), off)], place["yf"], place["ground"]) for p in pos]
+        lo, hi = ([f(p[i] for p in pts) for i in range(3)] for f in (min, max))
+        if lo[0] < -PIECE_MID and hi[0] > PIECE_MID:
+            continue
+        mid = [(a + b) / 2 for a, b in zip(lo, hi)]
+        corner, c = min(wheels, key=lambda w: math.dist(w[1], mid))
+        if math.dist(c, mid) <= PIECE_REACH:
+            out.append({"node": name, "role": role, "corner": corner})
+    return out
+
+
 def svj_attach(configured_json, svj_json, mapping_json=None, files_json=None, place_json=None):
     """Where each SVJ mesh binding goes on the new vehicle by default: [{"path", "node", "mesh_ref",
     "part", "groups"}]. A suspension corner goes to the part and node groups of its tied hub nodes
@@ -368,7 +398,11 @@ def svj_attach(configured_json, svj_json, mapping_json=None, files_json=None, pl
         path = files.get(body["mesh_ref"]) or (next(iter(files.values())) if len(files) == 1 else None)
         if path:                                           # (a body with its own node: its SVJ-named panels,
             panels = _panels(v, svj, files, place, body)   # or the modders' names inside it)
-            body["exclude"] = sorted({p["node"] for p in panels})
+            # the suspension's parts baked into the body (wishbones, struts) stay out of it: they sit at the
+            # static pose and would hang there while the suspension moves; the base's own parts show, or
+            # the archetype's (archetype.piece_rows) follow their nodes
+            baked = susp_pieces(v, svj, path, place)
+            body["exclude"] = sorted({p["node"] for p in panels} | {b["node"] for b in baked})
             glass = _glass(v, svj, path, place, body) if not body["node"] or not _has(path, body["node"]) else []
             if glass:
                 body["exclude_prims"] = sorted({i for g in glass for i in g["prims"]})
@@ -518,6 +552,29 @@ def _drop_body_meshes(n, part):
     return dropped
 
 
+def strip_meshes(files, keep=r"_svj_susp_"):
+    """A diagnostic: the written parts' flexbodies and props out but the meshes whose name matches `keep`
+    (default the SVJ's suspension parts), so only those are drawn. In place on files {path: text}; returns
+    the number of rows left out."""
+    keep = re.compile(keep)
+    n = 0
+    for path, text in list(files.items()):
+        if not path.endswith(".jbeam"):
+            continue
+        doc = json.loads(text)
+        for part in doc.values():
+            if not isinstance(part, dict):
+                continue
+            for sec in ("flexbodies", "props"):
+                t = part.get(sec)
+                if isinstance(t, list) and t and isinstance(t[0], list):
+                    rows = [t[0]] + [r for r in t[1:] if isinstance(r, dict) or (isinstance(r, list) and r and keep.search(str(r[0])))]
+                    n += len(t) - len(rows)
+                    part[sec] = rows
+        files[path] = json.dumps(doc, indent=1)
+    return n
+
+
 def axle_preload(model, configured, bl, axles):
     """{(part, row): {"beamPrecompression", "beamPrecompressionTime"}} for the |NORMAL beams from each
     wheel's axle nodes to the nodes that follow that wheel (its upright): each preloaded to the length it
@@ -589,8 +646,9 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
             taken_beams.setdefault(part, {}).setdefault(row, {}).update(vals)
     # the benchmark: each corner as stiff at the wheel as the base's in its own geometry (kinematics.stiffen)
     from beamforge import kinematics
+    pure = bool(opt and opt.get("pure"))           # a diagnostic build: nodes moved, no stiffness or mass changed
     stiff, bench = kinematics.stiffen(model, v, bl, values.springs_and_dampers(model, v), taken_weights) \
-        if any(abs(x) > 1e-6 for d in _deltas(v["geometry"]).values() for x in d) else ({}, [])
+        if not pure and any(abs(x) > 1e-6 for d in _deltas(v["geometry"]).values() for x in d) else ({}, [])
     by_key = {(b["part"], b["row"]): b for b in bl}
     for (part, row), f in stiff.items():
         if f > 1.0 + 1e-3 and "beamSpring" in by_key[(part, row)]["values"]:

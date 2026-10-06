@@ -148,6 +148,47 @@ v6 (strut tops weighed for their dampers) to be driven.
 Not yet: anti-roll bars (the base's go with the hubs), suspension meshes (none in this SVJ; the base's
 hub and arm meshes are dropped with their nodes).
 
+## The archetype's meshes
+
+The glTFs have no skeleton, animation or skin (none of the seven AC conversions): their suspension parts are
+separate rigid nodes at the static pose. `gltf.susp_pieces` finds them by name (hub, arm, strut, steering
+rod; finest node, brakes and trim excluded: the Subaru's `x0_wishbone_*` and `x0_suspension_*`, the E30's
+`g_SUSP_*_Hub / Lever_A / Dump`, the Miata's `GEO_HUB_* / GEO_SPRING_*`, the E92's and Z4's `SUSP_*_mesh`; the
+Civic and Z3 name none). `export.susp_pieces` gives each to the wheel nearest its middle; one across the centre
+line (the E30's front beam) stays in the body.
+
+- Every piece is left out of the body mesh. Baked into it they hang at the static pose while the suspension
+  moves (the Subaru's wishbones and struts, the Miata's `GEO_SUSP_*` were).
+- On an archetype car each piece is a flexbody on a node group the archetype tags: `bf_hub_<corner>` (its
+  hub nodes), `bf_arm_<corner>` (the ball joint and the two pivots), `bf_strut_<corner>` (the strut bottom and
+  top), `bf_tie_<corner>` (the tie rod end and the rack end). A base node used as a point joins the group
+  too (`_tag_base`). `archetype.piece_rows` makes the attach rows.
+- A vanilla mesh bound to a removed node goes with it (a mesh bound to one removed and one kept node, such as
+  the lower arm's `fhub1` and `fsub2`, hung in place from the kept one). The base's other meshes also go by
+  default: only the SVJ's and the wheels' and tyres' are drawn (`_drop_vanilla_meshes`; switch
+  `vanilla_meshes` keeps them). The base's brake calipers went with the hubs; the SVJ's
+  (`x0_hub_caliper_*`) are not attached yet.
+- On a converted car (the base's own suspension) the base's suspension meshes show and the SVJ's pieces are
+  not drawn, as nothing there is bound to them.
+- The diagnostic `strip_meshes` leaves only the SVJ's suspension parts drawn (everything else invisible, the
+  wheels too): the clearest check that they move. Tested on the Subaru: the parts move right.
+
+## The oil message
+
+"Motor sin aceite" appeared on every car with the front archetype and on none without it. The engine, its mounts,
+the oil pan and the weights are identical in all of them, so it is not the engine's files. The oil pan is a
+node whose beams deform at 8000 N and then leak (`oilpan_damage`, lua/vehicle/powertrain/combustionEngine.lua);
+the engine hangs on `fsub1`, `fsub2`, `fsub6` through bounded mounts. The archetype reused and moved those nodes
+as its arm pivots (46 mm and 99 mm at the front). Test O1 (`apply(switch={"keep_mounts"})`: those nodes are
+never reused or moved) had no oil message. Moving the engine-mount nodes is the cause.
+
+The price: without them the front pivots are own nodes mounted to body nodes at least 10 cm away, and the
+front's lowest mode is 13 Hz at 1 % (27 Hz with the reused nodes; the vanilla's is 40). Not yet settled which
+is right; O1's wobble was not reported. The way to both: keep `fsub1` / `fsub2` where they are and give the pivot a
+stiff bracket of beams to the nearest subframe nodes, the engine-mount nodes included, which are loaded but not
+moved. The 10 cm minimum of `_mounts` stays out of that (it kept the first build's short stiff beams off the
+fuel tank's trigger beam).
+
 ## Still to check on other bases
 
 - Front-wheel drive: fdiffout1 comes from the transaxle part (front-drive compact, small hatchback). Rear-wheel drive bases

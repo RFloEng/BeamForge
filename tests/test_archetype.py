@@ -48,7 +48,8 @@ class TestSurgery(unittest.TestCase):
         self.assertEqual([r[0] for r in part["nodes"][1:] if isinstance(r, list)], ["a"])
         self.assertEqual([r for r in part["beams"][1:] if isinstance(r, list)], [["a", "b"]])
         self.assertEqual([r[0] for r in part["slidenodes"][1:]], ["y"])           # off the dropped rail, and h
-        self.assertEqual([r[0] for r in part["flexbodies"][1:]], ["armmesh"])     # a mesh still on a kept node
+        self.assertEqual([r[0] for r in part["flexbodies"][1:]], [])              # a mesh on any removed node goes (it would
+                                                                                   # hang in place bound to the kept one)
         self.assertEqual(part["beams"][1], {"beamSpring": 1})                      # modifiers kept
 
     def test_wheel_remapped(self):
@@ -77,6 +78,40 @@ class TestSurgery(unittest.TestCase):
         out = archetype._size_nodes([part])
         self.assertAlmostEqual(out["bfRLt"], 8400 / 2000 / archetype.NODE_C_INDEX, places=2)   # rebound counted
         self.assertNotIn("x", out)                                                            # base nodes left
+
+
+
+class TestSuspensionMeshes(unittest.TestCase):
+    def test_pieces_found_by_name_and_role(self):
+        from beamforge import gltf
+        # a corner group (SUSP_LF) holding a hub, an arm and a damper, a brake caliper under it, a wiper arm
+        # and a body panel: the finest suspension parts are the pieces, the rest is not
+        nodes = [{"name": "SUSP_LF", "children": [1, 2, 3, 4]}, {"name": "g_SUSP_LF_Hub", "mesh": 0},
+                 {"name": "g_SUSP_LF_Lever_A", "mesh": 1}, {"name": "g_SUSP_LF_Dump", "mesh": 2},
+                 {"name": "brake_caliper_LF", "mesh": 3}, {"name": "wiper_arm_left", "mesh": 4}, {"name": "body", "mesh": 5}]
+        pieces = gltf._pieces({"nodes": nodes, "scenes": [{"nodes": [0, 5, 6]}]})
+        self.assertEqual(pieces, [("g_SUSP_LF_Hub", "hub"), ("g_SUSP_LF_Lever_A", "arm"), ("g_SUSP_LF_Dump", "strut")])
+
+    def test_corner_group_alone_is_a_piece_and_calipers_are_not(self):
+        from beamforge import gltf
+        nodes = [{"name": "SUSP_RR", "children": [1]}, {"name": "x0_hub_caliper_br", "mesh": 0}]
+        self.assertEqual(gltf._pieces({"nodes": nodes, "scenes": [{"nodes": [0]}]}), [])      # only a caliper below it
+
+    def test_base_node_joins_a_group(self):
+        part = {"nodes": [["id", "posX", "posY", "posZ"], {"group": "a"}, ["n1", 0, 0, 0], ["n2", 1, 0, 0, {"nodeWeight": 3}]]}
+        self.assertTrue(archetype._tag_base(part, "n2", ["a", "bf_arm_FL"]))
+        self.assertEqual(part["nodes"][3][-1], {"nodeWeight": 3, "group": ["a", "bf_arm_FL"]})
+        self.assertFalse(archetype._tag_base(part, "missing", ["x"]))
+
+
+class TestVanillaMeshes(unittest.TestCase):
+    def test_only_svj_and_wheel_meshes_stay(self):
+        part = {"flexbodies": [["mesh", "[group]:"], {"pos": {"x": 0}}, ["compact_subframe_F", ["g"]], ["brake_disc_slotted", ["g"]],
+                               ["wheel_02a_16x8", ["w"]], ["tire_01f_16x8_25", ["t"]], ["car_svj_susp_fl_x0_wishbone_fl", ["bf_arm_FL"]]]}
+        n = archetype._drop_vanilla_meshes([{"p": part}])
+        self.assertEqual(n, 2)
+        self.assertEqual([r[0] for r in part["flexbodies"][1:] if isinstance(r, list)],
+                         ["wheel_02a_16x8", "tire_01f_16x8_25", "car_svj_susp_fl_x0_wishbone_fl"])
 
 
 if __name__ == "__main__":
