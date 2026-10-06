@@ -153,13 +153,16 @@ class TestExport(unittest.TestCase):
             meshes = export.svj_meshes(svj, {"m": path}, {"yf": -1.25, "ground": 0.0}, rows, "x")
             self.assertEqual([len(m["indices"]) for m in meshes], [3, 3])                 # one triangle each, no overlap
 
-    def test_body_meshes_dropped_running_gear_kept(self):
-        """The SVJ body brings its own body, glass and cockpit: only the mechanical meshes stay."""
+    def test_base_meshes_dropped_but_wheels_and_lights(self):
+        """The SVJ is the car's looks: of the base's meshes only the wheels and tyres stay, and the lights."""
         part = {"flexbodies": [["mesh", "[group]:", "nonFlexMaterials"], ["car_body", ["b"]], ["car_door_FL", ["d"]],
                                ["car_seat_FL", ["s"]], ["car_windshield_int", ["g"]], {"deformGroup": ""}, ["brake_disc", ["w"]],
-                               ["car_exhaust_heatshield", ["b"]]]}
-        self.assertEqual(export._drop_body_meshes("car_body", part), 4)
-        self.assertEqual([r[0] for r in part["flexbodies"][1:] if isinstance(r, list)], ["brake_disc", "car_exhaust_heatshield"])
+                               ["car_exhaust_heatshield", ["b"]], ["car_steeringwheel", ["s"]], ["wheel_02a", ["w"]]],
+                "props": [["func", "mesh", "idRef:"], ["steering", "car_steer", "a"], ["rpm", "car_needle_tacho", "a"],
+                          ["$electric", "SPOTLIGHT", "a"], ["signal", "", "a"]]}
+        self.assertEqual(export._drop_body_meshes("car_body", part), 7 + 2)
+        self.assertEqual([r[0] for r in part["flexbodies"][1:] if isinstance(r, list)], ["wheel_02a"])
+        self.assertEqual([r[0] for r in part["props"][1:]], ["$electric", "signal"])          # the lights stay, the needles go
         self.assertEqual(export._drop_body_meshes("car_wheel_F", {"flexbodies": [["mesh"], ["rim", []]]}), 0)
 
     def test_new_vehicle_builds(self):

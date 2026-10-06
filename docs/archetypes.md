@@ -168,8 +168,15 @@ line (the E30's front beam) stays in the body.
   default: only the SVJ's and the wheels' and tyres' are drawn (`_drop_vanilla_meshes`; switch
   `vanilla_meshes` keeps them). The base's brake calipers went with the hubs; the SVJ's
   (`x0_hub_caliper_*`) are not attached yet.
-- On a converted car (the base's own suspension) the base's suspension meshes show and the SVJ's pieces are
-  not drawn, as nothing there is bound to them.
+- On a converted car (the base's own suspension) the SVJ's pieces are not drawn, as nothing there is bound to
+  them, and no base mesh is either: the suspension is invisible until they are attached (to the base's hub
+  groups; not done).
+
+No base mesh is drawn on any car (export `_drop_body_meshes`, whenever the SVJ's meshes go along): only the SVJ's,
+the wheels' and tyres' (`KEEP`), and the lights (props whose mesh is SPOTLIGHT or empty). The props that animate a
+mesh (pedals, stalks, gauge needles, the steering wheel, sun visors, the engine's pulleys and fan, the driveshaft)
+go too. Checked on the seven cars with the audit of what each still draws (the active parts' flexbodies and props):
+none left but the lights. The earlier rule kept the mechanical meshes (running gear, engine bay, tank).
 - The diagnostic `strip_meshes` leaves only the SVJ's suspension parts drawn (everything else invisible, the
   wheels too): the clearest check that they move. Tested on the Subaru: the parts move right.
 
@@ -179,8 +186,11 @@ line (the E30's front beam) stays in the body.
 the oil pan and the weights are identical in all of them, so it is not the engine's files. The oil pan is a
 node whose beams deform at 8000 N and then leak (`oilpan_damage`, lua/vehicle/powertrain/combustionEngine.lua);
 the engine hangs on `fsub1`, `fsub2`, `fsub6` through bounded mounts. The archetype reused and moved those nodes
-as its arm pivots (46 mm and 99 mm at the front). Test O1 (`apply(switch={"keep_mounts"})`: those nodes are
-never reused or moved) had no oil message. Moving the engine-mount nodes is the cause.
+as its arm pivots (46 mm and 99 mm at the front). Test O1 (those nodes never reused or moved) had no oil
+message. Moving the engine-mount nodes is the cause, and not reusing or moving them is now the default
+(`apply(switch={"move_mounts"})` restores the old way). Which nodes those are depends on the base: the
+engine hangs on `fsub1 fsub2 fsub6` on the front-drive compact, `fsub3 fsub4 fsub6` on the RWD coupe, `fsub2 fsub4 fsub6` on the RWD saloon and I
+(found from the engine-mount parts' beams), so the Z3, Z4 and E92 still reuse `fsub1`.
 
 The price: without them the front pivots are own nodes mounted to body nodes at least 10 cm away, and the
 front's lowest mode is 13 Hz at 1 % (27 Hz with the reused nodes; the vanilla's is 40). Not yet settled which
@@ -188,6 +198,13 @@ is right; O1's wobble was not reported. The way to both: keep `fsub1` / `fsub2` 
 stiff bracket of beams to the nearest subframe nodes, the engine-mount nodes included, which are loaded but not
 moved. The 10 cm minimum of `_mounts` stays out of that (it kept the first build's short stiff beams off the
 fuel tank's trigger beam).
+
+A steered corner needs the base's steering rack (a steering part with hydros) for its tie rod. A base
+without one, the older RWD saloon's pitman arm and idler (the E30), keeps its own suspension at that corner: an archetype
+rack of its own left the steering free in the game.
+
+Mixed cars (an archetype front on a converted rear: the Z3, Z4 and E92) draw no vanilla meshes, so their
+rear suspension is not drawn until the double wishbone archetype exists.
 
 ## Still to check on other bases
 

@@ -182,12 +182,13 @@ def _rename_refs(part, renames):
                 row[i] = renames[row[i]]
 
 
-# flexbodies kept when the SVJ body replaces the base's: the mechanical parts (running gear, engine bay,
-# tank). The body, glass (inner faces too) and interior go: the SVJ body brings its own (its low-detail
-# cockpit), and the base's would float inside a body of another shape.
-KEEP = re.compile(r"(?<!steer_)(?<!steering_)wheel|tire|tyre|brake|hub|rotor|caliper|engine|intake|exhaust|muffler|"
-                  r"radiator|transmission|transaxle|driveshaft|halfshaft|axle|diff|suspension|subframe|strut|spring|"
-                  r"shock|coilover|swaybar|tierod|_steering$|fueltank|battery", re.I)
+# what of the base's own meshes a car with the SVJ's meshes still draws: the wheels, their tyres and hubcaps (the
+# wheel parts are the base's own, chosen for the SVJ's size). Everything else of the base's, its body, interior,
+# engine, running gear and what its props animate (pedals, gauge needles, the steering wheel), would show beside
+# the SVJ's meshes or through them; the SVJ is the car's looks. Lights (props with the SPOTLIGHT mesh) stay: they
+# are not meshes.
+KEEP = re.compile(r"(?<!steer)(?<!steer_)(?<!steering)(?<!steering_)wheel|tire|tyre|hubcap", re.I)
+LIGHT_MESH = re.compile(r"^(spotlight|pointlight|)$", re.I)
 
 
 def _safe(name):
@@ -542,12 +543,21 @@ def _deform_props(part, mesh):
 
 
 def _drop_body_meshes(n, part):
-    """Leave out a part's body flexbodies (all but KEEP: the mechanical parts); returns how many were dropped."""
+    """Leave out a part's base meshes, its flexbodies and the props that animate a mesh (all but KEEP: the wheels
+    and tyres, and the lights); returns how many rows were dropped."""
+    dropped = 0
+    props = part.get("props")
+    if isinstance(props, list) and props and isinstance(props[0], list):       # the animated meshes (not the lights)
+        head = [str(h).rstrip(":") for h in props[0]]
+        mi = head.index("mesh") if "mesh" in head else 1
+        kept = [props[0]] + [r for r in props[1:] if not isinstance(r, list) or len(r) <= mi or LIGHT_MESH.search(str(r[mi]))]
+        dropped += sum(1 for r in props[1:] if isinstance(r, list)) - sum(1 for r in kept[1:] if isinstance(r, list))
+        part["props"] = kept
     rows = part.get("flexbodies")
     if KEEP.search(n) or not (isinstance(rows, list) and rows and isinstance(rows[0], list)):
-        return 0
+        return dropped
     kept = [rows[0]] + [r for r in rows[1:] if not isinstance(r, list) or (r and isinstance(r[0], str) and KEEP.search(r[0]))]
-    dropped = sum(1 for r in rows[1:] if isinstance(r, list)) - sum(1 for r in kept[1:] if isinstance(r, list))
+    dropped += sum(1 for r in rows[1:] if isinstance(r, list)) - sum(1 for r in kept[1:] if isinstance(r, list))
     part["flexbodies"] = kept
     return dropped
 

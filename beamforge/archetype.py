@@ -24,11 +24,15 @@ import math
 import re
 
 from beamforge import kinematics, rigidity, svj as svjmod, values
+from beamforge.structure import _rank
 
 # beams, N/m: as the vanilla struts' (front-drive compact)
 WHEEL_SOFT_K = 6001000
 HUB_K, WHEEL_K, ARM_K, TIE_K, MOUNT_K, RACK_K, SLIDE_K = 7501000, 9001000, 17001000, 15001000, 4501000, 10001000, 18001000
 MOUNTS = 5            # body nodes each mounted node is beamed to
+MOUNTS_MIN = 4        # at least this many, or the reach grows
+MOUNTS_PIVOT = 8      # an arm pivot's mounts: it takes the arm's whole load, in every direction
+MOUNT_CLOSE = 0.03    # m: the closest a subframe node may be to a pivot it is mounted to
 MOUNT_KG = 2.0        # kg: lighter nodes (flexbody helpers) are not mounted to
 REUSE_NEAR = 0.10     # m: the base's own node this close to an archetype point is the point, moved onto it
 MOUNT_NEAR = 0.10     # m: closer body nodes are not mounted to (a short stiff beam rings at the physics step; the
@@ -120,13 +124,27 @@ def _take(room, node, k, c):
     room["c"][node] = room["c"].get(node, 0.0) - c
 
 
-def _mounts(at, nodes, kept, weights, side, room):
+def _mounts(at, nodes, kept, weights, side, room, near_ok=frozenset(), count=MOUNTS):
     """The body nodes a mounted node is beamed to: the MOUNTS nearest that stay, within MOUNT_REACH, on
     its side of the car (or near the middle), not lighter than MOUNT_KG, not closer than MOUNT_NEAR.
-    Each takes its beam (_take: weight added where its limits are short)."""
-    cand = [n for n in kept if weights.get(n, 0.0) >= MOUNT_KG and nodes[n][0] * side > -0.15
-            and MOUNT_NEAR <= math.dist(nodes[n], at) <= MOUNT_REACH]
-    out = sorted(cand, key=lambda n: math.dist(nodes[n], at))[:MOUNTS]
+    near_ok: nodes it may be mounted to closer than MOUNT_NEAR (down to MOUNT_CLOSE): the subframe's, which
+    are the best anchors an arm pivot has (the base holds its arm there); the body's keep the minimum, as short
+    stiff beams there rang (the fuel tank's trigger beam). count: how many mounts."""
+    for reach in (MOUNT_REACH, 0.7, 1.0):           # a point held by fewer than 4 beams floats (the Z3's strut top, held by 2,
+        cand = [n for n in kept if weights.get(n, 0.0) >= MOUNT_KG and nodes[n][0] * side > -0.15   # moved 71 mm per kN)
+                and (MOUNT_CLOSE if n in near_ok else MOUNT_NEAR) <= math.dist(nodes[n], at) <= reach]
+        if len(cand) >= MOUNTS_MIN:
+            break
+    cand.sort(key=lambda n: math.dist(nodes[n], at))
+    out = cand[:count]
+    # held in three independent directions (structure._rank): mounts in a plane or a line leave one free
+    # (a mounted node is a structure node: held by at least three beams, or it is part of a mechanism); more are
+    # taken from the next nearest until it is
+    dirs = lambda ns: [[nodes[n][i] - at[i] for i in range(3)] for n in ns]          # noqa: E731
+    unit = lambda ds: [[x / math.sqrt(sum(y * y for y in d)) for x in d] for d in ds]  # noqa: E731
+    rest = cand[count:]
+    while _rank(unit(dirs(out))) < 3 and rest:
+        out.append(rest.pop(0))
     for n in out:
         _take(room, n, MOUNT_K, MOUNT_C)
     return out
@@ -283,8 +301,8 @@ def apply(files, model, configured, svj, place, loads, built, axles=None, only=N
     only: corner name prefixes to replace ("F", "R"; default all), the others keep the base's suspension;
     switch: diagnostics, each a feature left out ("limiters", "weights", "steer_dampers") or a choice
     ("strut_top_fs": the strut top is the base's strut node, not the body's mount node of it;
-    "keep_mounts": the nodes the engine mounts hang on are never used as pivots, nor moved;
-    "vanilla_meshes": the base's own meshes stay (by default only the SVJ's and the wheels' are drawn))."""
+    "move_mounts": the nodes the engine mounts hang on may be used as pivots and moved (by default they are never:
+    moving them gave the front archetype's oil message); "vanilla_meshes": the base's own meshes stay (by default only the SVJ's and the wheels' are drawn))."""
     switch = set(switch or ())
     notes, done = [], []
     geo = configured["geometry"]
@@ -314,8 +332,6 @@ def apply(files, model, configured, svj, place, loads, built, axles=None, only=N
         corners[w["name"]] = (w, pts, moving)
     if not corners:
         return files, notes, done
-    removed = set().union(*(c[2] for c in corners.values()))
-    wheel_nodes = {n for w, _, _ in corners.values() for n in (w["node1"], w["node2"])}
 
     # the exported parts, by name
     docs = {p: json.loads(t) for p, t in files.items() if p.endswith(".jbeam")}
@@ -327,6 +343,26 @@ def apply(files, model, configured, svj, place, loads, built, axles=None, only=N
     active = set(owner.values()) | {r["part"] for r in springs}
     for n, _ in _walk_tree(configured.get("tree") or {}):
         active.add(n)
+
+    # a steered corner needs the base's steering rack to take the tie rod: the nodes of a steering part (one with
+    # hydros, which turn the hubs) that the base's tie rods reached. A base without one (the older RWD saloon's pitman arm
+    # and idler) keeps its own suspension there: an own rack written for it left the steering free in the game.
+    def reached(moving):
+        out = set()
+        for name in active:
+            part = (where.get(name) or (None, None))[1]
+            if part and isinstance(part.get("hydros"), list):
+                own = {n for n, o in owner.items() if o == name}
+                out |= {n for b in bl for n, m in ((b["a"], b["b"]), (b["b"], b["a"])) if n in own and m in moving}
+        return out
+    for c in [c for c, (w, pts, moving) in corners.items() if pts["steer"] and not reached(moving)]:
+        notes.append(f"{c}: the base's steering has no rack ends for the tie rod (no hydros on its steering part): "
+                     "the suspension there stays the base's")
+        del corners[c]
+    if not corners:
+        return files, notes, done
+    removed = set().union(*(c[2] for c in corners.values()))
+    wheel_nodes = {n for w, _, _ in corners.values() for n in (w["node1"], w["node2"])}
 
     # the steering (front): a part with hydros that steers the replaced hubs. Its rack is kept (BeamNG's
     # own, as it works in the base); the archetype's tie rods go to its ends, the nodes of it that the
@@ -386,6 +422,7 @@ def apply(files, model, configured, svj, place, loads, built, axles=None, only=N
     names_of, host_of, host_name_of = {}, {}, {}
     taken, moved = set(), {}                       # base nodes the archetype uses as its points, and their moves
     base_tags = {}                                 # and the mesh groups they join (_tag_base)
+    rack_target = {}                               # the base's rack ends, onto the SVJ's tie rod inner points
     mount_nodes = {x for b in bl if re.search(r"engine.?mount", b["part"], re.I) for x in (b["a"], b["b"])}
     on_rails = set()                               # slide nodes and rail ends (the steering rack's): not for a pivot
     for sn, ra, rb, _ in geo.get("slides") or []:
@@ -411,6 +448,7 @@ def apply(files, model, configured, svj, place, loads, built, axles=None, only=N
             if ends:
                 end = min(ends, key=lambda n: math.dist(nodes[n], pts["tie"]))
                 nm["tie"] = end
+                rack_target[end] = pts["tie"]
                 notes.append(f"{c}: tie rod to the base's rack end {end}, {math.dist(nodes[end], pts['tie']) * 1000:.0f} mm "
                              "from the SVJ's tie rod inner point")
             else:
@@ -445,8 +483,9 @@ def apply(files, model, configured, svj, place, loads, built, axles=None, only=N
         # stiff in the subframe where the vanilla car holds its arm.
         merged = []
         for k, _ in body:
-            pool = [n for n in kept if n not in nm.values() and n not in taken and owner.get(n) == host_name_of[c]
-                    and n not in on_rails and not ("keep_mounts" in switch and n in mount_nodes)
+            pool = [n for n in kept if n not in nm.values() and n not in taken
+                    and (owner.get(n) == host_name_of[c] or (k == "t" and owner.get(n) in frames))   # (a strut top may be the body's)
+                    and n not in on_rails and not ("move_mounts" not in switch and n in mount_nodes)
                     and not (k == "t" and "strut_top_fs" in switch and re.search(r"sm\d", n))]
             if not pool:
                 continue
@@ -512,7 +551,8 @@ def apply(files, model, configured, svj, place, loads, built, axles=None, only=N
                 bt.append([nm[k], nm[piv], {"beamDampFast": STEER_C_FAST, "beamDampVelocitySplit": 0.1, "dampCutoffHz": 750}])
         bt.append(dict(BEAM_RESET, beamSpring=MOUNT_K, beamDamp=MOUNT_C, beamDeform=25000, beamStrength=170000))
         for k, _ in body:
-            for m in _mounts(pts[k], nodes, kept, weights, side, room):
+            sub = frozenset(n for n in kept if owner.get(n) == host_name_of[c] and n not in mount_nodes and n not in on_rails)
+            for m in _mounts(pts[k], nodes, kept, weights, side, room, sub, MOUNTS_PIVOT if k in ("p0", "p1") else MOUNTS):
                 bt.append([nm[k], m])
         # the strut: its rail, spring, damper, bump stop and travel limit
         rails = part.get("rails") if isinstance(part.get("rails"), dict) else {}
@@ -637,6 +677,23 @@ def apply(files, model, configured, svj, place, loads, built, axles=None, only=N
     elif front_rack:
         notes.append("only one front corner is a strut archetype: no steering rack written")
 
+    # the base's rack ends go onto the SVJ's tie rod inner points (as the converted cars' do), and the slide nodes
+    # that ride the rack's rail onto the new rail: the tie rod is the SVJ's, not the base's at 50-240 mm from it
+    for e, target in rack_target.items():
+        d = [target[i] - nodes[e][i] for i in range(3)]
+        moved[e] = d
+        nodes[e] = list(target)
+    for sn, ra, rb, _ in geo.get("slides") or []:
+        if (ra in rack_target or rb in rack_target) and sn in nodes and ra in nodes and rb in nodes:
+            ab = [nodes[rb][i] - nodes[ra][i] for i in range(3)]
+            l2 = sum(x * x for x in ab)
+            if l2 > 1e-9:
+                t = max(0.0, min(1.0, sum((nodes[sn][i] - nodes[ra][i]) * ab[i] for i in range(3)) / l2))
+                q = [nodes[ra][i] + t * ab[i] for i in range(3)]
+                if math.dist(q, nodes[sn]) > 1e-5:
+                    moved[sn] = [q[i] - nodes[sn][i] for i in range(3)]
+                    nodes[sn] = q
+
     # the base nodes used as points, moved onto the SVJ's
     by_part = {}
     for n, d in moved.items():
@@ -677,6 +734,51 @@ def apply(files, model, configured, svj, place, loads, built, axles=None, only=N
         notes.append("the base's steering (" + ", ".join(n for n, _, _ in steer_parts) + ") has no rack ends on one side: "
                      "the archetype's rack written")
     notes.append("anti-roll bars: the base's go with the hubs; none written yet")
+    # a node my surgery left held by fewer than three beams is no structure node: a loose pendulum (the vanilla
+    # strut meshes' helper nodes, held by their beam to the removed hub and one more). Out, with what refers
+    # to them, unless it carries a hydro, a torsion bar, a slide or a rail (a mechanism's own), is a wheel node
+    # or one the archetype made
+    act = [where[n][1] for n in active if n in where]
+    # a slide node whose rail went with the hub (the rail is in the suspension part, the slide node's row in the
+    # strut's): a row for a rail that no part defines any more, out
+    defined = set()
+    for part in act:
+        if isinstance(part.get("rails"), dict):
+            defined |= set(part["rails"])
+    dangling = 0
+    for part in act:
+        t = part.get("slidenodes")
+        if isinstance(t, list) and t and isinstance(t[0], list):
+            rows = [t[0]] + [r for r in t[1:] if not (isinstance(r, list) and len(r) > 1 and r[1] not in defined)]
+            dangling += len(t) - len(rows)
+            part["slidenodes"] = rows
+    if dangling:
+        notes.append(f"{dangling} slide nodes of rails that went with the hubs removed")
+    neighbours = {x for b in bl if (b["a"] in removed) != (b["b"] in removed) for x in (b["a"], b["b"])} - removed
+    pruned = []
+    for _ in range(3):
+        refs, mech = {}, set()
+        for part in act:
+            t = part.get("beams")
+            if isinstance(t, list) and t and isinstance(t[0], list):
+                for row in t[1:]:
+                    if isinstance(row, list) and len(row) > 1 and isinstance(row[0], str) and isinstance(row[1], str):
+                        for x in (row[0], row[1]):
+                            refs[x] = refs.get(x, 0) + 1
+            for sec in ("hydros", "torsionbars", "slidenodes", "rails", "pressureWheels"):
+                if sec in part:
+                    mech |= set(re.findall(r'"([A-Za-z0-9_]+)"', json.dumps(part[sec])))
+        orphans = {n for n in neighbours if n in nodes and refs.get(n, 0) < 3 and n not in mech and n not in wheel_nodes
+                   and not n.startswith("bf") and n not in pruned}
+        if not orphans:
+            break
+        for part in act:
+            _drop_rows(part, orphans, members)
+        pruned += sorted(orphans)
+    if pruned:
+        notes.append(f"{len(pruned)} nodes the surgery left held by fewer than three beams removed (no structure node: a loose "
+                     "pendulum): " + ", ".join(pruned[:14]) + ("…" if len(pruned) > 14 else ""))
+
     if "vanilla_meshes" not in switch:
         left = _drop_vanilla_meshes(docs.values())
         notes.append(f"the base's own meshes left out ({left} rows; the wheels and tyres stay): the SVJ's meshes are the car's "
@@ -703,7 +805,7 @@ def _add_weight(part, node, kg, current):
 
 
 # the meshes an archetype car still draws: the SVJ's (named <id>_svj_...), the wheels and their tyres
-VISIBLE = re.compile(r"_svj_|wheel|tire|tyre|hubcap", re.I)
+VISIBLE = re.compile(r"_svj_|(?<!steer)(?<!steer_)(?<!steering)(?<!steering_)wheel|tire|tyre|hubcap", re.I)
 
 
 def _drop_vanilla_meshes(docs):

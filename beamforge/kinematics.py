@@ -65,12 +65,19 @@ def _system(nodes, owner, load, axle, centres, kscale=None, slides=None):
     for b in load:
         near.setdefault(b["a"], []).append(b)
         near.setdefault(b["b"], []).append(b)
+    # a slide node rides its rail: it moves with the rail's ends (a strut's rail from the hub to the strut top: the
+    # spring's lower node slides on it and follows the wheel, through no beam). Not the other way: the rail's far
+    # end, the strut top, is the body's and does not follow the node
+    ride = {}
+    for sn, ra, rb, _ in slides or ():
+        ride.setdefault(ra, []).append(sn)
+        ride.setdefault(rb, []).append(sn)
     free, todo = set(axle), list(axle)
     while todo:
         n = todo.pop()
-        for b in near.get(n, ()):
-            m = b["b"] if b["a"] == n else b["a"]
-            if m in free or m not in nodes or not SUSP.search(b["part"]) or not SUSP.search(owner.get(m, "")):
+        steps = [(b["b"] if b["a"] == n else b["a"], b["part"]) for b in near.get(n, ())] + [(m, None) for m in ride.get(n, ())]
+        for m, part in steps:
+            if m in free or m not in nodes or not SUSP.search(owner.get(m, "")) or (part is not None and not SUSP.search(part)):
                 continue
             if min(math.dist(nodes[m], c) for c in centres) > REACH:
                 continue                                  # far from the wheels: held with the body
@@ -270,8 +277,14 @@ def follows_wheel(model, configured, wheel, bl=None, springs=None, share=0.2):
         A[i][i] += big
         f[i] += big * STEP
     x = _solve(A, f)
-    return {n for n in idx if n not in axle
-            and math.sqrt(sum(x[3 * idx[n] + i] ** 2 for i in range(3))) >= share * STEP}
+    moving = {n for n in idx if n not in axle
+              and math.sqrt(sum(x[3 * idx[n] + i] ** 2 for i in range(3))) >= share * STEP}
+    # a slide node riding a rail with an end that follows the wheel follows it too, whatever the solve says: it is
+    # free along the rail (its spring is not in the model), so it barely moves there (the rally coilover's spring node)
+    for sn, ra, rb, _ in geo.get("slides") or []:
+        if sn in idx and sn not in axle and (ra in moving or rb in moving):
+            moving.add(sn)
+    return moving
 
 
 def corner_ratios(model, configured, wheels, bl=None, springs=None):
