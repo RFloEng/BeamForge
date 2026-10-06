@@ -274,7 +274,9 @@ def load_bundle(path, work_dir):
             except (ValueError, UnicodeDecodeError) as exc:
                 notes.append(f"mesh {a['uri']}: {exc}")
         else:
-            notes.append(f"mesh {a['uri']} (id {a['id']}) is listed in the SVJ but was not provided")
+            notes.append(f"mesh {a['uri']} (id {a['id']}) is listed in the SVJ but was not provided: the SVJ names it by a "
+                         "path beside the SVJ file, which the editor cannot open itself; pick its folder with "
+                         "'Find the meshes folder' in the SVJ panel")
         meshes.append(entry)
     bindings = visual_bindings(doc)
     by_id = {m["id"]: m for m in meshes}

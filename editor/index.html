@@ -22,8 +22,11 @@
   <div class="brand">BeamForge <span class="tag">prototype</span></div>
   <div class="spaces"></div>
   <div class="files">
-    <button id="svjin" title="Load a Standard Vehicle JSON (.svj.json with its meshes, or a .zip bundle) onto the base vehicle">Import SVJ</button>
+    <button id="svjin" title="Pick the folder holding a Standard Vehicle JSON: its .svj.json (or a .zip bundle) and its meshes are found below it">Import SVJ</button>
+    <button id="svjinfiles" title="Pick an .svj.json with its mesh files, or a .zip bundle, as files">Files…</button>
     <input type="file" id="svjfile" accept=".json,.zip,.glb,.gltf,.bin" multiple hidden>
+    <!-- the folder holding the SVJ's meshes, where the browser has no folder picker (findSvjMeshes) -->
+    <input type="file" id="svjdir" webkitdirectory multiple hidden>
     <!-- base vehicle: the user's BeamNG content/vehicles folder (or a mod folder), or single vehicle zips -->
     <input type="file" id="bngdir" webkitdirectory multiple hidden>
     <input type="file" id="bngzips" accept=".zip" multiple hidden>

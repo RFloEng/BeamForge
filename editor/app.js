@@ -763,6 +763,7 @@ async function addZips(picked) {
 
 // ---------- SVJ (Standard Vehicle JSON) ----------
 let svjDoc = null;         // svjpy.load_bundle result of the last import (kept in memory)
+let svjSrc = null;         // where that import's SVJ file sits in the Python file system (to read it again with its meshes)
 let svjHp = [];            // its hardpoints in BeamNG coordinates, placed on the base vehicle
 
 // where the SVJ origin (front-axle centre on the ground) lands on the base vehicle
@@ -772,8 +773,7 @@ const svjPlace = () => {
   return pl ? { yf: pl.yf, zg: pl.ground } : { yf: veh?.measure?.front_axle_y ?? 0, zg: veh?.measure?.ground_z ?? 0 };
 };
 
-$('svjin').onclick = () => $('svjfile').click();
-// Import: an .svj.json with loose mesh files, or a .zip bundle
+// Import from files: an .svj.json with loose mesh files, or a .zip bundle ("Files…"; the folder import is below)
 $('svjfile').onchange = async (e) => {
   const picked = [...e.target.files];
   e.target.value = '';
@@ -789,14 +789,8 @@ $('svjfile').onchange = async (e) => {
       py.FS.writeFile(`${raw}/${x.name}`, data);
       if (!/\.(json|zip)$/i.test(x.name)) py.FS.writeFile(`${raw}/meshes/${x.name}`, data);
     }
-    svjDoc = JSON.parse(svjpy.load_bundle(`${raw}/${f.name}`, '/tmp/svj_in'));
-    studySuspension();
-    await loadSvjMeshes();
-    redraw();
-    if (!veh) fitCamera();
-    showIssues([{ level: 'PASS', rule: 'SVJ', message: `Loaded ${f.name}${svjDoc.summary.vehicle ? ' (' + svjDoc.summary.vehicle + ')' : ''}.` },
-      ...svjDoc.notes.map((n) => ({ level: 'WARN', rule: 'SVJ', message: n })),
-      ...svjDoc.meshes.filter((m) => m.file).map((m) => ({ level: 'INFO', rule: 'SVJ §22', message: `mesh ${m.uri}: nodes ${m.nodes.join(', ') || '(none)'}` }))]);
+    svjSrc = `${raw}/${f.name}`;
+    await finishImport(f.name);
   } catch (err) { showIssues([{ level: 'ERROR', rule: 'SVJ', message: 'Could not import: ' + pyError(err) }]); }
 };
 
@@ -843,6 +837,148 @@ async function loadSvjMeshes() {
   placeSvj();
 }
 $('meshes').onchange = () => { meshG.visible = $('meshes').checked; };
+
+// The SVJ names each mesh by a path relative to the SVJ file (assets.meshes[].uri), but a page cannot open a
+// path beside a file it was given: it reads only what the user hands over. So the user hands over the SVJ's
+// folder (Import SVJ), and the SVJ and its meshes are searched for below it: the .svj.json (the shallowest),
+// then for each mesh its uri from the SVJ's folder, then its file name anywhere under that folder, then
+// anywhere under the picked one. A mesh left over is asked for again with "Find the meshes folder".
+const SVJ_SEARCH_DEPTH = 8, SVJ_SEARCH_FILES = 20000;
+
+// every file below a directory (library.js directory interface): [{ path (lower case, from the folder), shown (as it is), name, file }]
+async function indexDir(dir) {
+  const out = [];
+  const walk = async (d, prefix, depth, prefix0) => {
+    for (const [k, c] of await d.entries()) {
+      if (out.length >= SVJ_SEARCH_FILES) return;
+      if (c.dir) { if (depth < SVJ_SEARCH_DEPTH) await walk(c.dir, prefix + k + '/', depth + 1, prefix0 + c.name + '/'); }
+      else if (c.file) out.push({ path: prefix + k, shown: prefix0 + c.name, name: c.name, file: c.file });
+    }
+  };
+  await walk(dir, '', 0, '');
+  return out;
+}
+
+// a path joined to a folder, with ./ and ../ resolved (lower case: the index is)
+function joinPath(folder, rel) {
+  const parts = (folder + rel).replace(/\\/g, '/').toLowerCase().split('/');
+  const out = [];
+  for (const p of parts) { if (p === '..') out.pop(); else if (p && p !== '.') out.push(p); }
+  return out.join('/');
+}
+
+// the files for the SVJ's meshes (meshes: [{ uri }]), written under `base` (a folder in the Python file system) at
+// their uri; a .gltf takes the files beside it (.bin, textures). Returns the uris found.
+async function supplyMeshes(files, jsonDir, meshes, base) {
+  const byPath = new Map(files.map((f) => [f.path, f]));
+  const found = [];
+  for (const m of meshes) {
+    const name = m.uri.replace(/\\/g, '/').split('/').pop().toLowerCase();
+    const under = files.filter((f) => f.path.startsWith(jsonDir) && f.name.toLowerCase() === name);
+    const hit = byPath.get(joinPath(jsonDir, m.uri)) || under.sort((a, b) => a.path.length - b.path.length)[0]
+      || files.filter((f) => f.name.toLowerCase() === name).sort((a, b) => a.path.length - b.path.length)[0];
+    if (!hit) continue;
+    const to = base + m.uri.replace(/\\/g, '/').replace(/^\.\//, '');
+    py.FS.mkdirTree(to.slice(0, to.lastIndexOf('/')));
+    py.FS.writeFile(to, new Uint8Array(await (await hit.file()).arrayBuffer()));
+    if (/\.gltf$/i.test(hit.name)) {
+      const dirOf = hit.path.slice(0, hit.path.lastIndexOf('/') + 1);
+      for (const s of files) {
+        if (s !== hit && s.path.startsWith(dirOf) && !s.path.slice(dirOf.length).includes('/') && /\.(bin|png|jpe?g|webp)$/i.test(s.name)) {
+          py.FS.writeFile(to.slice(0, to.lastIndexOf('/') + 1) + s.name, new Uint8Array(await (await s.file()).arrayBuffer()));
+        }
+      }
+    }
+    found.push(m.uri);
+  }
+  return found;
+}
+
+// the SVJ loaded from the Python file system (svjSrc): its meshes drawn, the panels redrawn
+async function finishImport(name) {
+  svjDoc = JSON.parse(svjpy.load_bundle(svjSrc, '/tmp/svj_in'));
+  studySuspension();
+  await loadSvjMeshes();
+  redraw();
+  if (!veh) fitCamera();
+  showIssues([{ level: 'PASS', rule: 'SVJ', message: `Loaded ${name}${svjDoc.summary.vehicle ? ' (' + svjDoc.summary.vehicle + ')' : ''}.` },
+    ...svjDoc.notes.map((n) => ({ level: 'WARN', rule: 'SVJ', message: n })),
+    ...svjDoc.meshes.filter((m) => m.file).map((m) => ({ level: 'INFO', rule: 'SVJ §22', message: `mesh ${m.uri}: nodes ${m.nodes.join(', ') || '(none)'}` }))]);
+}
+
+// Import SVJ: a folder holding the SVJ (a .svj.json, else a .zip bundle) and its meshes
+async function importSvjFolder(dir) {
+  const files = await indexDir(dir);
+  const depth = (f) => f.path.split('/').length;
+  const byDepth = (a, b) => depth(a) - depth(b) || a.path.localeCompare(b.path);
+  const jsons = files.filter((f) => /\.svj\.json$/i.test(f.name)).sort(byDepth);
+  const zip = files.filter((f) => /\.zip$/i.test(f.name)).sort(byDepth)[0];
+  if (!jsons.length && !zip) {
+    showIssues([{ level: 'ERROR', rule: 'SVJ', message: `${dir.name}: no .svj.json or .zip bundle in it or below it.` }]);
+    return;
+  }
+  const raw = '/tmp/svj_raw';
+  py.runPython(`import shutil; shutil.rmtree('${raw}', ignore_errors=True)`);
+  py.FS.mkdirTree(raw);
+  const pick = jsons[0] || zip;
+  const data = new Uint8Array(await (await pick.file()).arrayBuffer());
+  py.FS.writeFile(`${raw}/${pick.name}`, data);
+  svjSrc = `${raw}/${pick.name}`;
+  if (jsons.length) {                                // the meshes the SVJ names, found below its folder
+    const jsonDir = pick.path.slice(0, pick.path.lastIndexOf('/') + 1);
+    let doc = null;
+    try { doc = JSON.parse(new TextDecoder().decode(data)); } catch (e) { /* load_bundle reports it */ }
+    await supplyMeshes(files, jsonDir, (doc && doc.assets && doc.assets.meshes) || [], raw + '/');
+  }
+  await finishImport(pick.name);
+  if (jsons.length > 1) {
+    showIssues([{ level: 'INFO', rule: 'SVJ', message: `${jsons.length} SVJs in ${dir.name}: loaded ${pick.shown}; the others: ${jsons.slice(1, 6).map((f) => f.shown).join(', ')}${jsons.length > 6 ? '…' : ''}. Pick a single SVJ's folder to load another.` }]);
+  }
+}
+
+// a mesh that was not found: the folder holding it
+async function findSvjMeshes() {
+  if (!svjDoc || !svjSrc) return;
+  let dir;
+  try {
+    if (window.showDirectoryPicker) dir = handleDir(await window.showDirectoryPicker({ id: 'svj-meshes', mode: 'read' }));
+    else { svjDirMode = 'meshes'; $('svjdir').click(); return; }
+  } catch (e) { return; }                            // cancelled, or a folder Chrome blocks
+  await useSvjFolder(dir);
+}
+
+async function useSvjFolder(dir) {
+  const files = await indexDir(dir);
+  const base = svjSrc.slice(0, svjSrc.lastIndexOf('/') + 1);
+  const wanted = svjDoc.meshes.filter((m) => !m.file);
+  const found = await supplyMeshes(files, '', wanted, base);
+  svjDoc = JSON.parse(svjpy.load_bundle(svjSrc, '/tmp/svj_in'));
+  await loadSvjMeshes();
+  redraw();
+  const missing = wanted.length - found.length;
+  showIssues([{ level: found.length ? 'PASS' : 'WARN', rule: 'SVJ §22', message: `${found.length} SVJ mesh${found.length === 1 ? '' : 'es'} found in ${dir.name}`
+    + (missing > 0 ? `; ${missing} still not found (looked for their uri, then their file name, in every folder below)` : '') + '.' }]);
+}
+
+// where the browser has no folder picker: a folder input, for either purpose
+let svjDirMode = 'import';
+$('svjdir').onchange = async (e) => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  if (!files.length) return;
+  try {
+    if (svjDirMode === 'meshes') await useSvjFolder(listDir(files));
+    else await importSvjFolder(listDir(files));
+  } catch (err) { showIssues([{ level: 'ERROR', rule: 'SVJ', message: 'Could not import: ' + pyError(err) }]); }
+};
+
+$('svjin').onclick = async () => {
+  if (!window.showDirectoryPicker) { svjDirMode = 'import'; $('svjdir').click(); return; }
+  let dir;
+  try { dir = handleDir(await window.showDirectoryPicker({ id: 'svj-folder', mode: 'read' })); } catch (e) { return; }
+  try { await importSvjFolder(dir); } catch (err) { showIssues([{ level: 'ERROR', rule: 'SVJ', message: 'Could not import: ' + pyError(err) }]); }
+};
+$('svjinfiles').onclick = () => $('svjfile').click();
 $('hps').onchange = () => { hpG.visible = $('hps').checked; };
 
 // put the SVJ meshes and hardpoints on the base vehicle's front axle and ground (after every reconfigure)
@@ -892,6 +1028,8 @@ function svjInspector() {
       <span>Corners</span><span>${Object.entries(s.corners).map(([k, t]) => `${esc(k)} ${esc(t || '?')}`).join(', ') || '–'}</span>
       <span>Meshes</span><span>${svjDoc.meshes.length} (${svjDoc.bindings.length} bindings)</span>
       <span>Hardpoints</span><span>${svjHp.length}</span></div>
+    ${svjDoc.meshes.some((m) => !m.file) ? `<p class="bad">${svjDoc.meshes.filter((m) => !m.file).length} of the SVJ's meshes were not handed over (it names them by a path beside the SVJ file, which a page cannot open: ${esc(svjDoc.meshes.filter((m) => !m.file).map((m) => m.uri).slice(0, 3).join(', '))}).
+      <button id="svjfindmeshes">Find the meshes folder…</button></p>` : ''}
     ${svjDoc.bindings.length ? `<details><summary>Visual bindings</summary><div class="kv">${svjDoc.bindings.map((b) =>
       `<span>${esc(b.path)}</span><span>${esc(b.node)}</span>`).join('')}</div></details>` : ''}
     ${cmp}
@@ -1016,6 +1154,7 @@ function bindFitPanel() {
   if ($('retiecancel')) $('retiecancel').onclick = () => { retie = null; drawInspector(); };
   document.querySelectorAll('[data-fitstage]').forEach((c) => c.onchange = () => { if (c.checked) fitStages.add(c.dataset.fitstage); else fitStages.delete(c.dataset.fitstage); });
   if ($('fitrun')) $('fitrun').onclick = runFit;
+  if ($('svjfindmeshes')) $('svjfindmeshes').onclick = findSvjMeshes;
   if ($('fitclear')) $('fitclear').onclick = () => { vehEdit.fit = {}; vehEdit.fitReport = null; studySuspension(); configureVehicle(); };
 }
 
