@@ -878,6 +878,7 @@ def piece_rows(model, configured, svj, files, place, mesh_ref=None, only=None):
     if not path:
         return []
     mesh_ref = mesh_ref or next(iter(files))
+    pieces = export.susp_pieces(configured, svj, path, place, files)
     geo = configured["geometry"]
     owner = geo.get("parts") or {}
     hps = {}
@@ -895,9 +896,16 @@ def piece_rows(model, configured, svj, files, place, mesh_ref=None, only=None):
             count[owner.get(n)] = count.get(owner.get(n), 0) + 1
         if count:
             hosts[w["name"]] = max(count, key=count.get)
-    return [{"path": f"susp.{p['corner']}.{p['node']}", "node": p["node"], "mesh_ref": mesh_ref, "part": hosts[p["corner"]],
-             "groups": [f"bf_{p['role']}_{p['corner']}"]}
-            for p in export.susp_pieces(configured, svj, path, place) if p["corner"] in hosts]
+    rows = []
+    for p in pieces:
+        if p["corner"] not in hosts:
+            continue
+        row = {"path": f"susp.{p['corner']}.{p['node']}", "node": p["node"], "mesh_ref": p.get("mesh_ref") or mesh_ref,
+               "part": hosts[p["corner"]], "groups": [f"bf_{p['role']}_{p['corner']}"]}
+        if p.get("link"):
+            row["link"] = p["link"]
+        rows.append(row)
+    return rows
 
 
 def _fit_nodes_moved(part, deltas):

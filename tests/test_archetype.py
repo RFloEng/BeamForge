@@ -114,5 +114,61 @@ class TestVanillaMeshes(unittest.TestCase):
                          ["wheel_02a_16x8", "tire_01f_16x8_25", "car_svj_susp_fl_x0_wishbone_fl"])
 
 
+class TestBoundParts(unittest.TestCase):
+    """The suspension parts an SVJ v0.99.2 binds node by node (svj.part_bindings), and link_between_points."""
+    SVJ = {"assets": {"meshes": [{"id": "s", "uri": "susp.glb"}]},
+           "suspension": {"FL": {"topology": {"upright": {"id": "upright_fl", "hardpoints": {"lower_ball_joint": [0.0, -0.7, 0.2]},
+                                                          "visual": {"node": "SVJ::suspension::upright_fl"}},
+                                              "links": [{"name": "lower_wishbone", "inboard_points": [[0.2, -0.3, 0.2], [-0.2, -0.3, 0.2]],
+                                                         "outboard_ref": "hardpoints.lower_ball_joint",
+                                                         "visual": {"node": "SVJ::suspension::lower_wishbone_fl",
+                                                                    "placement": "link_between_points", "mesh_axis": "+y"}},
+                                                        {"name": "tie_rod", "inboard_points": [[0.1, -0.3, 0.3]],
+                                                         "visual": {"node": "SVJ::suspension::tie_rod_fl"}}]},
+                          "spring": {"visual": {"node": "SVJ::suspension::spring_fl"}},
+                          "arb": {"visual": {"node": "SVJ::suspension::arb_fl"}}}}}
+
+    def test_roles_and_bindings(self):
+        from beamforge import svj
+        self.assertEqual([svj.part_role(n) for n in ("upright_fl", "upper_wishbone_fr", "tie_rod_rl", "toe_link_rr", "spring_fl",
+                                                      "trailing_arm_rl", "arb_fl", "knuckle")],
+                         ["hub", "arm", "tie", "tie", "strut", "arm", None, "hub"])
+        b = {x["part"]: x for x in svj.part_bindings(self.SVJ)}
+        self.assertEqual([b[k]["role"] for k in ("upright", "lower_wishbone", "tie_rod", "spring", "arb")],
+                         ["hub", "arm", "tie", "strut", None])
+        w = b["lower_wishbone"]
+        self.assertEqual((w["placement"], w["mesh_axis"], w["outboard"], len(w["inboard"])), ("link_between_points", "+y", [0.0, -0.7, 0.2], 2))
+        self.assertIsNone(b["tie_rod"]["inboard"])                   # rigid: no placement
+        self.assertEqual(b["upright"]["mesh_ref"], "s")              # the only mesh
+
+    def test_link_place(self):
+        from beamforge import export
+        pts = [[0.0, 0.0, 0.0], [0.0, 0.4, 0.0]]                      # a wishbone along its own +y, pivot at the origin
+        inb, out = [[0.2, -0.3, 0.2], [-0.2, -0.3, 0.2]], [0.0, -0.7, 0.2]
+        placed = export.link_place(pts, "+y", inb, out)
+        self.assertEqual([round(c, 6) for c in placed[0]], [0.0, -0.3, 0.2])        # origin on the pivots' centre
+        self.assertAlmostEqual(math.dist(placed[0], placed[1]), 0.4, places=6)       # kept its size
+        d = [placed[1][i] - placed[0][i] for i in range(3)]
+        self.assertAlmostEqual(d[1], -0.4, places=6)                                  # pointing outboard (-y)
+        self.assertEqual([round(c, 6) for c in export.link_place(pts, "+y", inb, out, None, True)[1]], out)   # stretched onto it
+        slant = export.link_place(pts, "+y", [[0.0, 0.0, 0.0]], [0.3, 0.4, 0.0])      # turned onto a slanted link
+        self.assertEqual([round(c, 6) for c in slant[1]], [0.24, 0.32, 0.0])
+        flip = export.link_place(pts, "-y", [[0.0, 0.0, 0.0]], [0.0, 1.0, 0.0])       # axis opposite to the link
+        self.assertEqual([round(c, 6) for c in flip[1]], [0.0, -0.4, 0.0])           # the mesh's -y runs along the link: its +y end goes the other way
+
+    def test_bound_pieces_from_the_file(self):
+        import os
+        import tempfile
+        from beamforge import export, gltf
+        tri = [[0.0, 0.0, 0.0], [0.0, 0.4, 0.0], [0.0, 0.0, 0.05]]
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "susp.glb")
+            Path(path).write_bytes(gltf.triangles_glb([tri], "SVJ::suspension::lower_wishbone_fl"))   # the file has this one only
+            v = {"wheels": [{"name": "FL"}, {"name": "FR"}]}
+            got = export.susp_pieces(v, self.SVJ, path, {"yf": 0.0, "ground": 0.0}, {"s": path})
+        self.assertEqual([(p["node"], p["role"], p["corner"]) for p in got], [("SVJ::suspension::lower_wishbone_fl", "arm", "FL")])
+        self.assertEqual(got[0]["link"]["axis"], "+y")
+
+
 if __name__ == "__main__":
     unittest.main()

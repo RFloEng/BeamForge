@@ -330,10 +330,72 @@ PIECE_REACH = 0.9      # m: a suspension piece belongs to a wheel when its middl
 PIECE_MID = 0.1        # m: a piece across the centre line (a front beam, both springs in one mesh) is no wheel's
 
 
-def susp_pieces(v, svj, path, place):
-    """The suspension's visible parts in an SVJ mesh file (gltf.susp_pieces) that belong to one wheel:
-    [{"node", "role", "corner"}], corner being the wheel nearest to the part's middle, in the placed
-    vehicle's frame; a part across the centre line or far from every wheel is left out (it stays in the body)."""
+_AXES = {"x": (1.0, 0.0, 0.0), "y": (0.0, 1.0, 0.0), "z": (0.0, 0.0, 1.0)}
+
+
+def link_place(pts, axis, inboard, outboard, from_point=None, scale=False):
+    """Mesh points (SAE, the mesh's own frame) placed on a link, SVJ section 22.6 (placement link_between_points):
+    `axis` ("+x", "-y"...), the mesh's axis from its inboard end to its outboard end, is turned onto the vector from
+    the link's inboard end (inboard[from_point], else the centroid of the inboard points) to the outboard point, the
+    mesh's origin put on the inboard end; with `scale` the mesh is stretched along the axis only, to span the
+    distance. Roll about the axis is the mesh's own. Returns the points in the vehicle's SAE frame."""
+    o = list(inboard[from_point]) if isinstance(from_point, int) and 0 <= from_point < len(inboard) \
+        else [sum(p[i] for p in inboard) / len(inboard) for i in range(3)]
+    d = [outboard[i] - o[i] for i in range(3)]
+    length = math.sqrt(sum(x * x for x in d))
+    if length < 1e-9:
+        return [[o[i] + p[i] for i in range(3)] for p in pts]
+    u = [x / length for x in d]
+    sign = -1.0 if str(axis).startswith("-") else 1.0
+    a = [sign * c for c in _AXES.get(str(axis).lstrip("+-").lower(), _AXES["x"])]
+    if scale:
+        span = max(sum(p[i] * a[i] for i in range(3)) for p in pts)
+        k = length / span if span > 1e-9 else 1.0
+        pts = [[p[i] + (k - 1.0) * sum(p[j] * a[j] for j in range(3)) * a[i] for i in range(3)] for p in pts]
+    c = sum(a[i] * u[i] for i in range(3))
+    if c < -1 + 1e-9:                                    # opposite: a half turn about any axis across a
+        t = next(e for e in _AXES.values() if abs(sum(e[i] * a[i] for i in range(3))) < 0.9)
+        v = [a[1] * t[2] - a[2] * t[1], a[2] * t[0] - a[0] * t[2], a[0] * t[1] - a[1] * t[0]]
+        n = math.sqrt(sum(x * x for x in v))
+        v = [x / n for x in v]
+        R = [[2 * v[i] * v[j] - (1.0 if i == j else 0.0) for j in range(3)] for i in range(3)]
+    else:                                                # Rodrigues: I + [v] + [v]^2 / (1 + c), v = a x u
+        v = [a[1] * u[2] - a[2] * u[1], a[2] * u[0] - a[0] * u[2], a[0] * u[1] - a[1] * u[0]]
+        K = [[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]]
+        K2 = [[sum(K[i][m] * K[m][j] for m in range(3)) for j in range(3)] for i in range(3)]
+        R = [[(1.0 if i == j else 0.0) + K[i][j] + K2[i][j] / (1 + c) for j in range(3)] for i in range(3)]
+    return [[o[i] + sum(R[i][j] * p[j] for j in range(3)) for i in range(3)] for p in pts]
+
+
+def _bound_pieces(v, svj, files, path):
+    """The suspension parts the SVJ binds to glTF nodes one by one (svj.part_bindings, v0.99.2) whose node is in its
+    mesh file: [{"node", "role", "corner", "mesh_ref", "link"}], link the placement of a link_between_points part
+    ({"inboard", "outboard", "axis", "from_point", "scale"}) else None. files: {mesh id: path}."""
+    wheels = {w["name"] for w in v.get("wheels") or []}
+    out = []
+    for b in svjmod.part_bindings(svj):
+        if not b["role"] or b["corner"] not in wheels or b["part"] == "upright":
+            continue                                        # (the upright goes with its corner: svj_attach)
+        f = (files or {}).get(b["mesh_ref"]) or path
+        if not f or not _has(f, b["node"]):
+            continue
+        link = None
+        if b["placement"] == "link_between_points" and b["inboard"] and b["outboard"]:
+            link = {"inboard": b["inboard"], "outboard": b["outboard"], "axis": b["mesh_axis"],
+                    "from_point": b["from_point"], "scale": b["scale_to_length"]}
+        out.append({"node": b["node"], "role": b["role"], "corner": b["corner"], "mesh_ref": b["mesh_ref"], "link": link})
+    return out
+
+
+def susp_pieces(v, svj, path, place, files=None):
+    """The suspension's visible parts in an SVJ mesh file that belong to one wheel: [{"node", "role", "corner"}]
+    ("mesh_ref" and "link" too, for parts the SVJ binds itself). Those the SVJ binds node by node (v0.99.2,
+    _bound_pieces) are taken as declared, from whichever of its mesh files holds them; without such bindings the
+    parts are found by their names (gltf.susp_pieces), corner being the wheel nearest to the part's middle, in the
+    placed vehicle's frame; a part across the centre line or far from every wheel is left out (it stays in the body)."""
+    bound = _bound_pieces(v, svj, files, path)
+    if bound:
+        return bound
     glb = path.lower().endswith(".glb")
     with open(path, "rb") as fh:
         data = fh.read()
@@ -402,7 +464,7 @@ def svj_attach(configured_json, svj_json, mapping_json=None, files_json=None, pl
             # the suspension's parts baked into the body (wishbones, struts) stay out of it: they sit at the
             # static pose and would hang there while the suspension moves; the base's own parts show, or
             # the archetype's (archetype.piece_rows) follow their nodes
-            baked = susp_pieces(v, svj, path, place)
+            baked = susp_pieces(v, svj, path, place, files)
             body["exclude"] = sorted({p["node"] for p in panels} | {b["node"] for b in baked})
             glass = _glass(v, svj, path, place, body) if not body["node"] or not _has(path, body["node"]) else []
             if glass:
@@ -439,6 +501,7 @@ def svj_meshes(svj, files, place, attach, new_id):
             names = "|".join(re.escape(x) for x in a["exclude"])
             skip = re.compile(f"(?:{skip.pattern})|^(?:{names})$" if skip else f"^(?:{names})$", re.I)
         pos, uvs, prims = gltf.textured(data, is_glb=glb, under=under, skip=skip)
+        link = a.get("link")
         if a.get("prims") is not None:                     # glass panes taken out of the body
             keep = set(a["prims"])
             prims = [p for i, p in enumerate(prims) if i in keep]
@@ -447,8 +510,13 @@ def svj_meshes(svj, files, place, attach, new_id):
             prims = [p for i, p in enumerate(prims) if i not in drop]
         if not any(len(i) >= 3 for _, i in prims):
             continue
-        pos = [[round(c, 5) for c in svjmod.from_sae([x + o for x, o in zip(svjmod.gltf_to_sae(p, axes), off)],
-                                                     place["yf"], place["ground"])] for p in pos]
+        if link:                                           # a link: the mesh in its own frame, put on its hardpoints
+            sae = link_place([svjmod.gltf_to_sae(p, axes) for p in pos], link["axis"], link["inboard"], link["outboard"],
+                             link.get("from_point"), link.get("scale"))
+            pos = [[round(c, 5) for c in svjmod.from_sae(p, place["yf"], place["ground"])] for p in sae]
+        else:
+            pos = [[round(c, 5) for c in svjmod.from_sae([x + o for x, o in zip(svjmod.gltf_to_sae(p, axes), off)],
+                                                         place["yf"], place["ground"])] for p in pos]
         if a.get("side"):                                  # one side of a node that holds both (both doors)
             s = a["side"]
             prims = [(k, [v for t in range(0, len(i) - 2, 3) for v in i[t:t + 3]

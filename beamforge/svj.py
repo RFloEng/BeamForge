@@ -1,6 +1,6 @@
 """SVJ (Standard Vehicle JSON) reading for BeamForge: bundles, meshes, hardpoints, comparison.
 
-SVJ: https://github.com/RFloEng/SVJ-standard-vehicle-json (spec v0.99.1).
+SVJ: https://github.com/RFloEng/SVJ-standard-vehicle-json (spec v0.99.2).
 Pure Python, standard library only (runs in Pyodide).
 
 Frames
@@ -26,7 +26,7 @@ from pathlib import Path
 
 from beamforge import gltf
 
-SVJ_VERSION = "0.99.1"
+SVJ_VERSION = "0.99.2"
 DEFAULT_GLTF_AXES = {"up": "Y", "forward": "-Z"}      # SVJ §22.4, Blender export convention
 
 
@@ -125,8 +125,8 @@ def visual_bindings(svj):
 
     add("chassis", (svj.get("chassis") or {}).get("visual"))
     for name, c in (svj.get("suspension") or {}).items():
-        if isinstance(c, dict):
-            add(f"suspension.{name}", c.get("visual"))
+        if isinstance(c, dict):                           # the corner's upright: v0.97's corner-level form, or v0.99.2's
+            add(f"suspension.{name}", c.get("visual") or ((c.get("topology") or {}).get("upright") or {}).get("visual"))
     for b in (svj.get("chassis") or {}).get("mass_bodies", []) or []:
         add(f"mass_bodies.{b.get('id')}", b.get("visual"))
     comps = (svj.get("aerodynamics") or {}).get("components")
@@ -140,6 +140,60 @@ def visual_bindings(svj):
     if uris and not any(b["path"] == "chassis" for b in out):
         first = next(iter(uris))
         out.insert(0, {"path": "chassis", "mesh_ref": first, "node": None, "uri": uris[first], "implied": True})
+    return out
+
+
+# The canonical part names of the glTF naming convention (docs/naming_convention.md, v0.99.2) and their aliases, by
+# the role a suspension part has on a BeamNG corner: the hub (upright), an arm (anything that locates the hub),
+# the strut (spring and damper) and the tie rod (steering or toe link).
+PART_ROLES = (("tie", re.compile(r"tie_rod|track_rod|steering_rod|steering_link|toe_link|toe_rod|toe_control|drag_link", re.I)),
+              ("hub", re.compile(r"upright|knuckle|hub_carrier|spindle|stub_axle|^hub", re.I)),
+              ("strut", re.compile(r"strut|spring|coil|damper|shock", re.I)),
+              ("arm", re.compile(r"wishbone|(^|_)arm|link|rod|rocker|bellcrank|pushrod|pullrod|uca$|lca$|axle_body|"
+                                 r"axle_housing|de_dion|beam_axle", re.I)))
+
+
+def part_role(name):
+    """The role of a suspension part by its canonical name (upper_wishbone, tie_rod, strut...): "hub", "arm",
+    "strut" or "tie"; None for what no corner follows (an anti-roll bar, a drop link)."""
+    n = re.sub(r"_(f[lr]|r[lr]|a\d+[lrc])(_\w+)?$", "", str(name or "").lower())
+    if re.search(r"arb|sway|stabili[sz]er|drop_link|end_link", n):
+        return None
+    return next((r for r, rx in PART_ROLES if rx.search(n)), None)
+
+
+def part_bindings(svj):
+    """The suspension parts the file binds to glTF nodes one by one (SVJ v0.99.2, §22.3): [{"corner", "part", "role",
+    "mesh_ref", "node", "placement", "mesh_axis", "from_point", "scale_to_length", "inboard", "outboard"}] for each
+    corner's upright, links, axle body, spring, damper and anti-roll bar that carry a `visual`. part is the part's name
+    (the link's `name`, "upright", "spring"...), role as part_role. For a `link_between_points` binding inboard is the
+    link's inboard points and outboard its upright hardpoint (SAE, as in the file); otherwise both are None."""
+    uris = {a["id"]: a["uri"] for a in (svj.get("assets") or {}).get("meshes", [])}
+    out = []
+    for corner, c in (svj.get("suspension") or {}).items():
+        if not isinstance(c, dict):
+            continue
+        topo = c.get("topology") if isinstance(c.get("topology"), dict) else {}
+        hps = (topo.get("upright") or {}).get("hardpoints") or {}
+
+        def add(part, vis, inboard=None, outboard=None):
+            if not (isinstance(vis, dict) and vis.get("node")):
+                return
+            ref = vis.get("mesh_ref") or (next(iter(uris)) if len(uris) == 1 else None)
+            link = vis.get("placement") == "link_between_points"
+            out.append({"corner": corner, "part": part, "role": part_role(part), "mesh_ref": ref, "node": vis["node"],
+                        "placement": vis.get("placement") or "rigid", "mesh_axis": vis.get("mesh_axis") or "+x",
+                        "from_point": vis.get("from_point"), "scale_to_length": bool(vis.get("scale_to_length")),
+                        "inboard": inboard if link else None, "outboard": outboard if link else None})
+        add("upright", c.get("visual") or (topo.get("upright") or {}).get("visual"))
+        for link in topo.get("links") or []:
+            ref = str(link.get("outboard_ref") or "").split(".")[-1]
+            out_pt = hps.get(ref)
+            add(link.get("name") or "link", link.get("visual"), link.get("inboard_points"),
+                out_pt if isinstance(out_pt, list) and len(out_pt) == 3 else None)
+        add("axle_body", (topo.get("axle_body") or {}).get("visual"))
+        for k in ("spring", "damper", "arb"):
+            add(k, (c.get(k) or {}).get("visual") if isinstance(c.get(k), dict) else None)
     return out
 
 

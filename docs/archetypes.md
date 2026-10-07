@@ -228,3 +228,25 @@ rear suspension is not drawn until the double wishbone archetype exists.
   archetype, falling back to the base's where the SVJ's layout has no archetype. Both are developed.
 - The double wishbone archetype (Miata, Civic, the BMWs' rears).
 - Anti-roll bars and suspension meshes.
+
+## SVJ v0.99.2: the file says which node is which part
+
+Older files (the AC converter's, v0.97) bind only each corner's upright (`SVJ::body::upright_fl`), so the archetype finds
+the arms, struts and steering rods inside the mesh by their names (`gltf.susp_pieces`). From v0.99.2 (§22) a file can bind
+every part itself: `topology.links[].visual`, `spring.visual`, `damper.visual`, `topology.axle_body.visual`, with nodes named
+`SVJ::suspension::<part>_<corner>` (`docs/naming_convention.md` of the SVJ repository).
+
+- `svj.part_bindings` reads them; `svj.part_role` maps a canonical part name onto the role a BeamNG corner follows (hub,
+  arm, strut, tie rod; an anti-roll bar follows no corner).
+- `export.susp_pieces` takes the declared parts as they are (from whichever mesh file holds them, the corner from the file,
+  not the wheel nearest to the part's middle) when the file binds any part besides the upright; otherwise it keeps guessing
+  by names.
+- `placement: link_between_points` (§22.6): the mesh is authored in its own frame, not at the design position.
+  `export.link_place` turns its `mesh_axis` onto the vector from the link's inboard end to its outboard hardpoint and puts its
+  origin on the inboard end (scaling along the axis if asked); the archetype's pieces then follow their node group as before.
+  Unverified against a real file: the axes are read in the SAE frame of the mesh (after `gltf_to_sae`), which the spec
+  does not say outright.
+
+Not used yet: `static_setup` (ride height, corner weight, spring compression: the preload is computed for the car as built, which
+is what sets its ride height), `compliance_summary` (toe and lateral stiffness), and the A-notation stations (`A1L`...) of
+multi-axle vehicles (BeamForge's corners are FL, FR, RL, RR).
