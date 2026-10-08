@@ -34,7 +34,7 @@ import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, reme
 const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py',
   'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py', 'beamforge/dae.py', 'beamforge/values.py',
   'beamforge/rigidity.py', 'beamforge/kinematics.py', 'beamforge/roles.py', 'beamforge/convert.py',
-  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py'];
+  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py'];
 const REPO = new URL('../', import.meta.url);
 
 const $ = (id) => document.getElementById(id);
@@ -44,7 +44,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 // last line of a Python traceback, without the exception class
 const pyError = (e) => String(e.message || e).trim().split('\n').pop().replace(/^\w+Error: /, '');
 
-let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy, strpy, ptpy;
+let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy, strpy, ptpy, donpy;
 const timing = {};         // ms per step, shown in the footer by drawTiming
 
 // ---------- Python engine ----------
@@ -69,6 +69,7 @@ async function boot() {
   skpy = py.pyimport('beamforge.skeleton');
   strpy = py.pyimport('beamforge.structure');
   ptpy = py.pyimport('beamforge.powertrain');
+  donpy = py.pyimport('beamforge.donors');
   timing.files = performance.now() - t1;
   $('loading').remove();
   await restoreProject();
@@ -1998,6 +1999,39 @@ function setWorkspace(k) {
 // engine part, the ratios into the gearbox (reverse kept), the final drive into the driven axle, the turns into the
 // steering. The transmission itself (gearbox type, differential, transfer case...) is chosen among the base's parts.
 const PT_EMPTY = { engine: null, gears: null, final_drive: null, steering_turns: null, touched: false };
+
+// ---------- the vanilla cars' parts: engines, gearboxes, tyres and rims, grouped into archetypes (beamforge/donors.py)
+// Learnt from the user's install (only the files of those parts are read), kept in this browser. An archetype points at
+// a real part (model and part name) with its numbers; a choice remembers which, for a car made from scratch.
+const LIBRARY_KEY = 'beamforge.library';
+let library = (() => { try { return JSON.parse(localStorage.getItem(LIBRARY_KEY) || 'null'); } catch { return null; } })();
+let libraryBusy = '';
+
+async function learnLibrary() {
+  if (!resolved) { showIssues([{ level: 'INFO', rule: 'library', message: 'Add your BeamNG folders first (Base vehicle).' }]); return; }
+  const want = (p) => /^vehicles\/[^/]+\/.*\.jbeam$/i.test(p) && /engine|motor|transmission|transaxle|gearbox|tire|tyre|wheel|rim/i.test(p.split('/').pop());
+  try {
+    libraryBusy = 'Reading the engines, gearboxes, tyres and rims of every vehicle…'; drawInspector();
+    const { texts, ranks } = await readResolved(want, libraryBusy);
+    vehBusy = '';
+    libraryBusy = `Learning from ${Object.keys(texts).length} files…`; drawInspector();
+    await new Promise((r) => setTimeout(r, 30));
+    vehpy.add_files(JSON.stringify(texts), JSON.stringify(ranks));
+    const models = (cat || []).filter((v) => /car|truck/i.test(v.type || 'car')).map((v) => v.model);
+    library = { at: new Date().toISOString(), vehicles: models.length, archetypes: JSON.parse(donpy.archetypes_json(JSON.stringify(models))) };
+    try { localStorage.setItem(LIBRARY_KEY, JSON.stringify(library)); } catch { /* too large to keep: kept for this session */ }
+    if (veh) configureVehicle();                     // the vehicle's own parts were read again with the rest
+  } catch (err) { showIssues([{ level: 'ERROR', rule: 'library', message: pyError(err) }]); }
+  libraryBusy = '';
+  redraw();
+}
+
+function libraryPicker(kind, label, chosen) {
+  const list = library && library.archetypes[kind];
+  if (!list || !list.length) return '';
+  return `<div class="inl"><select data-libpick="${kind}"><option value="">${esc(label)}…</option>
+    ${list.map((a, i) => `<option value="${i}" ${chosen && chosen.part === a.pick.part && chosen.model === a.pick.model ? 'selected' : ''}>${esc(a.name)} · ${a.count} (${esc(a.pick.model)})</option>`).join('')}</select></div>`;
+}
 const PT_KEYS = ['engine', 'engine_power', 'gears', 'final_drive', 'steering'];
 let ptEdit = { ...PT_EMPTY }, ptEditing = null;     // ptEditing: the group whose hand fields are open
 
@@ -2057,9 +2091,16 @@ function powertrainPanel() {
     <span>Final drive</span><span><input type="number" step="0.01" id="ptfd" value="${fd || ''}"></span></div><button id="ptgearok" class="primary">Use these</button></div>` : '';
   const steerEdit = ptEditing === 'steering' ? `<div class="ptedit"><div class="kv"><span>Turns lock to lock</span><span><input type="number" step="0.05" id="ptturns" value="${turns || ''}"></span></div>
     <button id="ptsteerok" class="primary">Use this</button></div>` : '';
+  const lib = library ? `<p class="quiet">From the vanilla cars: ${library.vehicles} vehicles, learnt ${new Date(library.at).toLocaleDateString()}.
+      <button id="liblearn" class="mini">learn again</button></p>`
+    : `<p class="quiet">Engines and gearboxes of every vanilla car can be offered as archetypes (a typical I4, a V8, a 6-speed manual…).
+      <button id="liblearn" class="mini" ${resolved ? '' : 'disabled title="Add your BeamNG folders first"'}>Learn from the install</button></p>`;
   return `<h2>Powertrain</h2>
+    ${libraryBusy ? `<p class="quiet">${esc(libraryBusy)}</p>` : lib}
     ${parts}
     <h3>Engine ${btns('engine', v.torque && v.torque.length)}</h3>
+    ${libraryPicker('engines', 'An engine of the vanilla cars', ptEdit.engine && ptEdit.engine.source)}
+    ${ptEdit.engine && ptEdit.engine.source ? `<p class="quiet">From ${esc(ptEdit.engine.source.title)} (${esc(ptEdit.engine.source.model)}, ${esc(ptEdit.engine.source.part)}).</p>` : ''}
     <table class="cmp"><tr><th></th><th>Base</th><th>SVJ</th><th>New</th></tr>
       <tr><td>Peak torque Nm</td><td>${fmt(bt, 0)}</td><td>${fmt(vt, 0)}</td><td><b>${fmt(ct, 0)}</b></td></tr>
       <tr><td>Peak power kW</td><td>${fmt(bp, 0)}</td><td>${fmt(vp, 0)}</td><td><b>${fmt(cp, 0)}</b></td></tr>
@@ -2069,6 +2110,8 @@ function powertrainPanel() {
     ${lineChart('Power', series(power), 'rpm', 'kW')}
     ${b.turbo ? '<p class="quiet">The base has a turbo or supercharger: its boost comes on top of the curve, as in the game.</p>' : ''}
     <h3>Gearbox and final drive ${btns('gears', (v.ratios && v.ratios.length) || v.final_drive)}</h3>
+    ${libraryPicker('gearboxes', 'A gearbox of the vanilla cars', ptEdit.gearbox_source)}
+    ${ptEdit.gearbox_source && ptEdit.gears ? `<p class="quiet">Ratios of ${esc(ptEdit.gearbox_source.title)} (${esc(ptEdit.gearbox_source.model)}, ${esc(ptEdit.gearbox_source.type)}).</p>` : ''}
     <table class="cmp"><tr><th></th><th>Ratios</th><th>Final</th></tr>
       <tr><td>Base</td><td>${ratioText(b.ratios)}</td><td>${fmt(b.final_drive, 2)}</td></tr>
       <tr><td>SVJ</td><td>${ratioText(v.ratios)}</td><td>${fmt(v.final_drive, 2)}</td></tr>
@@ -2088,7 +2131,7 @@ function bindPowertrain(el) {
   const svjEdit = () => (svjDoc ? JSON.parse(ptpy.from_svj_json(JSON.stringify(svjDoc.svj))) : {});
   el.querySelectorAll('[data-ptkeep]').forEach((x) => { x.onclick = () => {
     const k = x.dataset.ptkeep;
-    if (k === 'gears') { ptEdit = { ...ptEdit, gears: null, final_drive: null, touched: true }; ptEditing = null; redraw(); } else set(k === 'steering' ? 'steering_turns' : k, null);
+    if (k === 'gears') { ptEdit = { ...ptEdit, gears: null, final_drive: null, gearbox_source: null, touched: true }; ptEditing = null; redraw(); } else set(k === 'steering' ? 'steering_turns' : k, null);
   }; });
   el.querySelectorAll('[data-ptsvj]').forEach((x) => { x.onclick = () => {
     const k = x.dataset.ptsvj, e = svjEdit();
@@ -2109,6 +2152,14 @@ function bindPowertrain(el) {
     ptEditing = null; redraw();
   };
   if ($('ptsteerok')) $('ptsteerok').onclick = () => set('steering_turns', +$('ptturns').value > 0 ? +$('ptturns').value : null);
+  if ($('liblearn')) $('liblearn').onclick = learnLibrary;
+  el.querySelectorAll('[data-libpick]').forEach((x) => { x.onchange = () => {
+    if (x.value === '') return;
+    const a = library.archetypes[x.dataset.libpick][+x.value], p = a.pick;
+    const source = { model: p.model, part: p.part, title: a.name, device: p.device || null, type: p.type || null };
+    if (x.dataset.libpick === 'engines') set('engine', { torque: p.torque, idle_rpm: p.idle_rpm || (p.torque[0] || [800])[0], max_rpm: p.max_rpm || p.torque[p.torque.length - 1][0], source });
+    else { ptEdit = { ...ptEdit, gears: p.ratios, gearbox_source: source, touched: true }; ptEditing = null; redraw(); }
+  }; });
 }
 
 // ---------- Checks: the vehicle's and the sketch's stability and structure ----------
@@ -2310,6 +2361,7 @@ window.beamforge = {
   get skeleton() { return skel; },
   get workspace() { return ws; },
   get powertrain() { return ptEdit; },
+  get library() { return library; },
   get sketchTool() { return skTool; },
   // where a sketch node is on screen (client px), to click it in a test
   skelScreen(id) {
