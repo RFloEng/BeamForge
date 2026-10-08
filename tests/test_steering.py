@@ -27,7 +27,7 @@ class TestDirection(unittest.TestCase):
         # left front wheel, steering axis nearly vertical at x 0.68, y -1.3; the rack end inboard at x 0.3
         ahead = turn([0.68, -1.3, 0.2], [0.55, -1.28, 0.8], [0.68, -1.45, 0.24], [0.3, -1.4, 0.24], [-0.25, -1.4, 0.24], 0.135)
         behind = turn([0.68, -1.3, 0.2], [0.55, -1.28, 0.8], [0.68, -1.15, 0.24], [0.3, -1.2, 0.24], [-0.25, -1.2, 0.24], 0.135)
-        self.assertLess(ahead * behind, 0)                    # the Z3 on the RWD coupe: the base's rack, the SVJ's rod
+        self.assertLess(ahead * behind, 0)                    # a roadster SVJ on a compact coupe base: the base's rack, the SVJ's rod
 
     def test_reversed_factor_turns_it_back(self):
         a = turn([0.68, -1.3, 0.2], [0.55, -1.28, 0.8], [0.68, -1.45, 0.24], [0.3, -1.4, 0.24], [-0.25, -1.4, 0.24], 0.135)
@@ -37,10 +37,10 @@ class TestDirection(unittest.TestCase):
 
 class TestFix(unittest.TestCase):
     def test_reversed_wheel_has_its_hydro_negated(self):
-        part = {"hydros": [["id1:", "id2:"], {"beamSpring": 1}, ["fhub6r", "fsub5l", {"factor": 0.135}], ["fhub6l", "fsub5r", {"factor": -0.135}]]}
+        part = {"hydros": [["id1:", "id2:"], {"beamSpring": 1}, ["rackr", "slidel", {"factor": 0.135}], ["rackl", "slider", {"factor": -0.135}]]}
         files = {"vehicles/x/s.jbeam": json.dumps({"steering": part})}
-        base = {"FL": {"turn": -7.0, "rack_end": "fhub6l", "tie_rod_end": "a"}, "FR": {"turn": -7.0, "rack_end": "fhub6r", "tie_rod_end": "b"}}
-        built = {"FL": {"turn": 7.5, "rack_end": "fhub6l", "tie_rod_end": "a"}, "FR": {"turn": -7.2, "rack_end": "fhub6r", "tie_rod_end": "b"}}
+        base = {"FL": {"turn": -7.0, "rack_end": "rackl", "tie_rod_end": "a"}, "FR": {"turn": -7.0, "rack_end": "rackr", "tie_rod_end": "b"}}
+        built = {"FL": {"turn": 7.5, "rack_end": "rackl", "tie_rod_end": "a"}, "FR": {"turn": -7.2, "rack_end": "rackr", "tie_rod_end": "b"}}
         notes, flipped = steering.fix(files, "x", base, built)
         self.assertEqual(flipped, ["FL"])
         rows = json.loads(files["vehicles/x/s.jbeam"])["steering"]["hydros"]

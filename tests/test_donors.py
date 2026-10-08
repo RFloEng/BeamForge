@@ -21,8 +21,8 @@ PARTS = {"vehicles/toy/toy_engine.jbeam": json.dumps({
     "toy_transmission_5M": {"slotType": "toy_transmission",
                             "powertrain": [["type", "name", "inputName", "inputIndex"], ["frictionClutch", "clutch", "mainEngine", 1], ["manualGearbox", "gearbox", "clutch", 1]],
                             "gearbox": {"gearRatios": [-3.5, 0, 3.6, 2.1, 1.4, 1.0, 0.8]}},
-    "tire_F_206_54_16_sport": {"slotType": "tire_F_16x7", "pressureWheels": [["name"], {"hasTire": True}, {"radius": 0.315}, {"tireWidth": 0.185}, {"frictionCoef": 1.1}]},
-    "tire_RR_30_11_15_alt_drag": {"slotType": "tire_R_15x10", "pressureWheels": [["name"], {"hasTire": True}, {"radius": 0.37}, {"tireWidth": 0.25}]},
+    "tire_F_206_54_16_sport": {"slotType": "tire_F_16x7t", "pressureWheels": [["name"], {"hasTire": True}, {"radius": 0.315}, {"tireWidth": 0.185}, {"frictionCoef": 1.1}]},
+    "tire_RR_30_11_15_alt_drag": {"slotType": "tire_R_15x10t", "pressureWheels": [["name"], {"hasTire": True}, {"radius": 0.37}, {"tireWidth": 0.25}]},
     "wheel_02a_16x7_F": {"slotType": "wheel_F_5", "pressureWheels": [["name"], {"hubRadius": 0.22}, {"hubWidth": 0.16}]},
 })}
 
@@ -44,7 +44,7 @@ class TestDonors(unittest.TestCase):
         t = {x["part"]: x for x in cat["tyres"]}
         self.assertEqual((t["tire_F_206_54_16_sport"]["rim_in"], t["tire_F_206_54_16_sport"]["use"], t["tire_F_206_54_16_sport"]["frictionCoef"]), (16, "sport", 1.1))
         drag = t["tire_RR_30_11_15_alt_drag"]
-        self.assertEqual((drag["rim_in"], drag["use"], drag["width_mm"], drag["diameter_in"]), (15, "drag", 254, 29.0))   # inch sizes
+        self.assertEqual((drag["rim_in"], drag["use"], drag["width_mm"], drag["diameter_in"]), (15, "drag", 279, 30.0))   # inch sizes
         self.assertEqual((cat["rims"][0]["diameter_in"], cat["rims"][0]["width_in"]), (16, 7.0))
 
     def test_archetypes(self):

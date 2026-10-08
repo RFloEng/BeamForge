@@ -26,7 +26,7 @@ import re
 from beamforge import kinematics, rigidity, svj as svjmod, values
 from beamforge.structure import _rank
 
-# beams, N/m: as the vanilla struts' (front-drive compact)
+# beams, N/m: as a vanilla strut car's (a front-drive compact)
 WHEEL_SOFT_K = 6001000
 HUB_K, WHEEL_K, ARM_K, TIE_K, MOUNT_K, RACK_K, SLIDE_K = 7501000, 9001000, 17001000, 15001000, 4501000, 10001000, 18001000
 MOUNTS = 5            # body nodes each mounted node is beamed to
@@ -44,8 +44,8 @@ ROOM = 1.0            # of a body node's stiffness limit that its mounts may fil
 MOUNT_REACH = 0.45    # m: no farther body nodes
 PIVOT_KG, TOP_KG, RACK_KG = 5.0, 2.5, 3.0
 HUB_SHARE = {"h1": 0.3, "h2": 0.1, "h3": 0.2, "h4": 0.2, "h5": 0.2}   # of the corner's unsprung kg
-STEER_C, STEER_C_FAST = 80, 800   # N s/m: steering dampers, slow and fast (the front-drive compact's)
-NODE_K_INDEX = 4.0    # an archetype node's k dt^2 / m at most (the vanilla front-drive compact's nodes reach 6.8)
+STEER_C, STEER_C_FAST = 80, 800   # N s/m: steering dampers, slow and fast (as that car's)
+NODE_K_INDEX = 4.0    # an archetype node's k dt^2 / m at most (that vanilla car's nodes reach 6.8)
 NODE_C_INDEX = 1.0    # and its c dt / m (the vanilla's reach 2.3; ~2 is where the step rings)
 HUB_DEPTH = 0.15      # m: the hub's node across the wheel sits this far inboard of the wheel centre
 SLIDE_AT = 0.6        # h4: this share of the way from the strut bottom to its top
@@ -350,7 +350,7 @@ def apply(files, model, configured, svj, place, loads, built, axles=None, only=N
         active.add(n)
 
     # a steered corner needs the base's steering rack to take the tie rod: the nodes of a steering part (one with
-    # hydros, which turn the hubs) that the base's tie rods reached. A base without one (the older RWD saloon's pitman arm
+    # hydros, which turn the hubs) that the base's tie rods reached. A base without one (a vanilla saloon's pitman arm
     # and idler) keeps its own suspension there: an own rack written for it left the steering free in the game.
     def reached(moving):
         out = set()
@@ -436,10 +436,10 @@ def apply(files, model, configured, svj, place, loads, built, axles=None, only=N
             on_rails |= {sn, ra, rb}
     # Nodes no arm pivot or strut top may be mounted to. A mounted node's load goes through its anchors, so these
     # would be loaded wrongly: the steering rack's slide nodes (the rack moves with the steering and drags the pivot
-    # along: v11's Subaru pivots hung on fsub5, and the front broke), nodes a hydro or a torsion bar drives, and the
-    # engine's mount nodes (the arm's load through the engine's own mounts: the Z3 hung its pivot on fsub3 / fsub4 and
-    # the oil message came) unless the base's own arm hangs on them (the front-drive compact's lower arm is on fsub1 / fsub2,
-    # which are its engine mounts too).
+    # along: an AWD build's pivots hung on one, and the front broke), nodes a hydro or a torsion bar drives, and the
+    # engine's mount nodes (the arm's load through the engine's own mounts: a roadster build hung its pivot on two
+    # and the oil message came) unless the base's own arm hangs on them (a front-drive compact's lower arm pivots
+    # are its engine mounts too).
     mech = set()
     for name in active:
         part_ = (where.get(name) or (None, None))[1]
@@ -521,7 +521,7 @@ def apply(files, model, configured, svj, place, loads, built, axles=None, only=N
                 if gap > 1e-4:
                     d = [pts[k][i] - nodes[near][i] for i in range(3)]
                     twins = [near] + [n for n in nodes if n != near and math.dist(nodes[n], nodes[near]) < 1e-3
-                                      and n not in removed and n not in wheel_nodes]   # coupled pairs (ftop1, ftopm1) move together
+                                      and n not in removed and n not in wheel_nodes]   # coupled pairs (a strut top and its mount) move together
                     for n in twins:
                         moved[n] = d
                         nodes[n] = [nodes[n][i] + d[i] for i in range(3)]
@@ -566,7 +566,7 @@ def apply(files, model, configured, svj, place, loads, built, axles=None, only=N
         bt.append(dict(BEAM_RESET, beamSpring=TIE_K, beamDamp=150, beamDeform=75500, beamStrength=127500))
         bt.append([nm["h3"], nm["tie"], _on_base(nm["tie"], TIE_K, 150, room)])
         if pts["steer"] and "steer_dampers" not in switch:
-            # steering dampers, as the vanilla's (the front-drive compact's fhub3-fsub2, fhub5-fsub2): the steered hub's toe
+            # steering dampers, as the vanilla's (from the hub's tie rod end and a rear hub node to the lower arm's pivot): the steered hub's toe
             # damped against the lower arm's pivots; without them the front wheels shimmy under braking
             bt.append(dict(BEAM_RESET, **BOUNDED, beamSpring=0, beamDamp=STEER_C, beamDeform=20000, beamStrength=35000,
                            beamLimitSpring=0, beamLimitDamp=0))

@@ -76,6 +76,10 @@ async function boot() {
   rigpy = py.pyimport('beamforge.rigidity');
   mtpy = py.pyimport('beamforge.mount');
   dmpy = py.pyimport('beamforge.dampers');
+  try {                       // the user's own role tables of game suspension parts (local/, never in the repository)
+    const r = await fetch(new URL('local/roles.json', REPO), { cache: 'no-store' });
+    if (r.ok) py.pyimport('beamforge.roles').load_json(await r.text());
+  } catch { /* none: corners are fitted by the guess */ }
   copy_ = py.pyimport('beamforge.components');
   timing.files = performance.now() - t1;
   $('loading').remove();
@@ -2692,7 +2696,7 @@ function sketchWheels() {
   return out;
 }
 
-// the rear (or front) twin of a part named for an axle: steelrim_01a_13x5_F <-> _R, tire_F_176_68_13 <-> tire_R_
+// the rear (or front) twin of a part named for an axle: <rim>_13x5_F <-> _R, tire_F_<size> <-> tire_R_
 const axlePart = (name, AX) => name.replace(/_[FR](?=_|$)/, `_${AX}`).replace(/^tire_[FR]_/, `tire_${AX}_`);
 
 function scratchPanel() {

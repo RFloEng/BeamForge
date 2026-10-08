@@ -20,7 +20,7 @@ from . import beamng, jbeam
 
 GEARBOX_TYPES = {"manualGearbox": "manual", "sequentialGearbox": "sequential", "dctGearbox": "dct",
                  "automaticGearbox": "automatic", "cvtGearbox": "cvt"}
-TYRE_NAME = re.compile(r"tire_[a-z]{1,2}_(\d+(?:\.\d+)?)_(\d+(?:\.\d+)?)_(\d+)((?:_[a-z0-9]+)*)", re.I)   # tire_F_176_68_13_standard, tire_RR_30_11_15_alt_drag
+TYRE_NAME = re.compile(r"tire_[a-z]{1,2}_(\d+(?:\.\d+)?)_(\d+(?:\.\d+)?)_(\d+)((?:_[a-z0-9]+)*)", re.I)   # tire_<axle>_<width>_<aspect>_<rim>[_<use>]
 TYRE_NAME_LETTER = re.compile(r"tire_[a-z]{1,2}_[a-z]\d{2}_(\d{2})((?:_[a-z0-9]+)*)$", re.I)        # tire_F_E70_14: the old letter code
 TYRE_NAME_SHORT = re.compile(r"tire_[a-z]{1,2}_(\d+)_(\d{2})((?:_[a-z0-9]+)*)$", re.I)          # tire_RR_165_13_standard, tire_RR_560_13 (no aspect)
 TYRE_USES = ("standard", "sport", "race", "rally", "offroad", "mud", "drag", "eco", "old", "desert", "crawler", "dually",
@@ -194,7 +194,7 @@ def rims(model, parts):
     for name, rec in parts.items():
         p = rec["part"]
         pw = p.get("pressureWheels")
-        if not (isinstance(pw, list) and pw) or not re.search(r"wheel|rim|steelrim", name, re.I) or re.search(r"tire|tyre|hubcap|data", name, re.I):
+        if not (isinstance(pw, list) and pw) or not re.search(r"wheel|rim", name, re.I) or re.search(r"tire|tyre|hubcap|data", name, re.I):
             continue
         m = _merged(pw)
         if "hubRadius" not in m:

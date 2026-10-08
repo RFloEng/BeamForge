@@ -10,7 +10,7 @@ with h the tie rod end, e the rack end, u the axis direction (down to up) and r 
 the sign depends on whether the tie rod end is ahead of or behind the axis, and on which side of it the rod
 runs. A base vehicle's rack drive (the hydros that move the rack ends) is built for its own geometry; an SVJ's
 geometry on it can turn the wheels the other way (the SVJ's tie rod end ahead of the axle on a base whose is
-behind it: a Z3 on the RWD coupe steered backwards). direction() gives the sign per wheel, and fix() negates the
+behind it: a roadster SVJ on a vanilla compact coupe steered backwards). direction() gives the sign per wheel, and fix() negates the
 hydros of a wheel whose sign differs from the base's.
 """
 

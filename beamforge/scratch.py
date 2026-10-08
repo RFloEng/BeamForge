@@ -14,7 +14,7 @@ What is generated
              and data from archetype parts, moved to the engine's place and mounted to the nearest frame nodes; the
              torque curve, ratios and final drive as set; a driveline for FWD, RWD or AWD; a fuel tank. An electric
              motor (an archetype with a "device") drives the differentials directly, its reduction as their gear ratio
-             (as the EV sports car's electric motors do), with a battery and the vehicle controller's electric shift logic
+             (as the vanilla electric sports car's motors do), with a battery and the vehicle controller's electric shift logic
   steering   a rack between the tie rods' inner ends: a rail with two slider nodes held to the frame and two hydros
              crosswise, as the vanilla cars do; it turns the way the tie rods ask (ahead of the axle or behind it)
              to the lock angle asked for
@@ -31,7 +31,7 @@ from . import beamng, jbeam, rigidity, skeleton, svj as svjmod, values
 
 RACK_KG, SLIDER_KG = 3.0, 2.0
 MOUNTS = 3               # beams from each engine or gearbox node to the frame
-EV_REDUCTION = 8.0       # an electric motor's single reduction when none is given (the EV sports car's: 7.6 and race)
+EV_REDUCTION = 8.0       # an electric motor's single reduction when none is given (the vanilla electric sports car's: 7.6, and a race one)
 BATTERY_KWH = 60.0
 SLIDER_IN = 0.1          # m: the rack's sliders this far inside its ends
 DRIVETRAIN = ("FWD", "RWD", "AWD")
@@ -178,7 +178,7 @@ def _steer_axis(car, res, upright):
 
 def _rim_axle(rim, vars_):
     """The rim part's own axle nodes, by side: {+1 (left): (inner id, outer id, inner x, outer x, kg), -1: ...}, local to
-    its slot (the hub part's nodeOffset puts them on the wheel). The vanilla rims define them so (fwhl1l, fwhl1ll...)."""
+    its slot (the hub part's nodeOffset puts them on the wheel). The vanilla rims define them so (an inner and an outer node per side)."""
     _, rows = _table_rows(rim.get("nodes"))
     by = {1: [], -1: []}
     for r in rows:
@@ -578,7 +578,7 @@ def build(car_json):
                         "energyStorage": "mainBattery" if electric else ["mainTank"], "thermalsEnabled": False})
     if electric:
         main_engine["uiName"] = "Motor"
-        for k in ("electricsThrottleName", "electricsThrottleFactorName"):   # the EV sports car's split front / rear throttles
+        for k in ("electricsThrottleName", "electricsThrottleFactorName"):   # a donor's split front / rear throttles
             main_engine.pop(k, None)
     if eng.get("idle_rpm") and not electric:
         main_engine["idleRPM"] = float(eng["idle_rpm"])
@@ -663,7 +663,7 @@ def build(car_json):
     for part, vars_ in ((epart, evars), (gpart, gvars)):
         if isinstance((part or {}).get("vehicleController"), dict):
             vc.update(_resolve(copy.deepcopy(part["vehicleController"]), vars_))
-    if electric:                                            # one motor, by its name here (the EV sports car names front and rear)
+    if electric:                                            # one motor, by its name here (a donor may name a front and a rear one)
         vc.update({"shiftLogicName": "electricMotor", "motorNames": ["mainMotor"]})
         vc.setdefault("topSpeedLimitReverse", 15)
         vc.setdefault("onePedalRegenCoef", 0.85)

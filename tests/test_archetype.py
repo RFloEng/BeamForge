@@ -54,14 +54,14 @@ class TestSurgery(unittest.TestCase):
 
     def test_wheel_remapped(self):
         part = {"pressureWheels": [["name", "hubGroup", "group", "node1:", "node2:", "nodeS", "nodeArm:", "wheelDir"],
-                                   ["FL", "w", "t", "fwhl1ll", "fwhl1l", 9999, "fhub5l", -1,
-                                    {"torqueCoupling:": "fhub1l", "torqueArm:": "fhub4l", "torqueArm2:": "fwhl1ll",
-                                     "steerAxisUp:": "ftop1l", "steerAxisDown:": "fhub1l"}]]}
+                                   ["FL", "w", "t", "wol", "wil", 9999, "hub5l", -1,
+                                    {"torqueCoupling:": "hub1l", "torqueArm:": "hub4l", "torqueArm2:": "wol",
+                                     "steerAxisUp:": "top1l", "steerAxisDown:": "hub1l"}]]}
         names = {k: f"bfFL{k}" for k in ("h1", "h4", "h5", "t")}
         self.assertTrue(archetype._remap_wheels(part, "FL", names))
         row = part["pressureWheels"][1]
         self.assertEqual(row[6], "bfFLh5")
-        self.assertEqual(row[-1], {"torqueCoupling:": "bfFLh1", "torqueArm:": "bfFLh4", "torqueArm2:": "fwhl1ll",
+        self.assertEqual(row[-1], {"torqueCoupling:": "bfFLh1", "torqueArm:": "bfFLh4", "torqueArm2:": "wol",
                                    "steerAxisUp:": "bfFLt", "steerAxisDown:": "bfFLh1"})
 
     def test_mount_weight_added_when_short(self):
@@ -106,7 +106,7 @@ class TestSuspensionMeshes(unittest.TestCase):
 
 class TestVanillaMeshes(unittest.TestCase):
     def test_only_svj_and_wheel_meshes_stay(self):
-        part = {"flexbodies": [["mesh", "[group]:"], {"pos": {"x": 0}}, ["compact_subframe_F", ["g"]], ["brake_disc_slotted", ["g"]],
+        part = {"flexbodies": [["mesh", "[group]:"], {"pos": {"x": 0}}, ["car_subframe_F", ["g"]], ["toy_brake_disc", ["g"]],
                                ["wheel_02a_16x8", ["w"]], ["tire_01f_16x8_25", ["t"]], ["car_svj_susp_fl_x0_wishbone_fl", ["bf_arm_FL"]]]}
         n = archetype._drop_vanilla_meshes([{"p": part}])
         self.assertEqual(n, 2)

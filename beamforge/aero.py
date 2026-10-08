@@ -9,7 +9,7 @@ and half. Downforce is minus the lift.
 In BeamNG every triangle of a vehicle is in the air: it pushes back with its dragCoef and sideways to itself with its
 liftCoef (both in percent, liftCoef defaulting to dragCoef; lua/vehicle/jbeam/stage2.lua), against the flow it faces.
 The forces' exact law is in the game's compiled physics, not public. BeamForge's estimate of a vehicle's drag area is
-sum(dragCoef/100 x area x (n . y)^2) (values.drag_area; about 0.67 m2 for the RWD saloon, a saloon of Cd ~0.3). A car made
+sum(dragCoef/100 x area x (n . y)^2) (values.drag_area; about 0.67 m2 for a vanilla saloon of Cd ~0.3). A car made
 from scratch has no body triangles: it gets one drag plate, a non-colliding triangle on its front nodes facing the flow,
 sized by that estimate to the drag area asked for, and no lift. Downforce devices (wings) are not generated yet.
 """

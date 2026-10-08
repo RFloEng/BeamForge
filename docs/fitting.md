@@ -2,7 +2,7 @@
 
 A vanilla car has 400–600 nodes and 3,000–5,000 beams: too many to move by hand. This page is the method for bending a base vehicle onto an SVJ automatically, in a few stages the user can check and accept one by one.
 
-The base is a starting point, not a copy: the RWD saloon is taken and modified until it has the BMW E30's values. Large differences between the two are the work to be done, not errors. The editor lists them as the changes made to the base, and keeps red for real problems (a stage that could not run, a hardpoint without a node, a tie far from its point).
+The base is a starting point, not a copy: the vanilla RWD saloon is taken and modified until it has the BMW E30's values. Large differences between the two are the work to be done, not errors. The editor lists them as the changes made to the base, and keeps red for real problems (a stage that could not run, a hardpoint without a node, a tie far from its point).
 
 **Built:** all three stages and the hardpoint mapping (`beamforge/fit.py`, the *Fit to the SVJ* section of the SVJ panel). **Next:** writing the fitted parts into the game.
 
@@ -53,19 +53,19 @@ This is your order (wheelbase, pickup points, rest of the body) with the last tw
 
 ## The mapping: which node is which hardpoint
 
-Vanilla suspensions have no meaningful node names (`fhub1l`, `fsub2l`, `rhub1l`). A test with the RWD saloon as base (BeamNG's 3 Series; wheelbase 2.589 m against the E30's 2.570 m) and the BMW E30 example as target, after stage 1 only:
+Vanilla suspensions have no meaningful node names (the hub nodes). A test with a vanilla RWD saloon as base (the game's 3 Series-like car; wheelbase 2.589 m against the E30's 2.570 m) and the BMW E30 example as target, after stage 1 only:
 
-| E30 hardpoint | Nearest RWD saloon suspension node | Distance |
+| E30 hardpoint | Nearest the RWD saloon suspension node | Distance |
 | --- | --- | --- |
-| FL strut top | fhub4l | 105 mm |
-| FL lower ball joint | fhub1l | 99 mm |
-| FL tie-rod end | fhub3l | 134 mm |
-| FL wheel centre | fwhl2l | 79 mm |
-| FL lower arm, front inner | fsub5l | 131 mm |
-| FL lower arm, rear inner | fsub2l | 220 mm |
-| FL tie-rod inner | fsub5l (again) | 88 mm |
+| FL strut top | the hub nodes | 105 mm |
+| FL lower ball joint | the hub nodes | 99 mm |
+| FL tie-rod end | the hub nodes | 134 mm |
+| FL wheel centre | the wheel nodes | 79 mm |
+| FL lower arm, front inner | the subframe nodes | 131 mm |
+| FL lower arm, rear inner | the subframe nodes | 220 mm |
+| FL tie-rod inner | the subframe nodes (again) | 88 mm |
 | RL wheel centre | arbrl (anti-roll bar) | 68 mm |
-| RL semi-trailing arm inner, both points | rsub2l (twice) | 202 and 270 mm |
+| RL semi-trailing arm inner, both points | the rear subframe nodes (twice) | 202 and 270 mm |
 
 The small hatchback as base gave the same picture (77–118 mm for the upright points, up to 296 mm for the inboard ones, one node taken twice and an anti-roll bar node for an arm mount). The RWD saloon's tracks are wider than the E30's (1.450 / 1.540 m against 1.407 / 1.415 m), so stage 3 moves its corners inwards.
 
@@ -74,9 +74,9 @@ The nearest node gets the upright points roughly right, but not the inboard poin
 1. **Guess by role.** The wheel centre is the wheel's two `pressureWheels` axle nodes. The hub is the nodes of a suspension part beamed to them by a suspension part's beam (the axle nodes are also tied to the body by limiter beams; those body nodes are not the hub). The chassis side is the suspension parts' own nodes on that side near the wheel, and the far ends of the suspension beams that touch them (arm mounts on the body or subframe). Upright hardpoints go to hub nodes, link inner points to the chassis side. A hardpoint listed twice (a strut top that is also the strut link's inner point) counts once, as a chassis point, and hardpoints at one place (within 5 mm: a strut's lower end, the damper's and the ball joint, as some converters write them) are one point, tied once; tying them to different nodes collapsed beams to zero length.
 2. **Then by shape and distance.** Upright hardpoints: every assignment to distinct hub nodes is tried, and the one whose shape (with the wheel centre) best matches the SVJ upright wins, nearness breaking ties (nearest first when there are too many to try). Link inner points: the nearest chassis-side node, each node used once. **A guess farther than 15 cm is not tied** (the base has another design there; the field moves that node with its neighbours): such ties dragged subframes and engine nodes 20–40 cm. The user's own ties have no limit. A node with a chassis tie (and the nodes at its place) is not moved with the hub.
 3. **The user checks it:** the editor lists each hardpoint, its node, how it was tied and the gap before the fit. *re-tie* then a click on a node in the view ties it there; *auto* goes back to the guess.
-4. **Remembered per suspension part:** a tie the user sets is stored under the part that owns its node (for example `saloon_suspension_F`), in the browser, so every vehicle and configuration that uses that part starts from it. *auto* forgets it.
+4. **Remembered per suspension part:** a tie the user sets is stored under the part that owns its node (for example `<base>_suspension_F`), in the browser, so every vehicle and configuration that uses that part starts from it. *auto* forgets it.
 
-**Choosing the base:** the closer the base vehicle, the smaller every stage, so pick one of the same kind, size and era (the RWD saloon for a BMW 3 Series). Differences are expected and are what the fit changes. Where the suspension types differ (the RWD saloon's multi-link rear against the E30's semi-trailing arm), only the points that have a node of the same role are tied (the wheel centre, the damper, the arm's mounts); the base keeps its other links.
+**Choosing the base:** the closer the base vehicle, the smaller every stage, so pick one of the same kind, size and era (the vanilla RWD saloon for a BMW 3 Series). Differences are expected and are what the fit changes. Where the suspension types differ (the RWD saloon's multi-link rear against the E30's semi-trailing arm), only the points that have a node of the same role are tied (the wheel centre, the damper, the arm's mounts); the base keeps its other links.
 
 ## The user's choice per stage
 
@@ -100,7 +100,7 @@ nodes round the axle nodes (`node1`, `node2` of `pressureWheels`) as they are wh
 A wheel built on a tilted axle wobbles: its axis precesses once per wheel turn, faster with speed and
 worse when steering. Vanilla cars always spawn the axle square to the car and set static camber and
 toe afterwards, by preloading beams (`beamPrecompression` with a `beamPrecompressionTime`, e.g. the
-front-drive compact's `$camber_F` on `fhub4`–`fwhl1ll`, `$toe_F` on the tie rods).
+the front-drive compact's camber variable on a hub beam, its toe variable on the tie rods).
 
 BeamForge does the same:
 
@@ -162,12 +162,12 @@ by a degree as it dives under braking or cornering is the "dives when turning" a
 
 The kinematics solver (`suspension.study_svj`) can be trusted for double wishbones (the vanilla small hatchback and the SVJ
 both give sane roll centres, camber gain and kingpin) but not for MacPherson fronts as set up from the nodes of a
-base: the vanilla front-drive compact and RWD coupe come out with roll centres of 2-3 m and 17-30 deg of camber change. So an SVJ's
+base: the vanilla front-drive compact and the RWD compact coupe come out with roll centres of 2-3 m and 17-30 deg of camber change. So an SVJ's
 strut front cannot be called inconsistent by it; the bump test on the built beams is the check there.
 
 ## Results so far
 
-RWD saloon fitted to the BMW E30 example, with a real car body mesh as the target (the E30 example ships none):
+vanilla RWD saloon fitted to the BMW E30 example, with a real car body mesh as the target (the E30 example ships none):
 
 | | Base | Target | After |
 | --- | --- | --- | --- |
@@ -181,7 +181,7 @@ Metres. Width and height land within 1–2 cm (the per-slice profiles are smooth
 
 **The mesh on its wheels.** A mesh whose wheels are named nodes (`WHEEL_LF`, `tyre_RR`...) is moved so they sit on the SVJ's wheel centres before anything uses it (the fit, the export, the editor): converters do not always put the mesh's origin at the SVJ's (an Assetto Corsa Civic came 17 cm low, an S2000 12 cm, which pulled the fitted roofs 20 cm down). When the SVJ's body node is not in the file, the whole mesh is the body, with a note.
 
-**Six SVJs on six bases** (Assetto Corsa conversions, 2026-10): Civic EG6 on the small hatchback (twice), M3 E30 on the older RWD saloon, M3 E92 on the RWD saloon, S2000 on the RWD coupe, Impreza GC8 on the front-drive compact. All fit with every tied pickup exact, every hub kept (turns of 16–48° or another design asked for), hub beams within 5 %, at most 2 beams beyond twice their length, export and read back with no part lost and the SVJ mass and CG, and each node's stiffness and damping per kg (rigidity.py) no higher than the base's.
+**Six SVJs on six bases** (Assetto Corsa conversions, 2026-10): Civic EG6 on the small hatchback (twice), M3 E30 on the older RWD saloon, M3 E92 on the RWD saloon, S2000 on the RWD compact coupe, Impreza GC8 on the front-drive compact. All fit with every tied pickup exact, every hub kept (turns of 16–48° or another design asked for), hub beams within 5 %, at most 2 beams beyond twice their length, export and read back with no part lost and the SVJ mass and CG, and each node's stiffness and damping per kg (rigidity.py) no higher than the base's.
 
 Stage 3 on the same pair: the largest pickup gap goes from 218 mm to 0 (every tied node exactly on its hardpoint) in a few hundredths of a second. Four beams change length more than twice, around the rear damper mount: the RWD saloon's rear is not a semi-trailing arm, so its nodes are far from the E30's points, and the note says where to look.
 
@@ -192,7 +192,7 @@ Uprights: the RWD saloon's front hub is 32 mm (rms) off the E30 upright after st
 1. ~~`beamforge/fit.py` with stages 1 and 2, and the editor's Fit section.~~ Done.
 2. ~~Stage 3: the role-based hardpoint-to-node mapping, the hardpoint table with click-to-retie, and the local displacement field.~~ Done.
 3. ~~Writing the fitted parts into the game~~: done as a new vehicle mod (see beamng-vehicles.md, *Make a new vehicle*). ~~The ties saved per suspension part~~: done.
-4. ~~The base vehicle's own suspension studied with the solver~~: done. After a fit, the suspension panel solves the SVJ's layout a second time on the base vehicle's tied nodes (before the fit) and shows both, static values side by side and curves overlaid. RWD saloon against the E30, front: kingpin inclination 10.1° against 5.3°, caster 6.7° against 0°, scrub radius 1 mm against 91 mm, roll centre 147 mm against 16 mm. Where the base's own layout differs (its multi-link rear against the E30's semi-trailing arm), the base values are an approximation, and the panel says so.
+4. ~~The base vehicle's own suspension studied with the solver~~: done. After a fit, the suspension panel solves the SVJ's layout a second time on the base vehicle's tied nodes (before the fit) and shows both, static values side by side and curves overlaid. the RWD saloon against the E30, front: kingpin inclination 10.1° against 5.3°, caster 6.7° against 0°, scrub radius 1 mm against 91 mm, roll centre 147 mm against 16 mm. Where the base's own layout differs (its multi-link rear against the E30's semi-trailing arm), the base values are an approximation, and the panel says so.
 
 ## Steering lock: the rack's travel scales with its width
 

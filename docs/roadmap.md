@@ -18,7 +18,7 @@ BeamForge starts from **any BeamNG vehicle** (vanilla or mod) and modifies it fr
 1. ~~**Find the install and mods once.**~~ Done in v0.2: see [beamng-vehicles.md](beamng-vehicles.md#the-editors-base-vehicle).
    - Left: Chrome cannot remember folders under AppData or Program Files (the default user folder). Check in-game which of two mods wins a file both ship.
 2. **Map SVJ hardpoints to jbeam nodes, and fit the vehicle to the SVJ.** The method (wheelbase, body to the mesh, exact pickup points) is in [fitting.md](fitting.md).
-   - Vanilla suspensions have no meaningful node names (`fhub1l`, `fwhl1l`…), so each SVJ hardpoint needs to be tied to a node.
+   - Vanilla suspensions have no meaningful node names (short codes per part), so each SVJ hardpoint needs to be tied to a node.
    - Automatic guess from the structure: the wheel centre from the `pressureWheels` node pair, arms as the beams between hub and body nodes, springs and dampers by beam type.
    - Manual fix: click a node, assign a hardpoint. Save the mapping as a small file per suspension part, so every vehicle sharing that part benefits.
 3. **Choose each parameter.** Done for geometry (the fit), springs, dampers, tyre radius, mass and CG, and the powertrain (torque curve, idle and maximum rpm, gear ratios, final drive): a *Values from the SVJ* table (base, SVJ, take) written into the new vehicle, with the base's alternative parts closer to the SVJ suggested (intake, gearbox, drive layout, differential). Steering: the SVJ's turns lock to lock (the road-wheel lock of the base is kept). Static camber and toe are taken by the fit when the SVJ gives them (the wheel axis). Aero: the SVJ drag area (Cd x frontal area) through the base's aero triangles. Step 3 is complete for what SVJ files describe; next is checking the generated vehicle in the game.
@@ -61,7 +61,7 @@ placeholder at the wheel). Its motion ratio is measured on the structure, and sp
 so the wheel keeps the SVJ's values wherever the unit goes. MacPherson struts get a slide-node guide. The Suspension
 study now solves a link named `strut` as a strut and keeps an AC wheel rate at the wheel.
 
-Also done: **electric cars from scratch**. A vanilla electric motor (the EV sports car's) drives the differentials directly, its
+Also done: **electric cars from scratch**. A vanilla electric motor (the electric sports car's) drives the differentials directly, its
 reduction as their gear ratio (8 by default), with a battery (kWh) and the controller's electric shift logic.
 
 ## Not planned

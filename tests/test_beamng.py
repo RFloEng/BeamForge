@@ -37,7 +37,7 @@ CAR = {
     "vehicles/toycar/toycar_hub.jbeam": json.dumps({
         "toycar_hub_F": {"slotType": "toycar_hub_F",
                          "slots": [["type", "default", "description"],
-                                   ["wheel_F_4", "steel_wheel_F", "Front wheels",
+                                   ["wheel_F_toy", "steel_wheel_F", "Front wheels",
                                     {"nodeOffset": {"x": "$=case($trackwidth == nil, $trackoffset + 0.25, $trackwidth)", "y": -1.2, "z": 0.3}}]],
                          "variables": [["name", "type", "unit", "category", "default", "min", "max", "title", "description"],
                                        ["$camber", "range", "", "Wheel Alignment", 1.0, 0.95, 1.05, "Camber", "", {"subCategory": "Front"}],
@@ -51,9 +51,9 @@ CAR = {
     "vehicles/toycar/info.json": json.dumps({"Name": "vehiclesData.toycar.Name", "Brand": "Toyco", "Type": "Car", "default_pc": "base"}),
     "vehicles/toycar/info_sport.json": json.dumps({"Configuration": "Sport", "Power": 150, "Drivetrain": "RWD"}),
     "vehicles/common/wheels.jbeam": json.dumps({
-        "steel_wheel_F": {"slotType": "wheel_F_4", "information": {"name": {"txt": "ui.vehicleconfig.Steel Wheels"}},
-                          "nodes": [["id", "posX", "posY", "posZ"], ["fwhl1l", 0.31, 0, 0], ["fwhl1r", -0.31, 0, 0]]},
-        "alloy_wheel_F": {"slotType": "wheel_F_4", "information": {"name": "Alloy wheels"}},
+        "steel_wheel_F": {"slotType": "wheel_F_toy", "information": {"name": {"txt": "ui.vehicleconfig.Steel Wheels"}},
+                          "nodes": [["id", "posX", "posY", "posZ"], ["wil", 0.31, 0, 0], ["wir", -0.31, 0, 0]]},
+        "alloy_wheel_F": {"slotType": "wheel_F_toy", "information": {"name": "Alloy wheels"}},
     }),
 }
 
@@ -98,7 +98,7 @@ class TestVehicle(unittest.TestCase):
         self.assertEqual(eng["part"], "toycar_engine_small")
         self.assertTrue(eng["core"])                                     # coreSlot: cannot be left empty
         self.assertEqual([o[0] for o in eng["options"]], ["toycar_engine_big", "toycar_engine_small"])
-        wheel = find(v["tree"], "wheel_F_4")                            # an old "slots" table, part from common
+        wheel = find(v["tree"], "wheel_F_toy")                            # an old "slots" table, part from common
         self.assertEqual(wheel["part"], "steel_wheel_F")
         self.assertEqual(wheel["title"], "Steel Wheels")                # localisation object -> its last segment
         self.assertEqual(find(v["tree"], "toycar_spoiler")["part"], "")  # empty by default
@@ -106,22 +106,22 @@ class TestVehicle(unittest.TestCase):
 
     def test_slot_offsets_with_expressions(self):
         g = self.cfg()["geometry"]["nodes"]
-        self.assertEqual(g["fwhl1l"], [0.56, -1.2, 0.3])                  # 0.31 + 0.25 ($trackwidth is nil), mirrored
-        self.assertEqual(g["fwhl1r"], [-0.56, -1.2, 0.3])
+        self.assertEqual(g["wil"], [0.56, -1.2, 0.3])                  # 0.31 + 0.25 ($trackwidth is nil), mirrored
+        self.assertEqual(g["wir"], [-0.56, -1.2, 0.3])
         g2 = self.cfg(vars_={"$trackoffset": 0.05})["geometry"]["nodes"]   # a tuning slider moves the wheels out
-        self.assertEqual(g2["fwhl1l"][0], 0.61)
+        self.assertEqual(g2["wil"][0], 0.61)
         g3 = self.cfg(vars_={"$trackwidth": 0.4})["geometry"]["nodes"]     # not declared by any part: ignored, as in game
-        self.assertEqual(g3["fwhl1l"][0], 0.56)
+        self.assertEqual(g3["wil"][0], 0.56)
 
     def test_moved_part_and_node(self):
-        moves = {"parts": {"steel_wheel_F": [0.0, 0.1, 0.0]}, "nodes": {"fwhl1l": [0.02, 0.0, -0.05], "b1": "bad"}}
+        moves = {"parts": {"steel_wheel_F": [0.0, 0.1, 0.0]}, "nodes": {"wil": [0.02, 0.0, -0.05], "b1": "bad"}}
         g = json.loads(bng.configure("toycar", None, None, None, json.dumps(moves)))["geometry"]["nodes"]
-        self.assertEqual(g["fwhl1l"], [0.58, -1.1, 0.25])                 # part move + node move
-        self.assertEqual(g["fwhl1r"], [-0.56, -1.1, 0.3])                 # part move only
+        self.assertEqual(g["wil"], [0.58, -1.1, 0.25])                 # part move + node move
+        self.assertEqual(g["wir"], [-0.56, -1.1, 0.3])                 # part move only
         self.assertEqual(g["b1"], [0.5, -1.0, 0.3])                     # a bad move is ignored
         g2 = json.loads(bng.configure("toycar", None, None, None, json.dumps({"parts": {"toycar_hub_F": [0.0, 0.0, 0.1]}})))["geometry"]
-        self.assertEqual(g2["nodes"]["fwhl1l"], [0.56, -1.2, 0.4])          # the wheel in the hub's slot moves with it
-        self.assertEqual(g2["nodes"]["fwhl1r"], [-0.56, -1.2, 0.4])         # a plain shift: x not mirrored
+        self.assertEqual(g2["nodes"]["wil"], [0.56, -1.2, 0.4])          # the wheel in the hub's slot moves with it
+        self.assertEqual(g2["nodes"]["wir"], [-0.56, -1.2, 0.4])         # a plain shift: x not mirrored
         self.assertEqual(g2["nodes"]["b1"], [0.5, -1.0, 0.3])
         self.assertEqual(g2["beam_parts"], ["toycar"])
 
@@ -141,8 +141,8 @@ class TestVehicle(unittest.TestCase):
     def test_other_config_and_missing_part(self):
         v = self.cfg("sport")
         self.assertEqual(find(v["tree"], "toycar_spoiler")["part"], "toycar_spoiler_wing")
-        v2 = self.cfg(parts={"wheel_F_4": "no_such_wheel"})
-        self.assertEqual(v2["missing"], [["wheel_F_4", "no_such_wheel"]])
+        v2 = self.cfg(parts={"wheel_F_toy": "no_such_wheel"})
+        self.assertEqual(v2["missing"], [["wheel_F_toy", "no_such_wheel"]])
 
     def test_catalog(self):
         entries = {"toycar": {"info": CAR["vehicles/toycar/info.json"],
@@ -187,7 +187,7 @@ class TestWheelsAndMeshes(unittest.TestCase):
         bng.reset()
         bng.add_files(json.dumps(CAR))
         g = json.loads(bng.configure("toycar", None, None, None, json.dumps({"nodes": {"b1": [0, 0, 0.1]}})))["geometry"]
-        self.assertEqual(g["rest"]["fwhl1l"], [0.56, -1.2, 0.3])             # with slot offsets
+        self.assertEqual(g["rest"]["wil"], [0.56, -1.2, 0.3])             # with slot offsets
         self.assertEqual(g["ops"]["steel_wheel_F"][0], [0.25, -1.2, 0.3])
         self.assertEqual(g["rest"]["b1"], [0.5, -1.0, 0.3])                # before the user's move
         self.assertEqual(g["nodes"]["b1"], [0.5, -1.0, 0.4])
@@ -222,13 +222,13 @@ class TestSources(unittest.TestCase):
     def test_common_part_from_a_mod(self):
         """A mod's vehicles/common part that redefines a common part wins over the install's."""
         bng.reset()
-        mod_wheels = {"steel_wheel_F": {"slotType": "wheel_F_4", "information": {"name": "Mod steel wheels"},
-                                        "nodes": [["id", "posX", "posY", "posZ"], ["fwhl1l", 0.41, 0, 0], ["fwhl1r", -0.41, 0, 0]]}}
+        mod_wheels = {"steel_wheel_F": {"slotType": "wheel_F_toy", "information": {"name": "Mod steel wheels"},
+                                        "nodes": [["id", "posX", "posY", "posZ"], ["wil", 0.41, 0, 0], ["wir", -0.41, 0, 0]]}}
         files = dict(CAR, **{"vehicles/common/mod_wheels.jbeam": json.dumps(mod_wheels)})
         bng.add_files(json.dumps(files), json.dumps({"vehicles/common/mod_wheels.jbeam": 1}))
         v = json.loads(bng.configure("toycar"))
-        self.assertEqual(find(v["tree"], "wheel_F_4")["title"], "Mod steel wheels")
-        self.assertEqual(v["geometry"]["nodes"]["fwhl1l"][0], 0.66)
+        self.assertEqual(find(v["tree"], "wheel_F_toy")["title"], "Mod steel wheels")
+        self.assertEqual(v["geometry"]["nodes"]["wil"][0], 0.66)
         bng.reset()
         self.assertEqual(json.loads(bng.held_models()), [])
 

@@ -16,7 +16,7 @@ SVJ's by construction. Two archetypes cover the converter's output today:
 
 ## Step 1: the front-drive compact's interface
 
-Read from the configured `compact` (sport_RS_wagon_DCT) with the scratchpad's `iface2.py` and
+Read from the configured front-drive compact (its sport wagon configuration) with the scratchpad's `iface2.py` and
 `unsprung.py`.
 
 ### What follows the wheel
@@ -26,43 +26,43 @@ running gear; those that stay still are the body side:
 
 | corner | follows the wheel (replaced)                                  | stays (kept)                     |
 |--------|---------------------------------------------------------------|----------------------------------|
-| FL     | fhub1 fhub3 fhub4 fhub5 fhub7 ftop2, barf1 barf2 (anti-roll bar link)     | fsub1 fsub2 fsub5 fsub6 fsub6l fsub7         |
-| RL     | rhub1 rhub2 rhub3 rhub4 rhub5 rhub6, barr1 barr2                          | rsub1 rsub2 rsub3 rsub4 rsub5 rtopm1 barr3   |
+| FL     | the hub nodes (anti-roll bar link)     | the subframe nodes         |
+| RL     | the rear hub nodes                          | the rear subframe nodes   |
 
 This needs no table: what to replace is found per base by the same test. On the front-drive compact it matches
 the hand-written role table exactly.
 
 ### The suspension slots, part by part
 
-`compact_suspension_F` and `_R` hang from the body. Their children:
+`<base>_suspension_F` and `_R` hang from the body. Their children:
 
 | part (front / rear)                         | what it holds                                   | archetype |
 |---------------------------------------------|-------------------------------------------------|-----------|
-| compact_suspension_F / _R                 | subframe nodes (fsub*, rsub*), hub and arm nodes, their beams | split: subframe kept, hub and arms replaced |
-| compact_strut_F / _R                      | spring and damper beams, hub to strut top       | replaced (the SVJ's spring and damper) |
-| compact_swaybar_F / _R                    | anti-roll bar, torsion bars to the arms         | replaced |
-| compact_steering (front)                  | rack (fhub6 rail ends, fsub5 slide nodes, hydros), tie rods to fhub3 | replaced |
-| compact_wheeldata_F / _R                  | pressureWheels: node1/node2 fwhl1, fwhl1ll; arm, torque and steering axis nodes on the hub (fhub1 fhub4 fhub5 ftop1; rhub4); the diff's output nodes | replaced: same wheels, the archetype's hub nodes |
-| brand_wheel_*, tire_*                     | the wheel nodes fwhl1l fwhl1ll (rwhl1l rwhl1ll)         | kept |
-| compact_brake_*, brakepad_*               | no nodes                                        | kept |
-| compact_halfshafts_F / _R                 | bounded beams diff output (fdiffout1, rdiffout1) to fwhl1/rwhl1 | kept |
-| compact_differential_R (+ carrier, final drive, driveshaft) | rdiffout1, rdiffout2, rdiffout3; beams to rsub1-rsub4 | kept (the subframe stays) |
-| compact_undertray                         | beams to ftop1, fsub1 fsub2 fsub6                       | kept |
+| `<base>_suspension_F` / _R                 | subframe nodes (the subframe nodes), hub and arm nodes, their beams | split: subframe kept, hub and arms replaced |
+| `<base>_strut_F` / _R                      | spring and damper beams, hub to strut top       | replaced (the SVJ's spring and damper) |
+| `<base>_swaybar_F` / _R                    | anti-roll bar, torsion bars to the arms         | replaced |
+| `<base>_steering` (front)                  | rack (the hub nodes rail ends, the subframe nodes slide nodes, hydros), tie rods to the hub nodes | replaced |
+| `<base>_wheeldata_F` / _R                  | pressureWheels: node1/node2 the wheel nodes; arm, torque and steering axis nodes on the hub (the hub nodes); the diff's output nodes | replaced: same wheels, the archetype's hub nodes |
+| <brand>_wheel_*, tire_*                     | the wheel nodes the wheel nodes (the rear wheel nodes)         | kept |
+| `<base>_brake_*`, brakepad_*               | no nodes                                        | kept |
+| `<base>_halfshafts_F` / _R                 | bounded beams diff output (the diff output nodes) to the wheel nodes | kept |
+| `<base>_differential_R` (+ carrier, final drive, driveshaft) | the diff output nodes; beams to the rear subframe nodes | kept (the subframe stays) |
+| `<base>_undertray`                         | beams to the strut top nodes                       | kept |
 
 ### Names that must stay
 
 Other parts use these nodes, so the archetype keeps them (at the base's place, or its own with the
 same name):
 
-- **wheel nodes** fwhl1l fwhl1ll fwhl1r fwhl1rr, rwhl1l rwhl1ll rwhl1r rwhl1rr: defined by the wheel part; the fenders,
+- **wheel nodes** the wheel nodes: defined by the wheel part; the fenders,
   doors and bumpers beam to them (wheel intrusion), the halfshafts and pressureWheels use them. The
   archetype's hub beams to these names, as the vanilla hub does.
-- **subframe** fsub1 fsub2 fsub5 fsub6 fsub7 and rsub1-rsub5: the body, engine mounts, exhaust, undertray and the
+- **subframe** the subframe nodes: the body, engine mounts, exhaust, undertray and the
   rear differential's carrier beam to them. They stay where they are. The archetype's inner pivots are
   its own nodes, mounted to them.
-- **strut tops** ftop1 ftopm1, rtop1 rtopm1: the body, fenders, rear doors, rear seats, undertray and bumper
+- **strut tops** the strut top nodes: the body, fenders, rear doors, rear seats, undertray and bumper
   use them. The archetype's strut top is its own node, mounted to these; they stay.
-- **diff outputs** fdiffout1 (from the transaxle's differential, outside the suspension) and rdiffout1:
+- **diff outputs** the front one (from the transaxle's differential, outside the suspension) and the rear one:
   kept, and the archetype's wheeldata points its torque at them as the vanilla one does.
 
 ### What the suspension hangs on
@@ -106,8 +106,8 @@ Group A Subaru SVJ, all four corners:
 
 - What follows the wheel found by kinematics.follows_wheel, as in step 1. Every row of the active parts
   that used those nodes is dropped: vanilla hub, arms, strut beams, anti-roll bar links, tie rods.
-- Points the fit had already put on the SVJ's (the front strut tops ftopm1, the rear lower arm's rear
-  pivot rsub2) are used as they are. The other pivots and the rear strut tops are new nodes, each beamed
+- Points the fit had already put on the SVJ's (the front strut tops the strut top nodes, the rear lower arm's rear
+  pivot the rear subframe nodes) are used as they are. The other pivots and the rear strut tops are new nodes, each beamed
   to the five nearest body or subframe nodes within 0.45 m (never the engine, exhaust or differential:
   they move on their own mounts; the first build mounted to them and overloaded them).
 - A body node's stiffness limit for the physics step (rigidity._limits) is kept by adding weight where
@@ -119,13 +119,13 @@ Group A Subaru SVJ, all four corners:
   damping ratio as the floor.
 - Steering: **the base's rack is kept** and the archetype's tie rods go to its ends (the nodes of the
   steering part the base's tie rods reached), 57 mm from the SVJ's tie rod inner points on the
-  front-drive compact (the rack stays on its subframe's slide nodes). The first build wrote its own rack (rail,
+  the front-drive compact (the rack stays on its subframe's slide nodes). The first build wrote its own rack (rail,
   slide nodes, hydros as the vanilla's, the game logged no error) and the steering was free in the
   game: keep BeamNG's own steering until a written rack is proven. The own rack is kept only as the
   fallback for a base whose rack ends are not found.
 - Wheels spawn square, the hub's beams to the wheel preloaded to the SVJ's camber and toe (see
   fitting.md, *Wheels spawn square*).
-- Steering dampers, as the vanilla's (the front-drive compact's `fhub3`-`fsub2`, `fhub5`-`fsub2`: |BOUNDED, no spring,
+- Steering dampers, as the vanilla's (the front-drive compact's: |BOUNDED, no spring,
   damping 80, fast 800): the tie rod end and the node across the hub to the nearest lower arm pivot.
   v4 had none (the vanilla's went with the hub nodes) and its front wheels steered back and forth
   under braking, while the converted front-drive compact, which keeps its own, did not. Not a compliance: the
@@ -135,7 +135,7 @@ Group A Subaru SVJ, all four corners:
 - Every node the archetype makes is weighed against all that loads it (`_size_nodes`): each beam's
   spring, or its limit spring if |BOUNDED and stiffer; its largest damping (slow, rebound, fast); slide
   node springs on the slide node and its rail's ends. Kept within k dt^2 / m 4.0 and c dt / m 1.0 (the
-  vanilla front-drive compact's nodes reach 6.8 and 2.3). rigidity's check counts only beamSpring and beamDamp,
+  vanilla the front-drive compact's nodes reach 6.8 and 2.3). rigidity's check counts only beamSpring and beamDamp,
   and missed it: v5's new rear strut tops (2.5 kg) carried the dampers' rebound at c dt / m 2.75, more
   than any vanilla node, and the car shook at high frequency braking to a stop and broke its fuel tank
   on load (the tank's trigger beam tank nodes breaks at 200 N on 20 N s/m of damping, next to the rear
@@ -164,7 +164,7 @@ line (the E30's front beam) stays in the body.
   top), `bf_tie_<corner>` (the tie rod end and the rack end). A base node used as a point joins the group
   too (`_tag_base`). `archetype.piece_rows` makes the attach rows.
 - A vanilla mesh bound to a removed node goes with it (a mesh bound to one removed and one kept node, such as
-  the lower arm's `fhub1` and `fsub2`, hung in place from the kept one). The base's other meshes also go by
+  the lower arm's, from a hub node to a pivot, hung in place from the kept one). The base's other meshes also go by
   default: only the SVJ's and the wheels' and tyres' are drawn (`_drop_vanilla_meshes`; switch
   `vanilla_meshes` keeps them). The base's brake calipers went with the hubs; the SVJ's
   (`x0_hub_caliper_*`) are not attached yet.
@@ -185,24 +185,24 @@ none left but the lights. The earlier rule kept the mechanical meshes (running g
 "Motor sin aceite" appeared on every car with the front archetype and on none without it. The engine, its mounts,
 the oil pan and the weights are identical in all of them, so it is not the engine's files. The oil pan is a
 node whose beams deform at 8000 N and then leak (`oilpan_damage`, lua/vehicle/powertrain/combustionEngine.lua);
-the engine hangs on `fsub1`, `fsub2`, `fsub6` through bounded mounts. The archetype reused and moved those nodes
+the engine hangs on the subframe nodes through bounded mounts. The archetype reused and moved those nodes
 as its arm pivots (46 mm and 99 mm at the front). Test O1 (those nodes never reused or moved) had no oil
 message. Moving the engine-mount nodes is the cause, and not reusing or moving them is now the default
 (`apply(switch={"move_mounts"})` restores the old way). Which nodes those are depends on the base: the
-engine hangs on `fsub1 fsub2 fsub6` on the front-drive compact, `fsub3 fsub4 fsub6` on the RWD coupe, `fsub2 fsub4 fsub6` on the RWD saloon and I
-(found from the engine-mount parts' beams), so the Z3, Z4 and E92 still reuse `fsub1`.
+engine hangs on the subframe nodes on the front-drive compact, the subframe nodes on the RWD compact coupe, the subframe nodes on the two RWD saloons
+(found from the engine-mount parts' beams), so the Z3, Z4 and E92 still reuse the subframe nodes.
 
 The price: without them the front pivots are own nodes mounted to body nodes at least 10 cm away, and the
 front's lowest mode is 13 Hz at 1 % (27 Hz with the reused nodes; the vanilla's is 40). Not yet settled which
-is right; O1's wobble was not reported. The way to both: keep `fsub1` / `fsub2` where they are and give the pivot a
+is right; O1's wobble was not reported. The way to both: keep the subframe nodes where they are and give the pivot a
 stiff bracket of beams to the nearest subframe nodes, the engine-mount nodes included, which are loaded but not
 moved. The 10 cm minimum of `_mounts` stays out of that (it kept the first build's short stiff beams off the
 fuel tank's trigger beam).
 
 Where a pivot or strut top may be mounted (`_mounts`): never to the steering rack's slide nodes, nodes a hydro
 or a torsion bar drives, or the engine's mount nodes (`avoid`), unless the base's own lower arm hangs on them
-(the front-drive compact's is on `fsub1` / `fsub2`, its engine mounts too). v11 mounted pivots to `fsub5` (the rack's slide node:
-steering dragged the pivot, and the Subaru's front broke) and the Z3's to `fsub3` / `fsub4` (engine mounts; the oil
+(the front-drive compact's is on the subframe nodes, its engine mounts too). v11 mounted pivots to the subframe nodes (the rack's slide node:
+steering dragged the pivot, and the Subaru's front broke) and the Z3's to the subframe nodes (engine mounts; the oil
 message). The reuse loop and the mount list used the same variable name for a while, which hid the filter: the
 audit (pivots and tops by the nodes they are anchored to) is the check.
 
@@ -215,8 +215,8 @@ rear suspension is not drawn until the double wishbone archetype exists.
 
 ## Still to check on other bases
 
-- Front-wheel drive: fdiffout1 comes from the transaxle part (front-drive compact, small hatchback). Rear-wheel drive bases
-  (RWD coupe, RWD saloon, older RWD saloon) have their differential under the rear suspension: same split.
+- Front-wheel drive: the diff output nodes comes from the transaxle part (the front-drive compact, the small hatchback). Rear-wheel drive bases
+  (the RWD compact coupe, the RWD saloon, the older RWD saloon) have their differential under the rear suspension: same split.
 - Differentials and halfshafts that beam to hub nodes instead of wheel nodes would need those names
   kept.
 - Steering boxes that are not racks (the older RWD saloon's pitman arm and idler): their tie rod ends are found

@@ -33,3 +33,6 @@ private/
 HANDOFF.md
 out/
 svjs/
+
+# the user's own data about game vehicles (role tables of vanilla suspension parts): never commit
+local/

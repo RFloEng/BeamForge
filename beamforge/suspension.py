@@ -209,7 +209,7 @@ TOPOLOGY = {
     },
     "trailing_arm_lateral": {
         "name": "Trailing arm + lateral links",
-        "about": "A trailing arm rigid with the hub, on a ball bush at its front end, located sideways by an upper and a lower lateral link (as the BeamNG small hatchback's rear). Link lengths and angles set camber and toe.",
+        "about": "A trailing arm rigid with the hub, on a ball bush at its front end, located sideways by an upper and a lower lateral link (as a vanilla small hatchback's rear). Link lengths and angles set camber and toe.",
         "links": [("ball", ("PF",), None), ("rod", ("LLI",), "LLO"), ("rod", ("ULI",), "ULO")],
         "damper": ("DT", "DB", "upright"), "toe": None,
         "draw": [("PF", "WC", "upright"), ("LLO", "ULO", "upright"), ("PF", "LLO", "upright"), ("LLO", "WC", "upright")],

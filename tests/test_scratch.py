@@ -32,7 +32,7 @@ DONORS = {
                                 "clutch": {"clutchFreePlay": 0.75},
                                 "nodes": [["id", "posX", "posY", "posZ"], {"nodeWeight": 6}, ["gbx1", -0.3, -1.4, 0.4]],
                                 "beams": [["id1:", "id2:"], ["gbx1", "eng1r"], ["gbx1", "eng2r"], ["gbx1", "eng3r"]]}}),
-    "vehicles/toy/toy_motor.jbeam": json.dumps({                       # as the EV sports car's: the motor alone in its part
+    "vehicles/toy/toy_motor.jbeam": json.dumps({                       # as a vanilla electric car's: the motor alone in its part
         "toy_motor_R": {"slotType": "toy_engine", "powertrain": [["type", "name", "inputName", "inputIndex"], ["electricMotor", "rearMotor", "dummy", 0]],
                         "rearMotor": {"torque": [["rpm", "torque"], [0, 300], [6000, 300], [16000, 90]], "maxRPM": 16000, "inertia": 0.08,
                                       "electricalEfficiency": 0.95, "energyStorage": "mainBattery", "torqueReactionNodes:": ["m1", "m2", "m3"],
@@ -43,15 +43,15 @@ DONORS = {
                         "nodes": [["id", "posX", "posY", "posZ"], {"nodeWeight": 15}, ["m1", 0.15, 1.2, 0.3], ["m2", -0.15, 1.2, 0.3], ["m3", 0.0, 1.4, 0.3], ["m4", 0.0, 1.3, 0.5]],
                         "beams": [["id1:", "id2:"], ["m1", "m2"], ["m2", "m3"], ["m3", "m1"], ["m1", "m4"], ["m2", "m4"], ["m3", "m4"]]}}),
     "vehicles/common/wheels/toy_wheels.jbeam": json.dumps({
-        "steel_13x5_F": {"slotType": "wheel_F_4", "slots": [["type", "default", "description"], ["tire_F_13x5", "tire_F_176_68_13_standard", "Front Tires"]],
-                         "nodes": [["id", "posX", "posY", "posZ"], {"nodeWeight": 4.5}, ["fwhl1r", -0.33, 0, 0], ["fwhl1rr", -0.55, 0, 0], ["fwhl1l", 0.33, 0, 0], ["fwhl1ll", 0.55, 0, 0]],
+        "steel_13x5_F": {"slotType": "wheel_F_toy", "slots": [["type", "default", "description"], ["tire_F_13x5t", "tire_F_176_68_13_standard", "Front Tires"]],
+                         "nodes": [["id", "posX", "posY", "posZ"], {"nodeWeight": 4.5}, ["wir", -0.33, 0, 0], ["wor", -0.55, 0, 0], ["wil", 0.33, 0, 0], ["wol", 0.55, 0, 0]],
                          "pressureWheels": [["name"], {"hubRadius": 0.18}, {"hubWidth": 0.14}]},
-        "steel_13x5_R": {"slotType": "wheel_R_4", "slots": [["type", "default", "description"], ["tire_R_13x5", "tire_R_176_68_13_standard", "Rear Tires"]],
-                         "nodes": [["id", "posX", "posY", "posZ"], {"nodeWeight": 4.5}, ["rwhl1r", -0.33, 0, 0], ["rwhl1rr", -0.55, 0, 0], ["rwhl1l", 0.33, 0, 0], ["rwhl1ll", 0.55, 0, 0]],
+        "steel_13x5_R": {"slotType": "wheel_R_toy", "slots": [["type", "default", "description"], ["tire_R_13x5t", "tire_R_176_68_13_standard", "Rear Tires"]],
+                         "nodes": [["id", "posX", "posY", "posZ"], {"nodeWeight": 4.5}, ["rwir", -0.33, 0, 0], ["rwor", -0.55, 0, 0], ["rwil", 0.33, 0, 0], ["rwol", 0.55, 0, 0]],
                          "pressureWheels": [["name"], {"hubRadius": 0.18}, {"hubWidth": 0.14}]},
-        "tire_F_176_68_13_standard": {"slotType": "tire_F_13x5", "pressureWheels": [["name"], {"hasTire": True}, {"radius": 0.288}, {"tireWidth": 0.135}]},
-        "tire_F_186_68_13_sport": {"slotType": "tire_F_13x5", "pressureWheels": [["name"], {"hasTire": True}, {"radius": 0.29}, {"tireWidth": 0.15}]},
-        "tire_R_176_68_13_standard": {"slotType": "tire_R_13x5", "pressureWheels": [["name"], {"hasTire": True}, {"radius": 0.288}, {"tireWidth": 0.135}]},
+        "tire_F_176_68_13_standard": {"slotType": "tire_F_13x5t", "pressureWheels": [["name"], {"hasTire": True}, {"radius": 0.288}, {"tireWidth": 0.135}]},
+        "tire_F_186_68_13_sport": {"slotType": "tire_F_13x5t", "pressureWheels": [["name"], {"hasTire": True}, {"radius": 0.29}, {"tireWidth": 0.15}]},
+        "tire_R_176_68_13_standard": {"slotType": "tire_R_13x5t", "pressureWheels": [["name"], {"hasTire": True}, {"radius": 0.288}, {"tireWidth": 0.135}]},
     }),
 }
 
@@ -118,11 +118,11 @@ class TestScratch(unittest.TestCase):
         self.assertEqual(c["missing"], [])
         N = c["geometry"]["nodes"]
         # the rims' axle nodes on the wheel centres (BeamNG: x left, y rear, z up; front axle at y 0, ground at 0)
-        self.assertEqual([round(x, 3) for x in N["fwhl1l"]], [0.615, 0.0, 0.29])
-        self.assertEqual([round(x, 3) for x in N["rwhl1rr"]], [-0.835, 2.5, 0.29])
+        self.assertEqual([round(x, 3) for x in N["wil"]], [0.615, 0.0, 0.29])
+        self.assertEqual([round(x, 3) for x in N["rwor"]], [-0.835, 2.5, 0.29])
         self.assertEqual(sorted(w["name"] for w in c["wheels"]), ["FL", "FR", "RL", "RR"])
         self.assertEqual(json.loads(out["files"]["vehicles/bf_test_scratch/base.pc"])["parts"],
-                         {"tire_F_13x5": "tire_F_186_68_13_sport", "tire_R_13x5": "tire_R_176_68_13_standard"})
+                         {"tire_F_13x5t": "tire_F_186_68_13_sport", "tire_R_13x5t": "tire_R_176_68_13_standard"})
         self.assertEqual(sum(out["counts"]["bands"][b] for b in ("high", "extreme", "beyond")), 0)     # stable by construction
 
     def test_powertrain_and_steering(self):
@@ -175,7 +175,14 @@ class TestScratch(unittest.TestCase):
         self.assertIn("bfstrutfl", [r[0] for r in body["slidenodes"][1:]])
 
     def test_at_wheel_placeholder(self):
-        svj = json.loads((Path(__file__).resolve().parent.parent / "svjs/acrm_honda_civic_eg6/civic_(eg6)_si-r.svj.json").read_text(encoding="utf-8"))
+        # as an Assetto Corsa conversion writes them: spring and damper on a vertical axis through the wheel centre
+        def corner(x, y):
+            wc = [x, y, -0.3]
+            unit = {"motion_ratio": 1.0, "axis": "vertical", "inboard_point": [x, y, -0.65], "outboard_point": wc}
+            return {"position": wc, "topology": {"upright": {"hardpoints": {"wheel_center": wc}}, "links": []},
+                    "spring": dict(unit, rate=29950.0),
+                    "damper": dict(unit, bump_curve=[[0.0, 0], [0.1, 345.2], [0.5, 2373.2]], rebound_curve=[[0.0, 0], [0.1, 530.4], [0.5, 3646.5]])}
+        svj = {"suspension": {"FL": corner(0.0, -0.74), "FR": corner(0.0, 0.74), "RL": corner(-2.5, -0.74), "RR": corner(-2.5, 0.74)}}
         self.assertTrue(dampers.at_wheel(svj["suspension"]["FL"]))
         v = dampers.wheel_values(svj)["front"]
         self.assertEqual((v["wheel_rate"], v["at_wheel"]), (29950.0, True))
@@ -184,8 +191,10 @@ class TestScratch(unittest.TestCase):
         sug = dampers.suggest(bare, svj)
         self.assertEqual(len(sug["parts"]), 4)
         self.assertTrue(all("Assetto Corsa" in n for n in sug["notes"]))     # not at the wheel: on the lower arm
-        e30 = json.loads((Path(__file__).resolve().parent.parent / "svjs/bmw_m3_e30/m3_e30.svj.json").read_text(encoding="utf-8"))
-        n = dampers.suggest([], e30)["notes"]
+        strut = {"suspension": {"FL": {"topology": {"system_type": "macpherson", "upright": {"hardpoints": {
+            "wheel_center": [0.0, -0.71, -0.3], "lower_ball_joint": [0.03, -0.66, -0.15], "strut_outboard": [0.03, -0.66, -0.15]}},
+            "links": [{"name": "strut", "type": "rod", "inboard_points": [[-0.06, -0.58, -0.73]], "outboard_ref": "hardpoints.strut_outboard"}]}}}}
+        n = dampers.suggest([], strut)["notes"]
         self.assertTrue(any(x.startswith("FL") and "from the SVJ's strut" in x for x in n))   # MacPherson: the real strut
 
     def test_electric(self):
@@ -227,8 +236,8 @@ class TestScratch(unittest.TestCase):
         out = json.loads(scratch.build(json.dumps(car)))
         jb = json.loads(out["files"]["vehicles/bf_test_scratch/bf_test_scratch.jbeam"])
         t = jb["bf_test_scratch_tire_F"]
-        self.assertEqual((t["slotType"], t["pressureWheels"][-1]), ("tire_F_13x5", {"frictionCoef": 1.15, "loadSensitivitySlope": 0.0001}))
-        self.assertEqual(json.loads(out["files"]["vehicles/bf_test_scratch/base.pc"])["parts"]["tire_F_13x5"], "bf_test_scratch_tire_F")
+        self.assertEqual((t["slotType"], t["pressureWheels"][-1]), ("tire_F_13x5t", {"frictionCoef": 1.15, "loadSensitivitySlope": 0.0001}))
+        self.assertEqual(json.loads(out["files"]["vehicles/bf_test_scratch/base.pc"])["parts"]["tire_F_13x5t"], "bf_test_scratch_tire_F")
         bng.add_files(json.dumps(out["files"]))
         w = {x["name"]: x for x in json.loads(bng.configure("bf_test_scratch", "base"))["wheels"]}
         self.assertEqual((w["FL"]["radius"], w["FL"]["width"]), (0.29, 0.15))   # the donor's size, kept

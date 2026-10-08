@@ -32,8 +32,8 @@ LENGTH = False                 # beams follow their length change (same material
 STEP = 1e-3                    # relative changes below this are not written
 MIN_SOFT = 0.2                 # the check softens a beam to no less than this share of its value
 
-# Where vanilla cars run, at the 2000 Hz step: 5 240 nodes of ten cars (hatchback, saloon2, saloon, coupe, compact, hatchback2,
-# saloon4, musclecar, bigsaloon, pickup), measured 2026-10-08. Per node: sum k / m * dt^2 and sum c / m * dt; per
+# Where vanilla cars run, at the 2000 Hz step: 5 240 nodes of ten vanilla cars (hatchbacks, saloons, coupes, a
+# muscle car, a full-size and a pickup), measured 2026-10-08. Per node: sum k / m * dt^2 and sum c / m * dt; per
 # beam: k * dt^2 * (1/ma + 1/mb) and c * dt * (1/ma + 1/mb) (the beam's own two-mass mode). Values beyond the 99th
 # percentile are where cars start to ring or explode; new beams aim at the median and keep nodes under the 90th.
 VANILLA = {"node_k": {"p50": 2.08, "p90": 3.68, "p99": 4.90, "max": 7.49},

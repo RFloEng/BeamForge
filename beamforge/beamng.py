@@ -108,7 +108,7 @@ def _text(v):
     """Display text of a name or description that may be a localisation object {"txt", "ctx"}.
 
     Vehicle and configuration names are often keys into the game's translation files
-    ("vehiclesData.hatchback.Name"), which are not in the vehicle files: those give "" so the caller
+    ("vehiclesData.<model>.Name"), which are not in the vehicle files: those give "" so the caller
     falls back to a readable id (pretty()).
     """
     if isinstance(v, dict):
@@ -120,7 +120,7 @@ def _text(v):
 
 
 def pretty(ident):
-    """A readable name from an id: "rally_gravel" -> "Rally gravel", "hatchback" -> "small hatchback"."""
+    """A readable name from an id: "rally_gravel" -> "Rally gravel", "hatchback" -> "Hatchback"."""
     s = str(ident).replace("_", " ").strip()
     return s[:1].upper() + s[1:] if s else s
 

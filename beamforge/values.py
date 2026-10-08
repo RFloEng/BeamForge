@@ -191,7 +191,7 @@ def springs_and_dampers(model, configured):
             bt = str(rec.get("beamType", ""))
             kind = None
             if "precompressionRange" in rec and rec.get("beamSpring") not in (0, None, "0"):
-                kind = "spring"                           # |NORMAL, or |BOUNDED with its bump stop (small hatchback)
+                kind = "spring"                           # |NORMAL, or |BOUNDED with its bump stop (a vanilla small hatchback's)
             elif "BOUNDED" in bt and rec.get("beamDampRebound") is not None and                     any(_num_or(rec.get(k), {}, 1.0) != 0 for k in ("beamDamp", "beamDampRebound")):
                 kind = "damper"                           # (zero slow damping: a high-speed bump damper, left)
             if not kind:
@@ -1033,7 +1033,7 @@ def aero_triangles(model, configured):
 def drag_area(tris):
     """The drag area (m2) of aero triangles in head-on flow, estimated as sum(coef A (n . y)^2): each
     triangle pushing back with the square of how squarely it faces the flow. An estimate (the game's
-    own aero model is not public); it gives about 0.67 m2 for the RWD saloon, a saloon of Cd ~0.3."""
+    own aero model is not public); it gives about 0.67 m2 for a vanilla saloon of Cd ~0.3."""
     return sum(dc / 100 * a * ny * ny for _, _, dc, _, a, ny in tris)
 
 

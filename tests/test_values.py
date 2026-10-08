@@ -118,10 +118,10 @@ class TestValues(unittest.TestCase):
                "suspension": {"FL": {"tire": {"set_ref": "t"}}, "RL": {"tire": {"set_ref": "t"}}}}
         self.assertEqual(values.tyre_size(svj, svj["suspension"]["FL"]), {"width": 0.195, "aspect": 0.564, "rim_in": 15, "diameter": 0.601})
         self.assertEqual(values.svj_values(svj)["front"]["tyre_radius"], 0.3005)
-        pick, _ = values._closest_wheel("wheel_F_4", "steel_13x5_F", ["steel_13x5_F", "alloy_15x6_F", "alloy_15x7_F", "alloy_17x7_F"], svj)
+        pick, _ = values._closest_wheel("wheel_F_toy", "steel_13x5_F", ["steel_13x5_F", "alloy_15x6_F", "alloy_15x7_F", "alloy_17x7_F"], svj)
         self.assertEqual(pick, "alloy_15x7_F")                               # R15, near the tyre width less an inch
-        self.assertEqual(values._closest_wheel("wheel_F_4", "alloy_15x6_F", ["alloy_15x7_F"], svj), (None, ""))   # R15 already
-        pick, _ = values._closest_wheel("tire_F_15x7", "tire_F_206_51_15_sport", ["tire_F_206_51_15_sport", "tire_F_196_61_15_sport"], svj)
+        self.assertEqual(values._closest_wheel("wheel_F_toy", "alloy_15x6_F", ["alloy_15x7_F"], svj), (None, ""))   # R15 already
+        pick, _ = values._closest_wheel("tire_F_15x7t", "tire_F_206_51_15_sport", ["tire_F_206_51_15_sport", "tire_F_196_61_15_sport"], svj)
         self.assertEqual(pick, "tire_F_196_61_15_sport")
 
     def test_final_drive_through_the_driveline(self):

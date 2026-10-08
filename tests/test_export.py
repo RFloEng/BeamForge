@@ -16,7 +16,7 @@ class TestExport(unittest.TestCase):
     def setUp(self):
         bng.reset()
         bng.add_files(json.dumps(CAR))
-        moves = {"nodes": {"b1": [0.0, 0.1, 0.0], "fwhl1l": [0.02, 0.0, 0.0]}}
+        moves = {"nodes": {"b1": [0.0, 0.1, 0.0], "wil": [0.02, 0.0, 0.0]}}
         self.configured = bng.configure("toycar", None, None, None, json.dumps(moves))
 
     def test_plan(self):
@@ -35,12 +35,12 @@ class TestExport(unittest.TestCase):
         self.assertIn("toycar_spoiler_wing", json.loads(f["vehicles/toyfit/toycar_hub.jbeam"]))   # inactive parts kept
         self.assertEqual(out["renamed"], {"steel_wheel_F": "toyfit_steel_wheel_F"})
         shared = json.loads(f["vehicles/toyfit/toyfit_shared_parts.jbeam"])
-        fw = next(r for r in shared["toyfit_steel_wheel_F"]["nodes"][1:] if r[0] == "fwhl1l")
+        fw = next(r for r in shared["toyfit_steel_wheel_F"]["nodes"][1:] if r[0] == "wil")
         self.assertAlmostEqual(fw[1], 0.33)                                         # as written (0.31) + the move
         hub = json.loads(f["vehicles/toyfit/toycar_hub.jbeam"])["toycar_hub_F"]
         self.assertEqual(hub["slots"][1][1], "toyfit_steel_wheel_F")                # slot default follows the new name
         pc = json.loads(f["vehicles/toyfit/beamforge.pc"])
-        self.assertEqual((pc["model"], pc["parts"]["wheel_F_4"]), ("toyfit", "toyfit_steel_wheel_F"))
+        self.assertEqual((pc["model"], pc["parts"]["wheel_F_toy"]), ("toyfit", "toyfit_steel_wheel_F"))
         self.assertEqual(json.loads(f["vehicles/toyfit/sport.pc"])["model"], "toyfit")
         info = json.loads(f["vehicles/toyfit/info.json"])
         self.assertEqual((info["Name"], info["Brand"], info["default_pc"]), ("Toy Fit", "BeamForge", "beamforge"))
@@ -49,7 +49,7 @@ class TestExport(unittest.TestCase):
     def test_added_beams(self):
         from beamforge import rigidity
         v = json.loads(self.configured)
-        x = rigidity.added_beam("toycar", v, "b1", "fwhl1l")
+        x = rigidity.added_beam("toycar", v, "b1", "wil")
         self.assertEqual((x["nodes"]["b1"]["after"], x["limited"]), ("ok", False))
         self.assertTrue(any("suspension" in w for w in x["warnings"]))               # a wheel node: it would hold the wheel
         self.assertGreater(x["beamSpring"], 0)
@@ -199,8 +199,8 @@ class TestExport(unittest.TestCase):
         self.assertEqual(v["config"], "beamforge")
         g = v["geometry"]["nodes"]
         self.assertEqual(g["b1"], [0.5, -0.9, 0.3])
-        self.assertEqual(g["fwhl1l"], [0.58, -1.2, 0.3])                              # 0.56 + 0.02, through the slot offset
-        self.assertEqual(find(v["tree"], "wheel_F_4")["part"], "toyfit_steel_wheel_F")
+        self.assertEqual(g["wil"], [0.58, -1.2, 0.3])                              # 0.56 + 0.02, through the slot offset
+        self.assertEqual(find(v["tree"], "wheel_F_toy")["part"], "toyfit_steel_wheel_F")
 
 
 @unittest.skipUnless(__import__("os").environ.get("BEAMNG_VEHICLES"), "set BEAMNG_VEHICLES to a BeamNG content/vehicles folder")
