@@ -41,12 +41,14 @@ Done, to be checked in the game:
 - **The vanilla cars' archetypes**: engines, gearboxes, tyres and rims learnt from the user's install.
 - **Powertrain, Wheels, Aero, Components** workspaces, each with the SVJ's values importable.
 - **A car made from scratch** (Assembly): the sketch's structure, archetype rims and tyres as slots, engine and gearbox
-  blocks, a generated driveline (FWD, RWD, AWD) and steering rack, the components, a drag plate.
+  blocks, a generated driveline (FWD, RWD, AWD) and steering rack, the components, a drag plate, and the SVJ's chassis
+  mesh as its body (a flexbody on the frame's node groups).
+- **Beams by hand on a base vehicle** (Base, *Beams*): pick two nodes; the values aim at the vanilla median for the
+  beam and keep both nodes under the vanilla 90th percentile (counting the beams added before), typed values are held
+  at that room, deform and strength follow the beams already on the nodes. Written at the end of the main part.
 
 Next:
 - Test the scratch car in the game, and fix what it does (the first one is in the mods folder as "v1 Scratch test (BF)").
-- The SVJ's body mesh on a car made from scratch (flexbodies on the frame's node groups), so it has a look.
-- Adding beams by hand to a base vehicle with stable values (rigidity.beam_values: the room left at both nodes).
 - Mounting a sketch on a base vehicle (shared nodes, archetype-style mounts): new mechanisms on vanilla cars.
 - Downforce devices once BeamNG's triangle aero can be calibrated in the game; electric drivetrains for scratch cars.
 

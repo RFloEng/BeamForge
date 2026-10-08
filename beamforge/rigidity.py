@@ -296,5 +296,67 @@ def stability(model, configured, bl=None, dt=1 / 2000):
     return sorted(out, key=lambda x: -x[1])
 
 
+def added_beam(model, configured, a, b, added=(), want_k=None, want_c=None, bl=None):
+    """A beam added by hand between nodes a and b of a base vehicle: {"beamSpring", "beamDamp", "beamDeform",
+    "beamStrength", "k_room", "c_room", "limited", "length", "nodes": {id: {"kg", "part", "before", "after"}},
+    "warnings"}. The values aim at the vanilla median for the beam and stay under the vanilla 90th percentile at both
+    nodes, counting their beams and the ones added before (added: [{"a", "b", "beamSpring", "beamDamp"}]). want_k /
+    want_c: typed values, taken up to the room the nodes have. Deform and strength: the median of the beams already
+    on the two nodes (the structure they belong to), else the game's default and unbreakable."""
+    geo = configured["geometry"]
+    if a == b or a not in geo["nodes"] or b not in geo["nodes"]:
+        raise ValueError("pick two different nodes of the vehicle")
+    bl = bl if bl is not None else beams(model, configured)
+    rows, _ = values.node_weights(model, configured)
+    m = {}
+    for _, _, nid, kg, _ in rows:
+        m[nid] = m.get(nid, 0.0) + kg
+    if not m.get(a) or not m.get(b):
+        raise ValueError(f"node {a if not m.get(a) else b} has no weight: it is not a node a beam can hold")
+    k, c = _sums(bl, [{} for _ in bl])
+    for x in added or ():
+        for n in (x["a"], x["b"]):
+            k[n] = k.get(n, 0.0) + float(x.get("beamSpring") or 0)
+            c[n] = c.get(n, 0.0) + float(x.get("beamDamp") or 0)
+    ka, kb, ca, cb = k.get(a, 0.0), k.get(b, 0.0), c.get(a, 0.0), c.get(b, 0.0)
+    v = beam_values(m[a], m[b], (ka, kb), (ca, cb))
+    limited = v["limited"]
+    if want_k is not None:
+        limited = want_k > v["k_room"]
+        v["beamSpring"] = round(max(0.0, min(float(want_k), v["k_room"])), -3)
+    if want_c is not None:
+        limited = limited or want_c > v["c_room"]
+        v["beamDamp"] = round(max(0.0, min(float(want_c), v["c_room"])), 1)
+    near = [x for x in bl if x["a"] in (a, b) or x["b"] in (a, b)]
+
+    def median(key, default):
+        xs = sorted(x["values"][key] for x in near if key in x["values"] and math.isfinite(x["values"][key]))
+        return xs[len(xs) // 2] if xs else default
+    out = {"beamSpring": v["beamSpring"], "beamDamp": v["beamDamp"],
+           "beamDeform": round(median("beamDeform", DEFAULTS["beamDeform"]), -2),
+           "beamStrength": median("beamStrength", None), "k_room": v["k_room"], "c_room": v["c_room"], "limited": limited,
+           "length": round(math.dist(geo["nodes"][a], geo["nodes"][b]), 4), "nodes": {}, "warnings": []}
+    if out["beamStrength"] is not None:
+        out["beamStrength"] = round(out["beamStrength"], -2)
+    for n, ks, cs in ((a, ka, ca), (b, kb, cb)):
+        out["nodes"][n] = {"kg": round(m[n], 3), "part": geo["parts"].get(n),
+                           "before": node_index(m[n], ks, cs)[2],
+                           "after": node_index(m[n], ks + out["beamSpring"], cs + out["beamDamp"])[2]}
+    pa, pb = geo["parts"].get(a) or "", geo["parts"].get(b) or ""
+    if bool(values.UNSPRUNG.search(pa)) != bool(values.UNSPRUNG.search(pb)):
+        out["warnings"].append(f"it joins the suspension ({pa if values.UNSPRUNG.search(pa) else pb}) to the body: "
+                               "the suspension will not move freely")
+    if any({x["a"], x["b"]} == {a, b} for x in bl):
+        out["warnings"].append("the vehicle already has a beam between these nodes")
+    if out["length"] < 0.01:
+        out["warnings"].append("the nodes are less than 1 cm apart")
+    return out
+
+
+def added_beam_json(model, configured_json, a, b, added_json=None, want_k=None, want_c=None):
+    return json.dumps(added_beam(model, json.loads(configured_json), a, b, json.loads(added_json) if added_json else (),
+                                 want_k, want_c))
+
+
 def stability_json(model, configured_json):
     return json.dumps([[n, round(a, 3), round(b, 3), round(kg, 3)] for n, a, b, kg in stability(model, json.loads(configured_json))[:20]])

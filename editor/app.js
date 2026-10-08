@@ -44,7 +44,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 // last line of a Python traceback, without the exception class
 const pyError = (e) => String(e.message || e).trim().split('\n').pop().replace(/^\w+Error: /, '');
 
-let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy, strpy, ptpy, donpy, scpy, typy, aepy, copy_;
+let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy, strpy, ptpy, donpy, scpy, typy, aepy, copy_, rigpy;
 const timing = {};         // ms per step, shown in the footer by drawTiming
 
 // ---------- Python engine ----------
@@ -73,6 +73,7 @@ async function boot() {
   scpy = py.pyimport('beamforge.scratch');
   typy = py.pyimport('beamforge.tyres');
   aepy = py.pyimport('beamforge.aero');
+  rigpy = py.pyimport('beamforge.rigidity');
   copy_ = py.pyimport('beamforge.components');
   timing.files = performance.now() - t1;
   $('loading').remove();
@@ -153,7 +154,7 @@ let cat = null, veh = null, vehError = null, vehBusy = '';
 // replaces it; fitReport: its report rows, hardpoint mapping, placement and notes; fitOverrides: the
 // hardpoint-to-node ties the user set ({"FL:lower_ball_joint": node})
 const freshEdit = (model, config) => ({ model, config: config || null, parts: {}, vars: {}, moves: { parts: {}, nodes: {} },
-  fit: {}, fitReport: null, fitOverrides: {} });
+  fit: {}, fitReport: null, fitOverrides: {}, beams: [] });
 // the moves Python applies: the hand moves on top of the fit
 function allMoves() {
   const nodes = {};
@@ -413,6 +414,20 @@ function drawVehicle() {
     line.renderOrder = 2;
     vehG.add(line);
   }
+  // beams added by hand (green), and the node a new beam starts from
+  const added = (vehEdit.beams || []).filter((b) => g.nodes[b.a] && g.nodes[b.b]);
+  if (added.length) {
+    const ab = new THREE.BufferGeometry().setFromPoints(added.flatMap((b) => [v3(g.nodes[b.a]), v3(g.nodes[b.b])]));
+    const ls = new THREE.LineSegments(ab, new THREE.LineBasicMaterial({ color: 0x2fbf71, depthTest: false }));
+    ls.renderOrder = 2;
+    vehG.add(ls);
+  }
+  if (beamFrom && g.nodes[beamFrom]) {
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.03, 16, 12), new THREE.MeshBasicMaterial({ color: 0x2fbf71, depthTest: false }));
+    dot.position.copy(v3(g.nodes[beamFrom]));
+    dot.renderOrder = 2;
+    vehG.add(dot);
+  }
   vehG.visible = $('showbeams').checked;
 }
 
@@ -641,6 +656,7 @@ function vehInspector() {
     ${veh.missing.length ? `<p class="bad">Not found in the added folders: ${veh.missing.map((m) => esc(m[1])).join(', ')}</p>` : ''}
     <div class="inl"><button id="vehsave" class="primary">Save configuration (.pc)…</button><button id="vehreset">Reset to the configuration</button></div>
     ${movePanel()}
+    ${beamPanel()}
     <details open><summary><b>Parts</b> <span class="q">(as the game's Parts menu)</span></summary>
       ${hiddenParts.size || lockedParts.size ? `<p class="quiet">${hiddenParts.size} hidden, ${lockedParts.size} locked
         ${hiddenParts.size ? '<button id="showall" class="mini">show all</button>' : ''}${lockedParts.size ? '<button id="unlockall" class="mini">unlock all</button>' : ''}</p>` : ''}
@@ -685,6 +701,59 @@ function movePanel() {
   return `<details open><summary><b>Move</b> <button id="moveclear" class="mini">clear pick</button></summary>${body}${all}</details>`;
 }
 
+// the Beams panel: beams added by hand between two nodes, with values that keep the nodes as stable as vanilla cars'
+// (rigidity.added_beam: the beam's own mode at the vanilla median, both nodes under the vanilla 90th percentile,
+// counting the beams added before). Typed values are taken up to the room the nodes have. Written in the main part.
+let beamFrom = null, beamDraft = {};
+function beamPanel() {
+  const list = vehEdit.beams || [];
+  const rows = list.length ? `<table class="cmp"><tr><th>Beam</th><th>k N/m</th><th>c N·s/m</th><th></th></tr>
+    ${list.map((b, i) => `<tr><td>${esc(b.a)} – ${esc(b.b)}</td><td>${fmt(b.beamSpring, 0)}</td><td>${fmt(b.beamDamp, 0)}</td><td><button class="mini" data-beamdel="${i}">remove</button></td></tr>`).join('')}</table>` : '';
+  let body = '';
+  const node = pick && pick.kind === 'node' ? pick.id : null;
+  if (beamFrom && node && node !== beamFrom) {
+    let x;
+    try {
+      x = JSON.parse(rigpy.added_beam_json(veh.model, JSON.stringify(veh), beamFrom, node, JSON.stringify(list),
+        beamDraft.k != null ? beamDraft.k : null, beamDraft.c != null ? beamDraft.c : null));
+    } catch (err) { return `<details open><summary><b>Beams</b></summary><p class="bad">${esc(pyError(err))}</p>
+      <p><button id="beamcancel" class="mini">cancel</button></p>${rows}</details>`; }
+    const nb = Object.entries(x.nodes).map(([id, n]) => `<span>${esc(id)}</span><span>${fmt(n.kg, 2)} kg, ${esc(n.part || '')}: <span class="band ${n.before}">${n.before}</span> → <span class="band ${n.after}">${n.after}</span></span>`).join('');
+    body = `<div class="kv"><span>New beam</span><span><b>${esc(beamFrom)} – ${esc(node)}</b> <span class="q">${fmt(x.length * 1000, 0)} mm</span></span>${nb}
+        <span>Spring k</span><span><input type="number" id="beamk" step="1000" value="${x.beamSpring}"> N/m <span class="q">up to ${fmt(x.k_room, 0)}</span></span>
+        <span>Damping c</span><span><input type="number" id="beamc" step="10" value="${x.beamDamp}"> N·s/m <span class="q">up to ${fmt(x.c_room, 0)}</span></span>
+        <span>Deform · strength</span><span>${fmt(x.beamDeform, 0)} · ${x.beamStrength == null ? 'unbreakable' : fmt(x.beamStrength, 0)} <span class="q">(as the beams on these nodes)</span></span></div>
+      ${x.limited ? '<p class="bad">Held at what the nodes can take: stiffer, they would pass the vanilla cars\' 90th percentile.</p>' : ''}
+      ${x.warnings.map((w) => `<p class="bad">${esc(w)}</p>`).join('')}
+      <div class="inl"><button id="beamadd" class="primary">Add beam</button><button id="beamauto" class="mini" ${beamDraft.k != null || beamDraft.c != null ? '' : 'disabled'}>suggested values</button><button id="beamcancel" class="mini">cancel</button></div>`;
+    beamDraft.last = { a: beamFrom, b: node, beamSpring: x.beamSpring, beamDamp: x.beamDamp, beamDeform: x.beamDeform, beamStrength: x.beamStrength };
+  } else if (beamFrom) {
+    body = `<p class="quiet">From <b>${esc(beamFrom)}</b>: click the second node in the view. <button id="beamcancel" class="mini">cancel</button></p>`;
+  } else if (node) {
+    body = `<p><button id="beamstart" class="mini">New beam from ${esc(node)}</button></p>`;
+  } else {
+    body = '<p class="quiet">Click a node in the view to start a beam from it.</p>';
+  }
+  return `<details ${beamFrom || list.length ? 'open' : ''}><summary><b>Beams</b> <span class="q">(${list.length} added by hand)</span></summary>${body}${rows}
+    ${list.length ? '<p class="quiet">Written at the end of the main part\'s beams on export (Assembly).</p>' : ''}</details>`;
+}
+
+function bindBeams(el) {
+  if ($('beamstart')) $('beamstart').onclick = () => { beamFrom = pick.id; beamDraft = {}; drawVehicle(); drawInspector(); };
+  if ($('beamcancel')) $('beamcancel').onclick = () => { beamFrom = null; beamDraft = {}; drawVehicle(); drawInspector(); };
+  if ($('beamauto')) $('beamauto').onclick = () => { beamDraft = {}; drawInspector(); };
+  if ($('beamk')) $('beamk').onchange = () => { beamDraft.k = $('beamk').value === '' ? null : +$('beamk').value; drawInspector(); };
+  if ($('beamc')) $('beamc').onchange = () => { beamDraft.c = $('beamc').value === '' ? null : +$('beamc').value; drawInspector(); };
+  if ($('beamadd')) $('beamadd').onclick = () => {
+    if (!beamDraft.last) return;
+    vehEdit.beams = [...(vehEdit.beams || []), beamDraft.last];
+    beamFrom = null; beamDraft = {}; redraw();
+  };
+  el.querySelectorAll('[data-beamdel]').forEach((b) => { b.onclick = () => {
+    vehEdit.beams = vehEdit.beams.filter((_, i) => i !== +b.dataset.beamdel); redraw();
+  }; });
+}
+
 // a typed value: a node's new position, or a beam's new midpoint, becomes a delta added to the node moves;
 // a part's value is its offset
 function shiftNode(id, axis, by) {
@@ -711,6 +780,7 @@ function setMove(kind, axis, value) {
 
 function bindVehInspector(el) {
   if (!veh) return;
+  bindBeams(el);
   el.querySelectorAll('[data-pickpart]').forEach((b) => b.onclick = (e) => {
     e.preventDefault(); e.stopPropagation();
     if (!editable(b.dataset.pickpart)) return;
@@ -735,7 +805,7 @@ function bindVehInspector(el) {
     configureVehicle();
   };
   if ($('movereset')) $('movereset').onclick = () => { vehEdit.moves = { parts: {}, nodes: {} }; configureVehicle(); };
-  $('vehcfg').onchange = (e) => { vehEdit = { ...freshEdit(veh.model, e.target.value), moves: vehEdit.moves }; configureVehicle(); };   // a new configuration drops the fit
+  $('vehcfg').onchange = (e) => { vehEdit = { ...freshEdit(veh.model, e.target.value), moves: vehEdit.moves, beams: vehEdit.beams }; configureVehicle(); };   // a new configuration drops the fit
   el.querySelectorAll('select[data-slot]').forEach((s) => s.onchange = () => { vehEdit.parts[s.dataset.slot] = s.value; configureVehicle(); });
   el.querySelectorAll('input[data-var]').forEach((r) => {
     r.oninput = () => { r.nextElementSibling.textContent = fmt(Number(r.value), Number(r.step) < 0.01 ? 3 : Number(r.step) < 1 ? 2 : 0); };
@@ -1478,7 +1548,7 @@ async function runExport() {
       svjOpt.axles = vehEdit.fitReport.axles;        // the wheels' camber and toe, set by preloading the upright's beams
     }
     const out = JSON.parse(exppy.build(veh.model, id, name, JSON.stringify(veh), JSON.stringify(exportForm.choices), brand || null,
-      svjOpt ? JSON.stringify(svjOpt) : null));
+      svjOpt ? JSON.stringify(svjOpt) : null, (vehEdit.beams || []).length ? JSON.stringify(vehEdit.beams) : null));
     const all = new Set();
     for (const s of allSources()) for (const p of Object.keys(s.blobs || {})) if (p.startsWith(`vehicles/${veh.model}/`)) all.add(p);
     const copies = JSON.parse(exppy.assets(veh.model, id, JSON.stringify([...all])));
@@ -2667,7 +2737,7 @@ let autosaveNote = '', autosaveAt = null, restoring = false, svjName = null;
 function projectData() {
   return {
     beamforge_project: PROJECT_VERSION, saved: new Date().toISOString(), workspace: ws,
-    base: veh ? { model: vehEdit.model, config: vehEdit.config, parts: vehEdit.parts, vars: vehEdit.vars, moves: vehEdit.moves,
+    base: veh ? { model: vehEdit.model, config: vehEdit.config, parts: vehEdit.parts, vars: vehEdit.vars, moves: vehEdit.moves, beams: vehEdit.beams,
       fit: vehEdit.fit, fitReport: vehEdit.fitReport, fitOverrides: vehEdit.fitOverrides,
       hidden: [...hiddenParts], locked: [...lockedParts] } : pendingBase,
     svj: svjDoc ? { name: svjName || 'project.svj.json', doc: svjDoc.svj } : null,
@@ -2736,7 +2806,7 @@ async function applyPendingBase() {
   pendingBase = null;
   await openVehicle(b.model, b.config);
   vehEdit = { ...freshEdit(b.model, b.config), parts: b.parts || {}, vars: b.vars || {}, moves: b.moves || { parts: {}, nodes: {} },
-    fit: b.fit || {}, fitReport: b.fitReport || null, fitOverrides: b.fitOverrides || {} };
+    fit: b.fit || {}, fitReport: b.fitReport || null, fitOverrides: b.fitOverrides || {}, beams: b.beams || [] };
   hiddenParts = new Set(b.hidden || []); lockedParts = new Set(b.locked || []);
   configureVehicle();
   if (svjDoc) studySuspension();

@@ -46,6 +46,29 @@ class TestExport(unittest.TestCase):
         self.assertEqual((info["Name"], info["Brand"], info["default_pc"]), ("Toy Fit", "BeamForge", "beamforge"))
         self.assertNotIn("vehicles/toycar/toycar.jbeam", f)                        # nothing of the base is rewritten
 
+    def test_added_beams(self):
+        from beamforge import rigidity
+        v = json.loads(self.configured)
+        x = rigidity.added_beam("toycar", v, "b1", "fwhl1l")
+        self.assertEqual((x["nodes"]["b1"]["after"], x["limited"]), ("ok", False))
+        self.assertTrue(any("suspension" in w for w in x["warnings"]))               # a wheel node: it would hold the wheel
+        self.assertGreater(x["beamSpring"], 0)
+        typed = rigidity.added_beam("toycar", v, "b1", "b2", [], want_k=1e10)
+        self.assertTrue(typed["limited"])
+        self.assertEqual(typed["beamSpring"], typed["k_room"])                       # held at what the nodes can take
+        after = rigidity.added_beam("toycar", v, "b1", "b2", [{"a": "b1", "b": "b2", **typed}])
+        self.assertEqual(after["k_room"], 0.0)                                       # the first one used all the room
+        self.assertRaises(ValueError, rigidity.added_beam, "toycar", v, "b1", "b1")
+        added = [{"a": "b1", "b": "b2", "beamSpring": x["beamSpring"], "beamDamp": x["beamDamp"], "beamDeform": 1e5},
+                 {"a": "b1", "b": "gone", "beamSpring": 1, "beamDamp": 1}]
+        out = json.loads(export.build("toycar", "toyfit", "Toy Fit", self.configured, "{}", None, None, json.dumps(added)))
+        rows = json.loads(out["files"]["vehicles/toyfit/toycar.jbeam"])["toycar"]["beams"]
+        self.assertEqual(rows[-1][:2], ["b1", "b2"])
+        self.assertEqual((rows[-1][2]["beamSpring"], rows[-1][2]["beamType"], rows[-1][2]["beamStrength"]),
+                         (x["beamSpring"], "|NORMAL", "FLT_MAX"))
+        self.assertEqual(out["counts"]["added_beams"], 1)
+        self.assertTrue(any("left out" in n for n in out["notes"]))
+
     def test_reuse_and_copy_choices(self):
         out = json.loads(export.build("toycar", "toyfit", "Toy Fit", self.configured,
                                       json.dumps({"steel_wheel_F": "reuse", "toycar": "copy"})))

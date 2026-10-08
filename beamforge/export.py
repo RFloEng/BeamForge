@@ -680,13 +680,34 @@ def axle_preload(model, configured, bl, axles):
     return out
 
 
-def build(model, new_id, name, configured_json, choices_json, brand=None, svj_json=None):
+ADDED_RESET = {"beamType": "|NORMAL", "beamPrecompression": 1, "breakGroup": "", "deformGroup": "",
+               "deformLimit": "FLT_MAX", "deformLimitExpansion": "FLT_MAX", "beamLongBound": 1.0, "beamShortBound": 1.0,
+               "optional": False}
+
+
+def _add_beams(part, added):
+    """Beams added by hand, at the end of the part's beams table, each with all its values inline and the properties
+    the rows above carry on reset, so it is a plain beam whatever came before it (rigidity.added_beam's values)."""
+    rows = part.get("beams")
+    if not isinstance(rows, list) or not rows:
+        rows = part["beams"] = [["id1:", "id2:"]]
+    for x in added:
+        vals = dict(ADDED_RESET, beamSpring=x["beamSpring"], beamDamp=x["beamDamp"],
+                    beamDeform=x.get("beamDeform") or rigidity.DEFAULTS["beamDeform"],
+                    beamStrength=x.get("beamStrength") if x.get("beamStrength") is not None else "FLT_MAX")
+        rows.append([x["a"], x["b"], vals])
+    return len(added)
+
+
+def build(model, new_id, name, configured_json, choices_json, brand=None, svj_json=None, added_json=None):
     """The text files of the new vehicle: {"files": {path: text}, "renamed": {old: new}, "notes": [...],
     "counts": {...}}. configured: beamng.configure() of the edited vehicle (with its moves); choices:
     {part: "reuse" | "copy" | "fit"} (missing parts take plan()'s proposal). svj_json (optional):
     {"svj", "files", "place", "attach", "replace", "take", "study"}: the SVJ meshes to add (see
     svj_meshes; replace: leave out the base vehicle's body meshes; no "attach": no meshes) and the
-    values to take ({row key: True}, values.table keys; study: the SVJ suspension study)."""
+    values to take ({row key: True}, values.table keys; study: the SVJ suspension study). added_json
+    (optional): beams added by hand, [{"a", "b", "beamSpring", "beamDamp", "beamDeform", "beamStrength"}]
+    (rigidity.added_beam), written in the vehicle's main part."""
     problems = check_id(new_id, model)
     if problems:
         raise ValueError("; ".join(problems))
@@ -791,7 +812,10 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     renames = {n: f"{new_id}_{n}" for n in active
                if parts.get(n, {}).get("model") == "common" and choices.get(n) in ("copy", "fit")}
     files, counts, notes = {}, {"fitted": 0, "copied": 0, "reused": 0, "regenerated": 0, "nodes": 0, "svj_meshes": 0,
-                                "base_meshes_dropped": 0, "values": 0, "rigidity_beams": 0}, []
+                                "base_meshes_dropped": 0, "values": 0, "rigidity_beams": 0, "added_beams": 0}, []
+    added = [x for x in (json.loads(added_json) if added_json else []) if x.get("a") in v["geometry"]["nodes"] and x.get("b") in v["geometry"]["nodes"]]
+    if added_json and len(added) < len(json.loads(added_json)):
+        notes.append(f"{len(json.loads(added_json)) - len(added)} beams added by hand left out: their nodes are not in this configuration")
     if mass_note:
         notes.append(mass_note)
     for r in bench:
@@ -825,6 +849,8 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
             values.apply_to_part(n, part, taken_beams, taken_tyres, taken_weights)
             values.apply_powertrain(n, part, taken_pt)
             counts["values"] += 1
+        if added and n == v["main"]:
+            counts["added_beams"] += _add_beams(part, added)
         if opt and opt.get("replace") and svjm and n in active:
             counts["base_meshes_dropped"] += _drop_body_meshes(n, part)
         for m in svjm:
