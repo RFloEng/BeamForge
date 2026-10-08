@@ -138,7 +138,7 @@ Group A Subaru SVJ, all four corners:
   vanilla the front-drive compact's nodes reach 6.8 and 2.3). rigidity's check counts only beamSpring and beamDamp,
   and missed it: v5's new rear strut tops (2.5 kg) carried the dampers' rebound at c dt / m 2.75, more
   than any vanilla node, and the car shook at high frequency braking to a stop and broke its fuel tank
-  on load (the tank's trigger beam tank nodes breaks at 200 N on 20 N s/m of damping, next to the rear
+  on load (the tank's trigger beam breaks at 200 N on 20 N s/m of damping, next to the rear
   pivots). v6: 6.9 kg, as the vanilla's 7.
 
 In the game: v2 steers (still the wheel wobble, since found: the axle tilted at spawn); v4 no wobble,
