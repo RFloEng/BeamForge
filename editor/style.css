@@ -137,3 +137,16 @@ button.mini:disabled { opacity: 0.4; cursor: default; }
 #compare input[type=range] { width: 110px; }
 input[data-skoff] { width: 4.2em; }
 select[data-skrot] { width: 4.2em; }
+/* workspaces: a dot on the tabs that hold something */
+.spaces button { white-space: nowrap; }
+.spaces .dot { display: inline-block; width: 6px; height: 6px; border-radius: 3px; background: var(--good); vertical-align: middle; margin-left: 4px; }
+/* stability bands of a node (Checks, Sketch) */
+.band { border-radius: 8px; padding: 0 6px; font-size: 11px; white-space: nowrap; }
+.band.ok { background: color-mix(in srgb, var(--good) 18%, transparent); }
+.band.high { background: color-mix(in srgb, #d4a72c 25%, transparent); }
+.band.extreme { background: color-mix(in srgb, var(--warn) 25%, transparent); }
+.band.beyond { background: color-mix(in srgb, var(--bad) 25%, transparent); }
+/* Powertrain: the base / SVJ / edit buttons of a group, the hand fields */
+.ptbtns { font-weight: 400; margin-left: 6px; text-transform: none; letter-spacing: 0; }
+.ptedit { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
+.ptedit textarea { width: 100%; font: 12px/1.4 ui-monospace, Consolas, monospace; }

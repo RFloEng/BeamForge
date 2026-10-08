@@ -7,6 +7,8 @@
 //   base vehicle      BeamNG folders (install, user folder, mods; remembered), vehicle list, parts and tuning
 //   SVJ               import (.svj.json + meshes, or .zip bundle), glTF meshes, hardpoints, comparison panel
 //   panels            inspector, budget bar, messages, timing
+//   workspaces        Base vehicle, SVJ, Sketch, Suspension, Checks, Assembly: one view, the panels of each use
+//   project           the work saved as a .beamforge.json (and autosaved in the browser), opened again later
 //
 // State (module globals):
 //   folders, cat     the BeamNG folders (library.js) and the vehicle catalog (vehpy.catalog)
@@ -32,7 +34,7 @@ import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, reme
 const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py',
   'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py', 'beamforge/dae.py', 'beamforge/values.py',
   'beamforge/rigidity.py', 'beamforge/kinematics.py', 'beamforge/roles.py', 'beamforge/convert.py',
-  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py'];
+  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py'];
 const REPO = new URL('../', import.meta.url);
 
 const $ = (id) => document.getElementById(id);
@@ -42,7 +44,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 // last line of a Python traceback, without the exception class
 const pyError = (e) => String(e.message || e).trim().split('\n').pop().replace(/^\w+Error: /, '');
 
-let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy;
+let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy, strpy, ptpy;
 const timing = {};         // ms per step, shown in the footer by drawTiming
 
 // ---------- Python engine ----------
@@ -65,8 +67,11 @@ async function boot() {
   exppy = py.pyimport('beamforge.export');
   valpy = py.pyimport('beamforge.values');
   skpy = py.pyimport('beamforge.skeleton');
+  strpy = py.pyimport('beamforge.structure');
+  ptpy = py.pyimport('beamforge.powertrain');
   timing.files = performance.now() - t1;
   $('loading').remove();
+  await restoreProject();
   redraw();
   fitCamera();
   await restoreFolders();
@@ -123,7 +128,7 @@ function fitCamera() {
 })();
 
 function drawScene() { drawVehicle(); placeSvj(); drawHardpoints(); drawSuspension(); drawSkeleton(); }
-function redraw() { drawScene(); drawVehList(); drawInspector(); drawBudget(); showIssues(issues()); drawTiming(); }
+function redraw() { drawScene(); drawSpaces(); drawVehList(); drawInspector(); drawBudget(); showIssues(issues()); drawTiming(); autosave(); }
 
 // ---------- base vehicle: any BeamNG vehicle from the user's own install or mods ----------
 // Nothing from the game ships with BeamForge. The user adds their folders once (library.js): the game
@@ -208,6 +213,7 @@ async function libraryChanged() {
   forgetMeshes(); meshes = null; meshKey = ''; bodyG.clear();
   resolved = JSON.parse(vehpy.resolve(JSON.stringify(allSources().map((s) => ({ name: s.name, kind: s.kind, paths: Object.keys(s.files) })))));
   await scanLibrary();
+  await applyPendingBase();
   redraw();
 }
 
@@ -333,6 +339,7 @@ function configureVehicle() {
     if (pick && !pickValid()) pick = null;
     vehEdit.config = veh.config;
     vehError = null;
+    if (skel) buildSkeleton();                        // placed on the vehicle's front axle and ground
     colorParts();
     syncMeshes();
   } catch (err) {
@@ -571,6 +578,7 @@ function libraryPanel() {
 
 function drawVehList() {
   const el = $('leftveh');
+  if (ws !== 'base') { el.innerHTML = projectPanel(); bindProject(el); return; }
   if (vehBusy) { el.innerHTML = `<h2>BeamNG folders</h2><p class="quiet">${esc(vehBusy)}</p>`; return; }
   let html = libraryPanel();
   if (cat) {
@@ -632,7 +640,7 @@ function vehInspector() {
         ${hiddenParts.size ? '<button id="showall" class="mini">show all</button>' : ''}${lockedParts.size ? '<button id="unlockall" class="mini">unlock all</button>' : ''}</p>` : ''}
       <ul class="vehparts">${slotRow(veh.tree, 0)}</ul></details>
     <details><summary><b>Tuning</b> <span class="q">(${veh.variables.length} variables)</span></summary>${tune}</details>
-    ${exportPanel()}`;
+    <p class="quiet">Making the new vehicle is in <button class="mini" data-goto="assembly">Assembly</button>.</p>`;
 }
 
 // the Move panel: the picked node (its position), beam (its midpoint: both nodes move) or part (its offset),
@@ -900,6 +908,8 @@ async function supplyMeshes(files, jsonDir, meshes, base) {
 // the SVJ loaded from the Python file system (svjSrc): its meshes drawn, the panels redrawn
 async function finishImport(name) {
   svjDoc = JSON.parse(svjpy.load_bundle(svjSrc, '/tmp/svj_in'));
+  svjName = name;
+  if (!ptEdit.touched) ptEdit = { ...JSON.parse(ptpy.from_svj_json(JSON.stringify(svjDoc.svj))), touched: false };
   studySuspension();
   await loadSvjMeshes();
   redraw();
@@ -1036,7 +1046,7 @@ function svjInspector() {
     ${svjDoc.bindings.length ? `<details><summary>Visual bindings</summary><div class="kv">${svjDoc.bindings.map((b) =>
       `<span>${esc(b.path)}</span><span>${esc(b.node)}</span>`).join('')}</div></details>` : ''}
     ${cmp}
-    ${suspPanel()}`;
+    ${svjSusp ? '<p class="quiet">The suspension study is in <button class="mini" data-goto="suspension">Suspension</button>.</p>' : ''}`;
 }
 
 // ---------- fit the base vehicle to the SVJ (beamforge/fit.py, docs/fitting.md) ----------
@@ -1124,6 +1134,7 @@ function valuesPanel() {
   let rows = [];
   try { rows = JSON.parse(valpy.table(veh.model, JSON.stringify(veh), JSON.stringify(svjDoc.svj), JSON.stringify({ corners: svjSusp?.corners || {} }))); }
   catch (err) { return `<p class="bad">${esc(pyError(err))}</p>`; }
+  rows = rows.filter((r) => !PT_KEYS.includes(r.key));
   if (!rows.length) return '';
   const v = (x, u) => x === null || x === undefined ? '–' : typeof x === 'string' ? esc(x) : fmt(x, u === 'm' ? 3 : u === 'kW' || u === '' ? 2 : 0);
   let sugg = [];
@@ -1135,6 +1146,7 @@ function valuesPanel() {
     <table class="cmp"><tr><th></th><th>Base</th><th>SVJ</th><th>Take</th></tr>
     ${rows.map((r) => `<tr title="${esc(r.note || '')}"><td>${esc(r.label)} <span class="q">${esc(r.unit)}</span></td><td>${v(r.base, r.unit)}</td><td>${v(r.svj, r.unit)}</td>
       <td>${r.svj === null || r.svj === undefined || r.info ? '' : `<input type="checkbox" data-take="${esc(r.key)}" ${takeValues[r.key] !== false ? 'checked' : ''}>`}</td></tr>`).join('')}</table>
+    <p class="quiet">Engine, gears, final drive and steering: <button class="mini" data-goto="powertrain">Powertrain</button>.</p>
     <p class="quiet">Taken values go into the new vehicle (Make a new vehicle): spring rates into the coil spring beams (the SVJ wheel rate over the spring's motion ratio squared), damping into the damper beams (slopes of the SVJ curves), tyre radius into the tyre parts, mass and CG as node weights, the torque curve into the engine (the exhaust's own change added back), gear ratios into the gearbox (reverse kept) and the final drive into the driven axle's differential. Hover a row for details.</p>`;
 }
 
@@ -1444,6 +1456,12 @@ async function runExport() {
       const take = Object.fromEntries(rows.filter((r) => r.svj !== null && takeValues[r.key] !== false).map((r) => [r.key, true]));
       svjOpt = { ...(svjOpt || { svj: svjDoc.svj }), take, study: { corners: svjSusp?.corners || {} } };
     }
+    {                                                 // engine, gears, final drive, steering: the Powertrain workspace's
+      const pt = JSON.parse(ptpy.export_json(JSON.stringify(ptEdit), svjDoc ? JSON.stringify(svjDoc.svj) : null));
+      if (Object.values(pt.take).some(Boolean) || svjOpt) {
+        svjOpt = { ...(svjOpt || {}), svj: pt.svj, take: { ...((svjOpt && svjOpt.take) || {}), ...pt.take } };
+      }
+    }
     if (svjOpt && Object.keys(vehEdit.fit || {}).length && vehEdit.fitReport?.axles) {
       svjOpt.axles = vehEdit.fitReport.axles;        // the wheels' camber and toe, set by preloading the upright's beams
     }
@@ -1482,12 +1500,25 @@ async function runExport() {
 // ---------- panels ----------
 function drawInspector() {
   const el = $('inspector');
-  el.innerHTML = vehInspector() + svjInspector() + skeletonPanel();
-  bindVehInspector(el);
-  bindSkeleton(el);
-  bindExport();
-  bindFitPanel();
-  bindSuspPanel();
+  const html = {
+    base: () => vehInspector(),
+    svj: () => svjInspector(),
+    sketch: () => skeletonPanel(),
+    suspension: () => suspPanel() || `<h2>Suspension</h2><p class="quiet">Import an SVJ to study its corners over wheel travel:
+      camber, toe, roll centre, motion ratio, with the linkage moving in the view.</p>`,
+    checks: () => checksPanel(),
+    powertrain: () => powertrainPanel(),
+    assembly: () => assemblyPanel(),
+  }[ws]();
+  el.innerHTML = html;
+  if (ws === 'base') bindVehInspector(el);
+  if (ws === 'svj') bindFitPanel();
+  if (ws === 'sketch') bindSkeleton(el);
+  if (ws === 'suspension') bindSuspPanel();
+  if (ws === 'checks') bindChecks(el);
+  if (ws === 'powertrain') bindPowertrain(el);
+  if (ws === 'assembly') { bindExport(); bindAssembly(el); }
+  el.querySelectorAll('[data-goto]').forEach((b) => { b.onclick = () => setWorkspace(b.dataset.goto); });
 }
 
 function drawBudget() {
@@ -1524,6 +1555,7 @@ function drawTiming() {
   if (timing.files) parts.push(`BeamForge code ${fmt(timing.files / 1000, 1)} s`);
   if (timing.configure) parts.push(`last configure ${fmt(timing.configure, 0)} ms`);
   if (timing.skeleton && skel) parts.push(`skeleton ${fmt(timing.skeleton, 0)} ms`);
+  if (timing.checks) parts.push(`checks ${fmt(timing.checks / 1000, 1)} s`);
   if (veh && meshNote) parts.push(meshNote);
   $('timing').textContent = parts.join(' · ');
 }
@@ -1540,7 +1572,7 @@ function drawTiming() {
 // strength from the section, nodes carrying the tubes' mass, bending beams at the welded corners. A link is a rigid body.
 let skel = null;
 const SKEL_KIND = { line: 0xe0782a, bend: 0x2da44e, brace: 0x2f81f7, helper: 0x9aa4ae };
-const SKEL_BAND = { ok: 0x2da44e, high: 0xd4a72c, risky: 0xe0782a, unstable: 0xcf222e };
+const SKEL_BAND = { ok: 0x2da44e, high: 0xd4a72c, extreme: 0xe0782a, beyond: 0xcf222e };
 
 function buildSkeleton() {
   if (!skel) return;
@@ -1610,7 +1642,7 @@ function skeletonPanel() {
           <td><input data-sktube="${esc(p.name)}" value="${esc(p.tube)}" size="18" title="tube|sqtube DxT material (mm): steel_1018, steel_4130n, al_6061_t6"></td>
           <td>${fmt(p.mass, 2)}${p.buckling ? ` <span class="q" title="members that buckle before they yield">${p.buckling} buckle</span>` : ''}</td></tr>`).join('')}</table></details>
       <details><summary>Joints</summary><div class="kv">${r.joints.map((j) => `<span>${esc(j.parts[0].join('+'))} – ${esc(j.parts[1].join('+'))}</span><span>${esc(j.type)} (${esc(j.nodes.join(', '))})</span>`).join('') || '<span>none</span><span></span>'}</div></details>
-      <p class="quiet">Lines: orange the CAD's (tubes), green bending beams at welded corners, blue braces, grey to helper nodes. Nodes: green, amber, orange, red by their stiffness and damping against vanilla cars' (median, 90th, 99th percentile).</p>
+      <p class="quiet">Lines: orange the CAD's (tubes), green bending beams at welded corners, blue braces, grey to helper nodes. Nodes: green, amber, orange, red by their stiffness and damping against vanilla cars' nodes (ok, high, extreme, beyond: Checks).</p>
       <p><button id="skjbeam">Download jbeam</button></p>`;
   }
   return `<h2>Skeleton <span class="q">${esc(skel.name)}</span></h2>
@@ -1626,7 +1658,7 @@ function skeletonPanel() {
 
 function bindSkeleton(el) {
   if (!skel) return;
-  const rebuild = () => { buildSkeleton(); drawSkeleton(); drawInspector(); drawTiming(); };
+  const rebuild = () => { buildSkeleton(); redraw(); };
   el.querySelectorAll('[data-skrot]').forEach((x) => { x.onchange = () => { skel.opts.rot[+x.dataset.skrot] = +x.value; rebuild(); }; });
   el.querySelectorAll('[data-skoff]').forEach((x) => { x.onchange = () => { skel.opts.offset[+x.dataset.skoff] = +x.value || 0; rebuild(); }; });
   if ($('skunit')) $('skunit').onchange = () => { skel.opts.unit = $('skunit').value ? +$('skunit').value : null; rebuild(); };
@@ -1634,17 +1666,22 @@ function bindSkeleton(el) {
   if ($('skminkg')) $('skminkg').onchange = () => { skel.opts.min_kg = Math.max(0.1, +$('skminkg').value || 1); rebuild(); };
   el.querySelectorAll('[data-skkind]').forEach((x) => { x.onchange = () => { skel.opts.kinds[x.dataset.skkind] = x.value; delete skel.opts.tubes[x.dataset.skkind]; rebuild(); }; });
   el.querySelectorAll('[data-sktube]').forEach((x) => { x.onchange = () => { skel.opts.tubes[x.dataset.sktube] = x.value.trim(); rebuild(); }; });
-  if ($('skclose')) $('skclose').onclick = () => { skel = null; drawSkeleton(); drawInspector(); };
-  if ($('skjbeam')) $('skjbeam').onclick = () => {
-    const m = (veh && veh.measure) || {};
-    const opts = { ...skel.opts, yf: m.front_axle_y || 0, ground: m.ground_z || 0 };
-    const text = skpy.jbeam_json(skel.text, JSON.stringify(opts), 'skeleton');
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
-    a.download = skel.name.replace(/\.(step|stp)$/i, '') + '.jbeam';
-    a.click();
-    URL.revokeObjectURL(a.href);
-  };
+  if ($('skclose')) $('skclose').onclick = () => { skel = null; redraw(); };
+  if ($('skjbeam')) $('skjbeam').onclick = skeletonJbeam;
+}
+
+function download(name, text, type = 'application/json') {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function skeletonJbeam() {
+  const m = (veh && veh.measure) || {};
+  const opts = { ...skel.opts, yf: m.front_axle_y || 0, ground: m.ground_z || 0 };
+  download(skel.name.replace(/\.(step|stp)$/i, '') + '.jbeam', skpy.jbeam_json(skel.text, JSON.stringify(opts), 'skeleton'));
 }
 
 $('stepin').onclick = () => $('stepfile').click();
@@ -1654,9 +1691,8 @@ $('stepfile').onchange = async (e) => {
   if (!f) return;
   skel = { name: f.name, text: await f.text(), opts: { rot: [0, 0, 0], offset: [0, 0, 0], unit: null, tol: 0.002, kinds: {}, tubes: {}, min_kg: 1 }, res: null, error: null };
   buildSkeleton();
-  drawSkeleton();
-  drawInspector();
-  drawTiming();
+  if (ws !== 'sketch') ws = 'sketch';
+  redraw();
   if (!veh) {                                   // nothing else in the view: aim at the skeleton
     const box = new THREE.Box3().setFromObject(skelG);
     if (!box.isEmpty()) {
@@ -1668,9 +1704,352 @@ $('stepfile').onchange = async (e) => {
 };
 $('showskel').onchange = () => { skelG.visible = $('showskel').checked; };
 
+// ---------- workspaces: one view, the panels of each use ----------
+// The 3D view, the vehicle and everything loaded are shared; a workspace only chooses the panels (right) and what the
+// left panel shows (the BeamNG folders and vehicles in Base, the project elsewhere).
+const WORKSPACES = [
+  ['base', 'Base vehicle', 'The BeamNG vehicle to start from: its parts, tuning and moves'],
+  ['svj', 'SVJ', 'A Standard Vehicle JSON laid over the base: compare, fit, take its values'],
+  ['sketch', 'Sketch', 'Mechanisms and structures from points and lines (a STEP assembly): rigid parts, joints, tubes'],
+  ['suspension', 'Suspension', "The SVJ's corners over wheel travel"],
+  ['powertrain', 'Powertrain', 'Engine, gearbox, final drive and steering: the base\'s, the SVJ\'s or your own; the transmission parts'],
+  ['checks', 'Checks', 'Stability and structure of the vehicle and the sketch'],
+  ['assembly', 'Assembly', 'Everything together: the new vehicle to export'],
+];
+const WS_KEY = 'beamforge.workspace';
+let ws = (() => { try { return localStorage.getItem(WS_KEY); } catch { return null; } })();
+if (!WORKSPACES.some(([k]) => k === ws)) ws = 'base';
+
+function drawSpaces() {
+  const has = { base: !!veh, svj: !!svjDoc, sketch: !!skel, suspension: !!svjSusp,
+    powertrain: !!(ptEdit.engine || ptEdit.gears || ptEdit.final_drive || ptEdit.steering_turns) };
+  const el = document.querySelector('.spaces');
+  el.innerHTML = WORKSPACES.map(([k, label, tip]) =>
+    `<button class="${k === ws ? 'on' : ''}" data-ws="${k}" title="${esc(tip)}">${esc(label)}${has[k] ? ' <span class="dot"></span>' : ''}</button>`).join('');
+  el.querySelectorAll('[data-ws]').forEach((b) => { b.onclick = () => setWorkspace(b.dataset.ws); });
+}
+
+function setWorkspace(k) {
+  ws = k;
+  try { localStorage.setItem(WS_KEY, k); } catch { /* private mode */ }
+  if (k === 'sketch' && skel) { $('showskel').checked = true; skelG.visible = true; }
+  if (k === 'suspension' && svjSusp) { $('showsusp').checked = true; drawSuspension(); }
+  redraw();
+}
+
+// ---------- Powertrain: engine, gearbox, final drive, steering ----------
+// What the new vehicle gets, group by group: the base's (kept), the SVJ's (taken), or typed by hand. The values form an
+// SVJ-shaped block (beamforge/powertrain.py) written by the same code as an SVJ's values: the torque curve into the
+// engine part, the ratios into the gearbox (reverse kept), the final drive into the driven axle, the turns into the
+// steering. The transmission itself (gearbox type, differential, transfer case...) is chosen among the base's parts.
+const PT_EMPTY = { engine: null, gears: null, final_drive: null, steering_turns: null, touched: false };
+const PT_KEYS = ['engine', 'engine_power', 'gears', 'final_drive', 'steering'];
+let ptEdit = { ...PT_EMPTY }, ptEditing = null;     // ptEditing: the group whose hand fields are open
+
+const peakOf = (curve) => {
+  if (!curve || !curve.length) return [null, null];
+  const t = Math.max(...curve.map((p) => p[1])), p = Math.max(...curve.map(([r, n]) => n * r * 2 * Math.PI / 60 / 1000));
+  return [t, p];
+};
+const ratioText = (r) => r && r.length ? r.map((x) => fmt(x, 3)).join('  ') : '–';
+
+function lineChart(title, series, xunit, yunit, digits = 0) {
+  const all = series.flatMap((s) => s.pts);
+  if (all.length < 2) return '';
+  const W = 270, H = 120, L = 40, B = 18, T = 6;
+  const x0 = Math.min(...all.map((p) => p[0])), x1 = Math.max(...all.map((p) => p[0]));
+  let y0 = Math.min(0, ...all.map((p) => p[1])), y1 = Math.max(...all.map((p) => p[1]));
+  if (y1 - y0 < 1e-9) y1 = y0 + 1;
+  const X = (x) => L + (x - x0) / ((x1 - x0) || 1) * (W - L - 6), Y = (y) => T + (y1 - y) / (y1 - y0) * (H - T - B);
+  const paths = series.filter((s) => s.pts.length > 1).map((s) => `<path d="${s.pts.map((p, i) => `${i ? 'L' : 'M'}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join('')}"
+    fill="none" stroke="${s.color}" stroke-width="1.8" ${s.dash ? `stroke-dasharray="${s.dash}"` : ''}/>`).join('');
+  return `<div class="chart"><div class="t"><span>${title}</span><span>${series.map((s) => `<span style="color:${s.color}">${esc(s.label)}</span>`).join(' ')}</span></div>
+    <svg viewBox="0 0 ${W} ${H}" style="color:var(--ink)">${paths}
+      <text x="${L - 4}" y="${Y(y1) + 8}" text-anchor="end" font-size="10" fill="currentColor" fill-opacity=".6">${fmt(y1, digits)}</text>
+      <text x="${L - 4}" y="${Y(y0)}" text-anchor="end" font-size="10" fill="currentColor" fill-opacity=".6">${fmt(y0, digits)} ${esc(yunit)}</text>
+      <text x="${L}" y="${H - 4}" font-size="10" fill="currentColor" fill-opacity=".6">${fmt(x0, 0)}</text>
+      <text x="${W - 6}" y="${H - 4}" text-anchor="end" font-size="10" fill="currentColor" fill-opacity=".6">${fmt(x1, 0)} ${esc(xunit)}</text>
+    </svg></div>`;
+}
+
+function powertrainPanel() {
+  if (!veh && !svjDoc) return `<h2>Powertrain</h2><p class="quiet">Open a base vehicle (its engine, gearbox and steering are the start),
+    or import an SVJ, to set the engine's torque curve, the gear ratios, the final drive and the steering.</p>`;
+  let s;
+  try { s = JSON.parse(ptpy.summary_json(veh ? veh.model : null, veh ? JSON.stringify(veh) : null, svjDoc ? JSON.stringify(svjDoc.svj) : null)); }
+  catch (err) { return `<p class="bad">${esc(pyError(err))}</p>`; }
+  const b = s.base || {}, v = s.svj || {};
+  const eng = ptEdit.engine || (b.torque ? { torque: b.torque, idle_rpm: b.idle_rpm, max_rpm: b.max_rpm } : null);
+  const gears = ptEdit.gears || b.ratios, fd = ptEdit.final_drive || b.final_drive, turns = ptEdit.steering_turns || b.turns;
+  const btns = (k, svjHas) => `<span class="ptbtns"><button class="mini${ptEdit[k] ? '' : ' on'}" data-ptkeep="${k}" ${veh ? '' : 'disabled'}>base</button>
+    <button class="mini" data-ptsvj="${k}" ${svjHas ? '' : 'disabled'}>SVJ</button><button class="mini${ptEditing === k ? ' on' : ''}" data-ptedit="${k}">edit</button></span>`;
+  const [bt, bp] = peakOf(b.torque), [vt, vp] = peakOf(v.torque), [ct, cp] = peakOf(eng && eng.torque);
+  const power = (c) => (c || []).map(([r, n]) => [r, n * r * 2 * Math.PI / 60 / 1000]);
+  const series = (f) => [b.torque && { label: 'base', color: '#e0782a', dash: '4 3', pts: f(b.torque) },
+    v.torque && v.torque.length && { label: 'SVJ', color: '#8250df', dash: '2 3', pts: f(v.torque) },
+    eng && { label: 'new', color: '#2f6fdf', pts: f(eng.torque) }].filter(Boolean);
+  const r = s.tyre_radius;
+  const speeds = (g, f, maxr) => g && f && r && maxr ? g.map((x, i) => `${i + 1}: ${fmt(maxr / (x * f) * 2 * Math.PI * r * 60 / 1000, 0)}`).join(' · ') + ' km/h' : '–';
+  const parts = s.slots.length ? `<details ${ptEditing === 'parts' ? 'open' : ''}><summary><b>Transmission and engine parts</b> <span class="q">(the base's, as in its Parts menu)</span></summary>
+    <div class="kv">${s.slots.map((x) => `<span style="padding-left:${Math.max(0, x.depth - 1) * 8}px">${esc(x.description)}</span><span><select data-ptslot="${esc(x.slot)}">
+      ${x.core ? '' : `<option value="" ${x.part ? '' : 'selected'}>(empty)</option>`}${x.options.map(([p, t]) => `<option value="${esc(p)}" ${p === x.part ? 'selected' : ''}>${esc(t || p)}</option>`).join('')}</select></span>`).join('')}</div></details>` : '';
+  const engEdit = ptEditing === 'engine' ? `<div class="ptedit"><p class="quiet">Torque curve, one point per line: rpm and Nm.</p>
+    <textarea id="pttorque" rows="8">${(eng ? eng.torque : []).map(([r_, n]) => `${r_} ${n}`).join('\n')}</textarea>
+    <div class="kv"><span>Idle rpm</span><span><input type="number" id="ptidle" value="${eng && eng.idle_rpm || ''}"></span>
+      <span>Max rpm</span><span><input type="number" id="ptmax" value="${eng && eng.max_rpm || ''}"></span></div>
+    <button id="ptengok" class="primary">Use this curve</button></div>` : '';
+  const gearEdit = ptEditing === 'gears' ? `<div class="ptedit"><div class="kv"><span>Forward ratios</span><span><input id="ptgears" value="${(gears || []).join(' ')}" size="24"></span>
+    <span>Final drive</span><span><input type="number" step="0.01" id="ptfd" value="${fd || ''}"></span></div><button id="ptgearok" class="primary">Use these</button></div>` : '';
+  const steerEdit = ptEditing === 'steering' ? `<div class="ptedit"><div class="kv"><span>Turns lock to lock</span><span><input type="number" step="0.05" id="ptturns" value="${turns || ''}"></span></div>
+    <button id="ptsteerok" class="primary">Use this</button></div>` : '';
+  return `<h2>Powertrain</h2>
+    ${parts}
+    <h3>Engine ${btns('engine', v.torque && v.torque.length)}</h3>
+    <table class="cmp"><tr><th></th><th>Base</th><th>SVJ</th><th>New</th></tr>
+      <tr><td>Peak torque Nm</td><td>${fmt(bt, 0)}</td><td>${fmt(vt, 0)}</td><td><b>${fmt(ct, 0)}</b></td></tr>
+      <tr><td>Peak power kW</td><td>${fmt(bp, 0)}</td><td>${fmt(vp, 0)}</td><td><b>${fmt(cp, 0)}</b></td></tr>
+      <tr><td>Idle / max rpm</td><td>${fmt(b.idle_rpm, 0)} / ${fmt(b.max_rpm, 0)}</td><td>${fmt(v.idle_rpm, 0)} / ${fmt(v.max_rpm, 0)}</td><td><b>${fmt(eng && eng.idle_rpm, 0)} / ${fmt(eng && eng.max_rpm, 0)}</b></td></tr></table>
+    ${engEdit}
+    ${lineChart('Torque', series((c) => c), 'rpm', 'Nm')}
+    ${lineChart('Power', series(power), 'rpm', 'kW')}
+    ${b.turbo ? '<p class="quiet">The base has a turbo or supercharger: its boost comes on top of the curve, as in the game.</p>' : ''}
+    <h3>Gearbox and final drive ${btns('gears', (v.ratios && v.ratios.length) || v.final_drive)}</h3>
+    <table class="cmp"><tr><th></th><th>Ratios</th><th>Final</th></tr>
+      <tr><td>Base</td><td>${ratioText(b.ratios)}</td><td>${fmt(b.final_drive, 2)}</td></tr>
+      <tr><td>SVJ</td><td>${ratioText(v.ratios)}</td><td>${fmt(v.final_drive, 2)}</td></tr>
+      <tr><td><b>New</b></td><td><b>${ratioText(gears)}</b></td><td><b>${fmt(fd, 2)}</b></td></tr></table>
+    ${gearEdit}
+    <p class="quiet">Road speed at ${fmt(eng && eng.max_rpm, 0)} rpm (tyre radius ${fmt(r, 3)} m): ${speeds(gears, fd, eng && eng.max_rpm)}</p>
+    ${b.automatic ? '<p class="quiet">The base gearbox is automatic: its shift points follow the new ratios.</p>' : ''}
+    <h3>Steering ${btns('steering', v.turns)}</h3>
+    <div class="kv"><span>Turns lock to lock</span><span>base ${fmt(b.turns, 2)} · SVJ ${fmt(v.turns, 2)} · <b>new ${fmt(turns, 2)}</b></span></div>
+    ${steerEdit}
+    <p class="quiet">Written into the new vehicle in <button class="mini" data-goto="assembly">Assembly</button>; "base" keeps the base vehicle's value.
+      Kept with the project.</p>`;
+}
+
+function bindPowertrain(el) {
+  const set = (k, val) => { ptEdit = { ...ptEdit, [k]: val, touched: true }; ptEditing = null; redraw(); };
+  const svjEdit = () => (svjDoc ? JSON.parse(ptpy.from_svj_json(JSON.stringify(svjDoc.svj))) : {});
+  el.querySelectorAll('[data-ptkeep]').forEach((x) => { x.onclick = () => {
+    const k = x.dataset.ptkeep;
+    if (k === 'gears') { ptEdit = { ...ptEdit, gears: null, final_drive: null, touched: true }; ptEditing = null; redraw(); } else set(k === 'steering' ? 'steering_turns' : k, null);
+  }; });
+  el.querySelectorAll('[data-ptsvj]').forEach((x) => { x.onclick = () => {
+    const k = x.dataset.ptsvj, e = svjEdit();
+    if (k === 'gears') { ptEdit = { ...ptEdit, gears: e.gears || ptEdit.gears, final_drive: e.final_drive || ptEdit.final_drive, touched: true }; ptEditing = null; redraw(); }
+    else if (k === 'steering') set('steering_turns', e.steering_turns); else set(k, e[k]);
+  }; });
+  el.querySelectorAll('[data-ptedit]').forEach((x) => { x.onclick = () => { ptEditing = ptEditing === x.dataset.ptedit ? null : x.dataset.ptedit; drawInspector(); }; });
+  el.querySelectorAll('[data-ptslot]').forEach((x) => { x.onchange = () => { vehEdit.parts[x.dataset.ptslot] = x.value; ptEditing = 'parts'; configureVehicle(); }; });
+  if ($('ptengok')) $('ptengok').onclick = () => {
+    const pts = $('pttorque').value.split('\n').map((l) => l.trim().split(/[\s,;]+/).map(Number)).filter((p) => p.length >= 2 && p.every(Number.isFinite)).map((p) => [p[0], p[1]]);
+    if (pts.length < 2) { showIssues([{ level: 'ERROR', rule: 'powertrain', message: 'The torque curve needs at least two lines of rpm and Nm.' }]); return; }
+    pts.sort((a, c) => a[0] - c[0]);
+    set('engine', { torque: pts, idle_rpm: +$('ptidle').value || pts[0][0], max_rpm: +$('ptmax').value || pts[pts.length - 1][0] });
+  };
+  if ($('ptgearok')) $('ptgearok').onclick = () => {
+    const g = $('ptgears').value.split(/[\s,;]+/).map(Number).filter((x) => Number.isFinite(x) && x > 0);
+    ptEdit = { ...ptEdit, gears: g.length ? g : null, final_drive: +$('ptfd').value > 0 ? +$('ptfd').value : null, touched: true };
+    ptEditing = null; redraw();
+  };
+  if ($('ptsteerok')) $('ptsteerok').onclick = () => set('steering_turns', +$('ptturns').value > 0 ? +$('ptturns').value : null);
+}
+
+// ---------- Checks: the vehicle's and the sketch's stability and structure ----------
+let checkRes = null;          // { veh (the configured vehicle it was run on), data (structure.checks_json) }
+
+function checksPanel() {
+  const bands = (b) => Object.entries(b).map(([k, n]) => `<span class="band ${k}">${n} ${k}</span>`).join(' ');
+  let vehPart = '<p class="quiet">Open a base vehicle to check it.</p>';
+  if (veh) {
+    const d = checkRes && checkRes.data, stale = checkRes && checkRes.veh !== veh;
+    vehPart = `<p><button id="chkrun" class="primary">${d ? 'Check again' : 'Check the vehicle'}</button>
+      ${stale ? '<span class="q">the vehicle changed since</span>' : ''}</p>`;
+    if (d) {
+      vehPart += `<p class="quiet">Each node's stiffness and damping for its weight, against the nodes of ten vanilla cars at 2000 Hz:
+          ok up to their 90th percentile, high to the 99th, extreme to the highest they run at, beyond past it (no vanilla
+          car goes there). A vanilla car has about 10 % high and 1 % extreme.</p><p>${bands(d.bands)}</p>
+        <details open><summary>Stiffest for their weight</summary><table class="cmp"><tr><th>Node</th><th>Part</th><th>k</th><th>c</th><th>kg</th></tr>
+          ${d.worst.map(([n, k, c, kg, b, part]) => `<tr><td><button class="mini" data-chknode="${esc(n)}">${esc(n)}</button></td><td>${esc(part || '')}</td>
+            <td><span class="band ${b}">${fmt(k, 2)}</span></td><td>${fmt(c, 2)}</td><td>${fmt(kg, 1)}</td></tr>`).join('')}</table></details>
+        <details><summary>Held in fewer than three directions (${d.weak_count})</summary>
+          <p class="quiet">A joint of a linkage is meant to move; a node meant to be structure that is here floats.</p>
+          <table class="cmp"><tr><th>Node</th><th>Part</th><th>Held</th></tr>
+          ${d.weak.map(([n, r, nb, part]) => `<tr><td><button class="mini" data-chknode="${esc(n)}">${esc(n)}</button></td><td>${esc(part || '')}</td><td>${r} of 3, ${nb} beams</td></tr>`).join('')}</table></details>`;
+    }
+  }
+  let skPart = '<p class="quiet">Import a STEP in Sketch to check it.</p>';
+  if (skel && skel.res) {
+    const r = skel.res.report;
+    skPart = `<div class="kv"><span>Stability</span><span>${bands(r.bands || {})}</span>
+      <span>Free motions</span><span>${r.free_motions} <span class="q">${r.mechanism === null ? '' : `6 of the whole, ${r.mechanism} of the mechanism`}</span></span>
+      <span>Parts not rigid</span><span>${r.not_rigid.length ? esc(r.not_rigid.map((p) => p.join('+')).join(', ')) : 'none'}</span></div>`;
+  }
+  return `<h2>Vehicle</h2>${vehPart}<h2>Sketch</h2>${skPart}`;
+}
+
+function bindChecks(el) {
+  if ($('chkrun')) $('chkrun').onclick = () => {
+    $('chkrun').textContent = 'Checking…';
+    setTimeout(() => {
+      const t0 = performance.now();
+      try { checkRes = { veh, data: JSON.parse(strpy.checks_json(veh.model, JSON.stringify(veh))) }; }
+      catch (err) { showIssues([{ level: 'ERROR', rule: 'checks', message: pyError(err) }]); }
+      timing.checks = performance.now() - t0;
+      drawInspector(); drawTiming();
+    }, 20);
+  };
+  el.querySelectorAll('[data-chknode]').forEach((b) => { b.onclick = () => { pick = { kind: 'node', id: b.dataset.chknode }; drawVehicle(); }; });
+}
+
+// ---------- Assembly: everything together, the new vehicle ----------
+function assemblyPanel() {
+  const fitN = veh ? Object.keys(vehEdit.fit || {}).length : 0;
+  const taken = Object.values(takeValues).filter(Boolean).length;
+  return `<h2>Assembly</h2>
+    <div class="kv"><span>Base vehicle</span><span>${veh ? `${esc(veh.model)} · ${esc(veh.config)}` : 'none'} <button class="mini" data-goto="base">Base</button></span>
+      <span>Moved by hand</span><span>${veh ? moveCount() : 0}</span>
+      <span>SVJ</span><span>${svjDoc ? esc(svjDoc.summary.vehicle || 'loaded') : 'none'} <button class="mini" data-goto="svj">SVJ</button></span>
+      <span>Fitted to it</span><span>${fitN ? fitN + ' nodes' : 'no'}</span>
+      <span>Values taken</span><span>${taken}</span>
+      <span>Sketch</span><span>${skel ? esc(skel.name) : 'none'} <button class="mini" data-goto="sketch">Sketch</button></span></div>
+    ${skel && skel.res ? `<p class="quiet">The sketch is not mounted on the base yet (next step). Its structure as jbeam parts:
+      <button id="asmskjbeam" class="mini">Download jbeam</button></p>` : ''}
+    ${veh ? exportPanel() : '<p class="quiet">Open a base vehicle in Base to make a new vehicle from it.</p>'}`;
+}
+
+function bindAssembly(el) {
+  if ($('asmskjbeam')) $('asmskjbeam').onclick = skeletonJbeam;
+}
+
+// ---------- project: the work saved, to continue later or pass on ----------
+// A project holds what the user did, not game files: the base vehicle by name (whoever opens it needs that vehicle
+// in their BeamNG folders), its configuration, slot choices, tuning, moves, fit and ties; the SVJ document (its meshes
+// are asked for again: they can be large and sit beside it); the STEP sketch and its options; the values taken, the
+// export form, the workspace. It is saved as a .beamforge.json, and autosaved in this browser after every change.
+const PROJECT_VERSION = 1;
+const AUTOSAVE_KEY = 'beamforge.autosave';
+let pendingBase = null;       // a project's base vehicle, waiting for the BeamNG folders to be added
+let autosaveNote = '', autosaveAt = null, restoring = false, svjName = null;
+
+function projectData() {
+  return {
+    beamforge_project: PROJECT_VERSION, saved: new Date().toISOString(), workspace: ws,
+    base: veh ? { model: vehEdit.model, config: vehEdit.config, parts: vehEdit.parts, vars: vehEdit.vars, moves: vehEdit.moves,
+      fit: vehEdit.fit, fitReport: vehEdit.fitReport, fitOverrides: vehEdit.fitOverrides,
+      hidden: [...hiddenParts], locked: [...lockedParts] } : pendingBase,
+    svj: svjDoc ? { name: svjName || 'project.svj.json', doc: svjDoc.svj } : null,
+    sketch: skel ? { name: skel.name, text: skel.text, opts: skel.opts } : null,
+    take: takeValues, export: exportForm, ties: savedTies(), powertrain: ptEdit,
+  };
+}
+
+function autosave() {
+  if (restoring || !(veh || svjDoc || skel || pendingBase)) return;
+  try {
+    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(projectData()));
+    autosaveAt = new Date(); autosaveNote = '';
+  } catch (err) { autosaveNote = 'too large to keep in the browser: use Save'; }
+}
+
+function saveProject() {
+  const name = (exportForm.name || (veh && veh.model) || (skel && skel.name.replace(/\.(step|stp)$/i, '')) || 'beamforge').replace(/[^\w.-]+/g, '_');
+  download(`${name}.beamforge.json`, JSON.stringify(projectData(), null, 1));
+}
+
+async function applyProject(p) {
+  if (!p || p.beamforge_project !== PROJECT_VERSION) throw new Error('not a BeamForge project file');
+  restoring = true;
+  try {
+    if (p.ties) for (const [part, t] of Object.entries(p.ties)) storeTies({ ...savedTies(), [part]: { ...(savedTies()[part] || {}), ...t } });
+    takeValues = p.take || {};
+    if (p.export) exportForm = { ...exportForm, ...p.export };
+    if (WORKSPACES.some(([k]) => k === p.workspace)) { ws = p.workspace; try { localStorage.setItem(WS_KEY, ws); } catch { /* */ } }
+    pendingBase = p.base && p.base.model ? p.base : null;
+    await applyPendingBase();
+    if (p.svj && p.svj.doc) {
+      const dir = '/tmp/svj_project';
+      py.runPython(`import shutil; shutil.rmtree('${dir}', ignore_errors=True)`);
+      py.FS.mkdirTree(dir);
+      svjName = p.svj.name;
+      svjSrc = `${dir}/${p.svj.name.replace(/[\\/]/g, '_')}`;
+      py.FS.writeFile(svjSrc, JSON.stringify(p.svj.doc));
+      await finishImport(p.svj.name);
+    }
+    if (p.powertrain) ptEdit = { ...PT_EMPTY, ...p.powertrain };
+    if (p.sketch) { skel = { ...p.sketch, res: null, error: null }; buildSkeleton(); }
+  } finally { restoring = false; }
+  redraw();
+  showIssues([{ level: 'PASS', rule: 'project', message: `Project opened (saved ${new Date(p.saved).toLocaleString()}).` },
+    ...(pendingBase ? [{ level: 'INFO', rule: 'project', message: `Add your BeamNG folders (Base vehicle) to reopen ${pendingBase.model}: the project's edits are applied once it is found.` }] : []),
+    ...(svjDoc && svjDoc.meshes.some((m) => !m.file) ? [{ level: 'INFO', rule: 'project', message: "The SVJ's meshes are not in the project: Find the meshes folder in SVJ." }] : [])]);
+}
+
+// the project's base vehicle, opened with its edits once the vehicle list has it
+async function applyPendingBase() {
+  const b = pendingBase;
+  if (!b || !cat || !cat.find((x) => x.model === b.model)) return;
+  pendingBase = null;
+  await openVehicle(b.model, b.config);
+  vehEdit = { ...freshEdit(b.model, b.config), parts: b.parts || {}, vars: b.vars || {}, moves: b.moves || { parts: {}, nodes: {} },
+    fit: b.fit || {}, fitReport: b.fitReport || null, fitOverrides: b.fitOverrides || {} };
+  hiddenParts = new Set(b.hidden || []); lockedParts = new Set(b.locked || []);
+  configureVehicle();
+  if (svjDoc) studySuspension();
+}
+
+async function restoreProject() {
+  let p = null;
+  try { p = JSON.parse(localStorage.getItem(AUTOSAVE_KEY) || 'null'); } catch { p = null; }
+  if (!p) return;
+  try { await applyProject(p); } catch (err) { console.warn('autosave not restored', err); }
+}
+
+function newProject() {
+  if (!confirm('Start a new project? The current work stays only in a saved project file.')) return;
+  try { localStorage.removeItem(AUTOSAVE_KEY); } catch { /* */ }
+  location.reload();
+}
+
+function projectPanel() {
+  return `<h2>Project</h2>
+    <div class="kv"><span>Base vehicle</span><span>${veh ? esc(veh.model) : pendingBase ? esc(pendingBase.model) + ' <span class="q">(waiting for the folders)</span>' : 'none'}</span>
+      <span>Configuration</span><span>${veh ? esc(veh.config) : '–'}</span>
+      <span>SVJ</span><span>${svjDoc ? esc(svjDoc.summary.vehicle || svjName || 'loaded') : 'none'}</span>
+      <span>Sketch</span><span>${skel ? esc(skel.name) : 'none'}</span>
+      <span>Autosaved</span><span>${autosaveNote ? `<span class="bad">${esc(autosaveNote)}</span>` : autosaveAt ? autosaveAt.toLocaleTimeString() : '–'}</span></div>
+    <div class="inl"><button id="pjsave" class="primary">Save project…</button><button id="pjopen">Open…</button><button id="pjnew">New</button></div>
+    <p class="quiet">A project keeps the work, not game files: the base vehicle by name (it must be in the BeamNG folders of whoever
+      opens it), its edits, the SVJ and the sketch. The work is also kept in this browser after every change.</p>
+    <p><button class="mini" data-goto="base">BeamNG folders and vehicles</button></p>`;
+}
+
+function bindProject(el) {
+  $('pjsave').onclick = saveProject;
+  $('pjopen').onclick = () => $('projfile').click();
+  $('pjnew').onclick = newProject;
+  el.querySelectorAll('[data-goto]').forEach((b) => { b.onclick = () => setWorkspace(b.dataset.goto); });
+}
+
+$('projsave').onclick = saveProject;
+$('projopen').onclick = () => $('projfile').click();
+$('projfile').onchange = async (e) => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  try { await applyProject(JSON.parse(await f.text())); }
+  catch (err) { showIssues([{ level: 'ERROR', rule: 'project', message: `Could not open ${f.name}: ${err.message || err}` }]); }
+};
+
 // debug hook for automated UI tests. Not used by the editor itself.
 window.beamforge = {
   get skeleton() { return skel; },
+  get workspace() { return ws; },
+  get powertrain() { return ptEdit; },
+  setWorkspace,
+  projectData,
+  applyProject,
   get veh() { return veh; },
   get svj() { return svjDoc; },
   get hardpoints() { return svjHp; },

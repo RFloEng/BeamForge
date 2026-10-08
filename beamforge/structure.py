@@ -87,3 +87,22 @@ def weak(model, configured, base=None, names=None, bl=None):
             continue
         out.append((n, h["rank"], h["beams"], h["part"]))
     return sorted(out, key=lambda t: (t[1], t[0]))
+
+
+def checks_json(model, configured_json):
+    """The editor's Checks workspace for a configured vehicle (JSON): {"nodes", "bands": {band: count}, "worst":
+    [[node, k index, c index, kg, band, part]] (the 15 stiffest for their weight, rigidity.stability), "weak": [[node,
+    rank, beams, part]] (nodes held in fewer than three directions, weak(): a structure node there floats; a joint of
+    a linkage is meant to), "weak_count"}."""
+    import json
+    configured = json.loads(configured_json)
+    owner = configured["geometry"].get("parts") or {}
+    bl = rigidity.beams(model, configured)
+    rows = rigidity.stability(model, configured, bl)
+    bands = {b: 0 for b in ("ok", "high", "extreme", "beyond")}
+    for _, ki, ci, _ in rows:
+        bands[rigidity.band(ki, ci)] += 1
+    wk = weak(model, configured, bl=bl)
+    return json.dumps({"nodes": len(rows), "bands": bands,
+                       "worst": [[n, round(ki, 3), round(ci, 3), round(kg, 2), rigidity.band(ki, ci), owner.get(n)] for n, ki, ci, kg in rows[:15]],
+                       "weak": [list(w) for w in wk[:20]], "weak_count": len(wk)})

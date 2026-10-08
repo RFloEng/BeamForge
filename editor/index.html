@@ -22,6 +22,9 @@
   <div class="brand">BeamForge <span class="tag">prototype</span></div>
   <div class="spaces"></div>
   <div class="files">
+    <button id="projopen" title="Open a BeamForge project (.beamforge.json): the base vehicle and its edits, the SVJ, the sketch">Open…</button>
+    <button id="projsave" title="Save the work as a project file (.beamforge.json), to continue later or pass on">Save</button>
+    <input type="file" id="projfile" accept=".json" hidden>
     <button id="svjin" title="Pick the folder holding a Standard Vehicle JSON: its .svj.json (or a .zip bundle) and its meshes are found below it">Import SVJ</button>
     <button id="svjinfiles" title="Pick an .svj.json with its mesh files, or a .zip bundle, as files">Files…</button>
     <button id="stepin" title="A STEP skeleton: an assembly of wireframe parts (points and lines), each part a rigid body; built into nodes and beams">Import STEP</button>

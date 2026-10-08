@@ -64,12 +64,18 @@ def beam_values(ma, mb, k_at=(0.0, 0.0), c_at=(0.0, 0.0), aim="p50", cap="p90", 
 
 
 def node_index(m, k_sum, c_sum, dt=DT):
-    """(stiffness index, damping index, band) of a node: band "ok" up to the vanilla median, "high" to the 90th
-    percentile, "risky" to the 99th, "unstable" beyond."""
+    """(stiffness index, damping index, band) of a node (band())."""
     ki, ci = k_sum / m * dt * dt, c_sum / m * dt
-    worst = max(ki / VANILLA["node_k"]["p50"], ci / VANILLA["node_c"]["p50"])
-    band = "ok" if worst <= 1 else "high" if max(ki / VANILLA["node_k"]["p90"], ci / VANILLA["node_c"]["p90"]) <= 1         else "risky" if max(ki / VANILLA["node_k"]["p99"], ci / VANILLA["node_c"]["p99"]) <= 1 else "unstable"
-    return ki, ci, band
+    return ki, ci, band(ki, ci)
+
+
+def band(ki, ci):
+    """The band of a node's stiffness and damping indices against vanilla cars' nodes: "ok" up to their 90th percentile,
+    "high" to the 99th, "extreme" to the highest any of them runs at, "beyond" past it (where no vanilla car goes: the
+    likeliest place for a structure to ring or explode). A vanilla car has about 10 % of its nodes high and 1 % extreme."""
+    def under(p):
+        return ki <= VANILLA["node_k"][p] and ci <= VANILLA["node_c"][p]
+    return "ok" if under("p90") else "high" if under("p99") else "extreme" if under("max") else "beyond"
 
 
 def _clamp(x):

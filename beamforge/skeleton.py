@@ -816,7 +816,7 @@ def build_json(text, opts_json="{}"):
         res["nodes"][n].update(kg=kg[n], k_index=round(ki, 3), c_index=round(ci, 3), band=band)
     for p in res["parts"]:
         p.update(parts[p["name"]])
-    res["report"]["bands"] = {x: sum(1 for t in idx.values() if t[2] == x) for x in ("ok", "high", "risky", "unstable")}
+    res["report"]["bands"] = {x: sum(1 for t in idx.values() if t[2] == x) for x in ("ok", "high", "extreme", "beyond")}
     res["report"]["tube_mass"] = round(sum(x["mass"] for x in parts.values()), 2)
     res["report"]["node_mass"] = round(sum(kg.values()), 2)
     res.update(unit=r["unit"], unit_name=r["unit_name"], skipped=r["skipped"], notes=r["notes"])

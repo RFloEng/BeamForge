@@ -102,7 +102,7 @@ class TestBuild(unittest.TestCase):
         out = json.loads(sk.build_json(sk.write(CORNER), json.dumps({"yf": -1.3})))
         self.assertEqual(out["unit_name"], "mm")
         self.assertIn("bng", next(iter(out["nodes"].values())))
-        self.assertEqual(out["report"]["bands"], {"ok": 10, "high": 0, "risky": 0, "unstable": 0})   # stable by construction
+        self.assertEqual(out["report"]["bands"], {"ok": 10, "high": 0, "extreme": 0, "beyond": 0})   # stable by construction
         self.assertTrue(all(b["beamSpring"] > 0 and b["beamDamp"] > 0 for b in out["beams"]))
 
     def test_stable_values(self):
@@ -115,7 +115,8 @@ class TestBuild(unittest.TestCase):
         self.assertTrue(w["limited"])
         self.assertEqual(w["beamSpring"], 5e5)
         self.assertEqual(rigidity.node_index(2.0, 4e6, 400)[2], "ok")
-        self.assertEqual(rigidity.node_index(2.0, 4e7, 400)[2], "unstable")
+        self.assertEqual(rigidity.node_index(2.0, 4e7, 400)[2], "extreme")      # index 5: some vanilla nodes run there
+        self.assertEqual(rigidity.node_index(2.0, 8e7, 400)[2], "beyond")       # index 10: none does
 
 
 class TestTubes(unittest.TestCase):
