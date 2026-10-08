@@ -357,9 +357,15 @@ def build(car_json):
             raise ValueError(f"choose a rim for the {ax} axle (Wheels)")
         tyre_src = (spec.get("tyre") or {}).get(ax)
         tslot, tdefault = _wheel_slot(rim)
-        tyre, _ = _part(tyre_src)
+        tyre, tvars = _part(tyre_src)
         if tyre and tslot and tyre.get("slotType") == tslot:
             pc_parts[tslot] = tyre_src["part"]
+            if tyre_src.get("overrides"):                       # the tyre with the user's values: a part of this car
+                from . import tyres as tyremod
+                name = f"{vid}_tire_{AX}"
+                extra_parts[name] = tyremod.custom_part(tyre, tvars, name, tyre_src["overrides"])
+                pc_parts[tslot] = name
+                car.notes.append(f"{ax} tyre: {tyre_src['part']} with " + ", ".join(f"{k} {v}" for k, v in tyre_src["overrides"].items()))
         elif tyre_src:
             car.notes.append(f"{ax}: the tyre {tyre_src['part']} does not fit the rim {spec['rim'][ax]['part']} "
                              f"(it takes {tslot}); its own tyre {tdefault} is used")

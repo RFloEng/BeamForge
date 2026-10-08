@@ -132,6 +132,18 @@ class TestScratch(unittest.TestCase):
         engine_kg = sum(r[4]["nodeWeight"] for r in body["nodes"][5:] if r[0].startswith("e"))
         self.assertAlmostEqual(engine_kg, 120, delta=0.1)                    # the block's weights scaled to the engine's mass
 
+    def test_tyre_with_the_users_values(self):
+        car = json.loads(json.dumps(self.car))
+        car["tyre"]["front"]["overrides"] = {"frictionCoef": 1.15, "loadSensitivitySlope": 0.0001, "bogus": 3}
+        out = json.loads(scratch.build(json.dumps(car)))
+        jb = json.loads(out["files"]["vehicles/bf_test_scratch/bf_test_scratch.jbeam"])
+        t = jb["bf_test_scratch_tire_F"]
+        self.assertEqual((t["slotType"], t["pressureWheels"][-1]), ("tire_F_13x5", {"frictionCoef": 1.15, "loadSensitivitySlope": 0.0001}))
+        self.assertEqual(json.loads(out["files"]["vehicles/bf_test_scratch/base.pc"])["parts"]["tire_F_13x5"], "bf_test_scratch_tire_F")
+        bng.add_files(json.dumps(out["files"]))
+        w = {x["name"]: x for x in json.loads(bng.configure("bf_test_scratch", "base"))["wheels"]}
+        self.assertEqual((w["FL"]["radius"], w["FL"]["width"]), (0.29, 0.15))   # the donor's size, kept
+
     def test_refused(self):
         bad = dict(self.car, engine={})
         with self.assertRaises(ValueError):

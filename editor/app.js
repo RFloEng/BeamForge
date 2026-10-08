@@ -34,7 +34,7 @@ import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, reme
 const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py',
   'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py', 'beamforge/dae.py', 'beamforge/values.py',
   'beamforge/rigidity.py', 'beamforge/kinematics.py', 'beamforge/roles.py', 'beamforge/convert.py',
-  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py', 'beamforge/scratch.py'];
+  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py', 'beamforge/scratch.py', 'beamforge/tyres.py'];
 const REPO = new URL('../', import.meta.url);
 
 const $ = (id) => document.getElementById(id);
@@ -44,7 +44,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 // last line of a Python traceback, without the exception class
 const pyError = (e) => String(e.message || e).trim().split('\n').pop().replace(/^\w+Error: /, '');
 
-let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy, strpy, ptpy, donpy, scpy;
+let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy, strpy, ptpy, donpy, scpy, typy;
 const timing = {};         // ms per step, shown in the footer by drawTiming
 
 // ---------- Python engine ----------
@@ -71,6 +71,7 @@ async function boot() {
   ptpy = py.pyimport('beamforge.powertrain');
   donpy = py.pyimport('beamforge.donors');
   scpy = py.pyimport('beamforge.scratch');
+  typy = py.pyimport('beamforge.tyres');
   timing.files = performance.now() - t1;
   $('loading').remove();
   await restoreProject();
@@ -1511,6 +1512,7 @@ function drawInspector() {
       camber, toe, roll centre, motion ratio, with the linkage moving in the view.</p>`,
     checks: () => checksPanel(),
     powertrain: () => powertrainPanel(),
+    wheels: () => wheelsPanel(),
     assembly: () => assemblyPanel(),
   }[ws]();
   el.innerHTML = html;
@@ -1520,6 +1522,7 @@ function drawInspector() {
   if (ws === 'suspension') bindSuspPanel();
   if (ws === 'checks') bindChecks(el);
   if (ws === 'powertrain') bindPowertrain(el);
+  if (ws === 'wheels') bindWheels(el);
   if (ws === 'assembly') { bindExport(); bindAssembly(el); }
   el.querySelectorAll('[data-goto]').forEach((b) => { b.onclick = () => setWorkspace(b.dataset.goto); });
 }
@@ -1969,6 +1972,7 @@ const WORKSPACES = [
   ['svj', 'SVJ', 'A Standard Vehicle JSON laid over the base: compare, fit, take its values'],
   ['sketch', 'Sketch', 'Mechanisms and structures from points and lines (a STEP assembly): rigid parts, joints, tubes'],
   ['suspension', 'Suspension', "The SVJ's corners over wheel travel"],
+  ['wheels', 'Wheels', "Rims and tyres from the vanilla cars' archetypes, your values, the SVJ's Pacejka tyre as a benchmark"],
   ['powertrain', 'Powertrain', 'Engine, gearbox, final drive and steering: the base\'s, the SVJ\'s or your own; the transmission parts'],
   ['checks', 'Checks', 'Stability and structure of the vehicle and the sketch'],
   ['assembly', 'Assembly', 'Everything together: the new vehicle to export'],
@@ -1979,7 +1983,8 @@ if (!WORKSPACES.some(([k]) => k === ws)) ws = 'base';
 
 function drawSpaces() {
   const has = { base: !!veh, svj: !!svjDoc, sketch: !!skel, suspension: !!svjSusp,
-    powertrain: !!(ptEdit.engine || ptEdit.gears || ptEdit.final_drive || ptEdit.steering_turns) };
+    powertrain: !!(ptEdit.engine || ptEdit.gears || ptEdit.final_drive || ptEdit.steering_turns),
+    wheels: !!(wheelsForm.front.rim !== '' || wheelsForm.rear.rim !== '') };
   const el = document.querySelector('.spaces');
   el.innerHTML = WORKSPACES.map(([k, label, tip]) =>
     `<button class="${k === ws ? 'on' : ''}" data-ws="${k}" title="${esc(tip)}">${esc(label)}${has[k] ? ' <span class="dot"></span>' : ''}</button>`).join('');
@@ -2301,7 +2306,99 @@ function bindAssembly(el) {
 
 // ---------- a car from scratch (beamforge/scratch.py): the sketch, the Powertrain's engine and gearbox, rims and tyres
 // of the vanilla cars. UNVERIFIED IN-GAME (the first version): the vehicle spawns where BeamNG puts new vehicles.
-let scratchForm = { id: '', name: '', brand: '', layout: 'RWD', lock: 33, rim: '', tyre: '', note: '' };
+let scratchForm = { id: '', name: '', brand: '', layout: 'RWD', lock: 33, note: '' };
+
+// ---------- Wheels: rims and tyres per axle (archetypes of the vanilla cars), the user's tyre values, the SVJ's Pacejka
+// tyre as a benchmark (beamforge/tyres.py: grip against load, relative to the reference load; the fit matches BeamNG's
+// load sensitivity to it). rim / tyre: indexes into the library's archetypes ('' = none / the rim's own tyre).
+const WHEEL_EMPTY = () => ({ rim: '', tyre: '', overrides: {} });
+let wheelsForm = { front: WHEEL_EMPTY(), rear: WHEEL_EMPTY(), same: true, axle: 'front' };
+const TYRE_KEYS = [['radius', 'Radius m', 3], ['tireWidth', 'Width m', 3], ['frictionCoef', 'Grip (frictionCoef)', 3],
+  ['slidingFrictionCoef', 'Sliding grip', 3], ['noLoadCoef', 'No-load coefficient', 3], ['fullLoadCoef', 'Full-load coefficient', 3],
+  ['loadSensitivitySlope', 'Load sensitivity slope /N', 7], ['softnessCoef', 'Softness', 2], ['treadCoef', 'Tread', 2], ['pressurePSI', 'Pressure psi', 1]];
+const axleOf = (ax) => (wheelsForm.same ? wheelsForm.front : wheelsForm[ax]);
+
+function wheelChoice(ax) {
+  const f = axleOf(ax), A = library ? library.archetypes : { rims: [], tyres: [] };
+  const rim = f.rim === '' ? null : A.rims[+f.rim], tyre = f.tyre === '' ? null : A.tyres[+f.tyre];
+  return { f, rim, tyre };
+}
+
+function wheelsPanel() {
+  if (!library) return `<h2>Wheels</h2><p class="quiet">Learn the vanilla cars' rims and tyres first (Powertrain: Learn from the install).</p>`;
+  const ax = wheelsForm.same ? 'front' : wheelsForm.axle;
+  const { f, rim, tyre } = wheelChoice(ax);
+  const A = library.archetypes;
+  const fit = rim ? A.tyres.map((t, i) => [t, i]).filter(([t]) => t.pick.rim_in === rim.pick.diameter_in) : [];
+  const base = tyre ? tyre.pick : {};
+  const props = { ...base, ...f.overrides };
+  let bench = null;
+  try {
+    bench = JSON.parse(typy.benchmark_json(svjDoc ? JSON.stringify(svjDoc.svj) : null, tyre ? JSON.stringify(props) : null, ax === 'front' ? 'FL' : 'RL'));
+  } catch (err) { bench = { error: pyError(err) }; }
+  const st = bench && bench.svj;
+  const loads = st && bench.curves ? Object.keys(bench.curves.fy) : [];
+  const colours = ['#8250df', '#2f6fdf', '#e0782a'];
+  const curves = st && bench.curves ? `
+      ${lineChart('Lateral force against slip angle (SVJ)', loads.map((l, i) => ({ label: `${+l / 1000} kN`, color: colours[i], pts: bench.curves.fy[l] })), '°', 'N')}
+      ${lineChart('Longitudinal force against slip ratio (SVJ)', loads.map((l, i) => ({ label: `${+l / 1000} kN`, color: colours[i], pts: bench.curves.fx[l] })), '%', 'N')}
+      ${bench.shape ? lineChart('Grip against load, relative to the reference load', [
+        { label: 'SVJ lateral', color: '#8250df', pts: bench.shape.svj_y }, { label: 'SVJ longitudinal', color: '#8250df', dash: '3 3', pts: bench.shape.svj_x },
+        bench.shape.bng && { label: 'BeamNG tyre', color: '#e0782a', pts: bench.shape.bng }].filter(Boolean), 'N', '', 2) : ''}
+      ${bench.fit ? `<p><button id="whfit" class="mini" title="noLoadCoef, fullLoadCoef and loadSensitivitySlope that give the BeamNG tyre the SVJ tyre's loss of grip with load, its grip at the reference load kept">Fit the load sensitivity to the SVJ</button>
+        <span class="q">rms ${fmt(bench.fit.rms, 4)}</span></p>` : ''}
+      <p class="quiet">The SVJ's curves are its Magic Formula (${esc(st.pacejka ? st.pacejka.model || 'MF' : '–')}, pure slip, no camber). BeamNG's tyre grip comes out of its nodes sliding on the ground:
+        its friction values are multipliers, not a friction coefficient, so what is compared is the shape (how grip falls with load).
+        BeamNG takes each tread node's load (about ${fmt(bench.contact_nodes, 1)} in contact here).</p>` : '';
+  return `<h2>Wheels</h2>
+    <div class="inl"><label><input type="checkbox" id="whsame" ${wheelsForm.same ? 'checked' : ''}> the same front and rear</label>
+      ${wheelsForm.same ? '' : ['front', 'rear'].map((a) => `<button class="mini${ax === a ? ' on' : ''}" data-whaxle="${a}">${a}</button>`).join('')}</div>
+    <h3>${wheelsForm.same ? 'Both axles' : ax === 'front' ? 'Front axle' : 'Rear axle'}</h3>
+    <div class="kv"><span>Rim</span><span><select id="whrim"><option value="">choose…</option>${A.rims.map((a, i) => `<option value="${i}" ${String(i) === f.rim ? 'selected' : ''}>${esc(a.name)} · ${a.count}</option>`).join('')}</select></span>
+      <span>Tyre</span><span><select id="whtyre" ${rim ? '' : 'disabled'}><option value="">the rim's own</option>${fit.map(([t, i]) => `<option value="${i}" ${String(i) === f.tyre ? 'selected' : ''}>${esc(t.name)} · ${t.count}</option>`).join('')}</select></span></div>
+    ${rim ? `<p class="quiet">Rim: ${esc(rim.pick.part)} (${esc(rim.pick.model)}). ${tyre ? `Tyre: ${esc(tyre.pick.part)}.` : ''}</p>` : ''}
+    ${st ? `<div class="kv"><span>SVJ tyre</span><span>${esc(st.size || st.name)} <span class="q">R${st.rim_in || '?'}, radius ${fmt(st.radius, 3)} m, ${fmt(st.fz0, 0)} N reference</span></span></div>
+      <p><button id="whnearest" class="mini" title="The archetype rim of the SVJ tyre's rim size, and its tyre nearest in width">Pick the nearest to the SVJ tyre</button></p>` : ''}
+    ${tyre ? `<table class="cmp"><tr><th>Tyre</th><th>Archetype</th><th>New</th></tr>
+      ${TYRE_KEYS.filter(([k]) => base[k] != null || f.overrides[k] != null).map(([k, label, d]) => `<tr><td>${label}</td><td>${fmt(base[k], d)}</td>
+        <td><input type="number" step="any" data-whov="${k}" value="${f.overrides[k] != null ? f.overrides[k] : ''}" placeholder="${base[k] != null ? base[k] : ''}" style="width:7em"></td></tr>`).join('')}</table>
+      <p class="quiet">Empty keeps the archetype's value. A tyre with values of its own is written as a part of the car made from scratch.</p>` : ''}
+    ${bench && bench.error ? `<p class="bad">${esc(bench.error)}</p>` : ''}
+    ${curves || (svjDoc ? '<p class="quiet">The SVJ has no Pacejka tyre to compare with.</p>' : '<p class="quiet">Import an SVJ with a Pacejka tyre to compare with.</p>')}`;
+}
+
+function bindWheels(el) {
+  const ax = wheelsForm.same ? 'front' : wheelsForm.axle;
+  const f = axleOf(ax);
+  if ($('whsame')) $('whsame').onchange = () => { wheelsForm.same = $('whsame').checked; if (!wheelsForm.same) wheelsForm.rear = JSON.parse(JSON.stringify(wheelsForm.front)); redraw(); };
+  el.querySelectorAll('[data-whaxle]').forEach((b) => { b.onclick = () => { wheelsForm.axle = b.dataset.whaxle; redraw(); }; });
+  if ($('whrim')) $('whrim').onchange = () => { f.rim = $('whrim').value; f.tyre = ''; f.overrides = {}; redraw(); };
+  if ($('whtyre')) $('whtyre').onchange = () => { f.tyre = $('whtyre').value; f.overrides = {}; redraw(); };
+  el.querySelectorAll('[data-whov]').forEach((x) => { x.onchange = () => {
+    if (x.value === '') delete f.overrides[x.dataset.whov]; else f.overrides[x.dataset.whov] = +x.value;
+    redraw();
+  }; });
+  if ($('whfit')) $('whfit').onclick = () => {
+    const { tyre } = wheelChoice(ax);
+    const b = JSON.parse(typy.benchmark_json(JSON.stringify(svjDoc.svj), JSON.stringify({ ...tyre.pick, ...f.overrides }), ax === 'front' ? 'FL' : 'RL'));
+    Object.assign(f.overrides, b.fit.values);
+    redraw();
+  };
+  if ($('whnearest')) $('whnearest').onclick = () => {
+    const st = JSON.parse(typy.benchmark_json(JSON.stringify(svjDoc.svj), null, ax === 'front' ? 'FL' : 'RL')).svj;
+    const A = library.archetypes;
+    const rims = A.rims.map((a, i) => [a, i]).filter(([a]) => a.pick.diameter_in === st.rim_in);
+    if (!rims.length) { showIssues([{ level: 'INFO', rule: 'wheels', message: `No archetype rim of ${st.rim_in} in.` }]); return; }
+    const w = (st.width || 0.2) * 1000;
+    const [rim, ri] = rims.reduce((b, c) => (c[0].count > b[0].count ? c : b));          // the commonest rim of that size
+    const tyres = A.tyres.map((t, i) => [t, i]).filter(([t]) => t.pick.rim_in === st.rim_in && t.pick.width_mm);
+    // nearest in width; an everyday tyre (sport, standard) and a common group ahead of a special one of about the same width
+    const score = ([t]) => Math.abs(t.pick.width_mm - w) + (['sport', 'standard'].includes(t.pick.use) ? 0 : 15) - 2 * Math.log(t.count);
+    const best = tyres.length ? tyres.reduce((b, c) => (score(c) < score(b) ? c : b)) : null;
+    f.rim = String(ri); f.tyre = best ? String(best[1]) : ''; f.overrides = {};
+    redraw();
+  };
+}
 
 // the sketch's wheels: each upright part's point is its wheel centre (SVJ frame, m); corner from the part's name
 function sketchWheels() {
@@ -2321,9 +2418,8 @@ function scratchPanel() {
   if (!skel) return '';
   const wheels = sketchWheels(), wn = Object.keys(wheels).sort();
   const eng = ptEdit.engine && ptEdit.engine.source, gb = ptEdit.gearbox_source;
-  const rims = (library && library.archetypes.rims) || [], tyres = (library && library.archetypes.tyres) || [];
-  const rim = scratchForm.rim === '' ? null : rims[+scratchForm.rim];
-  const fit = rim ? tyres.map((t, i) => [t, i]).filter(([t]) => t.pick.rim_in === rim.pick.diameter_in) : [];
+  const rim = wheelChoice('front').rim && wheelChoice('rear').rim;
+  const rims = (library && library.archetypes.rims) || [];
   const ok = (c, t) => `<span class="${c ? 'good' : 'bad'}">${c ? '✓' : '✗'}</span> ${t}`;
   const frame = skel.res && skel.res.parts.some((p) => p.kind === 'frame' && p.nodes.length >= 4);
   const ready = frame && wn.length >= 3 && eng && gb && rim && library && rims.length;
@@ -2335,8 +2431,7 @@ function scratchPanel() {
       <span>Engine</span><span>${ok(eng, eng ? esc(eng.title) : 'choose one in Powertrain, from the vanilla cars')} <button class="mini" data-goto="powertrain">Powertrain</button></span>
       <span>Gearbox</span><span>${ok(gb, gb ? esc(gb.title) : 'choose one in Powertrain')}</span>
       <span>Library</span><span>${ok(library, library ? `${library.vehicles} vehicles` : 'learn from the install in Powertrain')}</span></div>
-    ${library ? `<div class="kv"><span>Rims</span><span><select id="scrim"><option value="">choose…</option>${rims.map((a, i) => `<option value="${i}" ${String(i) === scratchForm.rim ? 'selected' : ''}>${esc(a.name)} · ${a.count}</option>`).join('')}</select></span>
-      <span>Tyres</span><span><select id="sctyre" ${rim ? '' : 'disabled'}><option value="">the rim's own</option>${fit.map(([t, i]) => `<option value="${i}" ${String(i) === scratchForm.tyre ? 'selected' : ''}>${esc(t.name)} · ${t.count}</option>`).join('')}</select></span></div>` : ''}
+    <div class="kv"><span>Wheels</span><span>${ok(rim, rim ? ['front', 'rear'].map((a) => { const c = wheelChoice(a); return `${a} ${esc(c.rim.name)}${c.tyre ? ', ' + esc(c.tyre.name) : ''}`; }).join(' · ') : 'choose rims and tyres')} <button class="mini" data-goto="wheels">Wheels</button></span></div>
     <div class="kv"><span>Layout</span><span><select id="sclayout">${['FWD', 'RWD', 'AWD'].map((l) => `<option ${scratchForm.layout === l ? 'selected' : ''}>${l}</option>`).join('')}</select></span>
       <span>Lock (deg)</span><span><input type="number" id="sclock" value="${scratchForm.lock}" min="15" max="60" step="1"></span>
       <span>Vehicle id</span><span><input id="scid" value="${esc(scratchForm.id || (skel.name || 'scratch').toLowerCase().replace(/[^a-z0-9_]+/g, '_'))}"></span>
@@ -2353,21 +2448,20 @@ function bindScratch(el) {
     if ($('sclayout')) scratchForm.layout = $('sclayout').value;
   };
   for (const id of ['scid', 'scname', 'scbrand', 'sclock', 'sclayout']) if ($(id)) $(id).onchange = keep;
-  if ($('scrim')) $('scrim').onchange = () => { keep(); scratchForm.rim = $('scrim').value; scratchForm.tyre = ''; drawInspector(); };
-  if ($('sctyre')) $('sctyre').onchange = () => { keep(); scratchForm.tyre = $('sctyre').value; };
   if ($('scbuild')) $('scbuild').onclick = () => { keep(); buildScratch(); };
 }
 
 async function buildScratch() {
   const say = (t) => { scratchForm.note = t; drawInspector(); };
   try {
-    const A = library.archetypes, rim = A.rims[+scratchForm.rim].pick, tyre = scratchForm.tyre !== '' ? A.tyres[+scratchForm.tyre].pick : null;
-    const eng = ptEdit.engine, gb = ptEdit.gearbox_source;
-    const src = (p, AX) => ({ model: p.model, part: axlePart(p.part, AX) });
+    const A = library.archetypes, eng = ptEdit.engine, gb = ptEdit.gearbox_source;
+    const W = { front: wheelChoice('front'), rear: wheelChoice('rear') };
+    const src = (p, AX, over) => ({ model: p.model, part: axlePart(p.part, AX), ...(over && Object.keys(over).length ? { overrides: over } : {}) });
     // the donor parts' files, read again from the install (the library keeps only their numbers)
     const pick = (kind, s) => (A[kind] || []).find((a) => a.pick.model === s.model && a.pick.part === s.part);
-    const files = new Set([rim.file, tyre && tyre.file, (pick('engines', eng.source) || {}).pick?.file, (pick('gearboxes', gb) || {}).pick?.file].filter(Boolean));
-    if (!rim.file) throw new Error('the library is from an older BeamForge: learn from the install again (Powertrain)');
+    const files = new Set([W.front.rim.pick.file, W.rear.rim.pick.file, W.front.tyre && W.front.tyre.pick.file, W.rear.tyre && W.rear.tyre.pick.file,
+      (pick('engines', eng.source) || {}).pick?.file, (pick('gearboxes', gb) || {}).pick?.file].filter(Boolean));
+    if (!W.front.rim.pick.file) throw new Error('the library is from an older BeamForge: learn from the install again (Powertrain)');
     say('Reading the donor parts…');
     const { texts, ranks } = await readResolved((p) => files.has(p));
     vehBusy = '';
@@ -2378,7 +2472,8 @@ async function buildScratch() {
         engine_brake: eng.engine_brake, mass: eng.mass },
       diffs: ptEdit.diffs || {},
       gearbox: { source: gb, ratios: ptEdit.gears }, final_drive: ptEdit.final_drive || 4.0,
-      rim: { front: src(rim, 'F'), rear: src(rim, 'R') }, tyre: tyre ? { front: src(tyre, 'F'), rear: src(tyre, 'R') } : {},
+      rim: { front: src(W.front.rim.pick, 'F'), rear: src(W.rear.rim.pick, 'R') },
+      tyre: Object.fromEntries(['front', 'rear'].filter((a) => W[a].tyre).map((a) => [a, src(W[a].tyre.pick, a === 'front' ? 'F' : 'R', W[a].f.overrides)])),
       steering: { lock_deg: scratchForm.lock, turns: ptEdit.steering_turns || 3 } };
     say('Making the car…');
     await new Promise((r) => setTimeout(r, 20));
@@ -2414,7 +2509,7 @@ function projectData() {
       hidden: [...hiddenParts], locked: [...lockedParts] } : pendingBase,
     svj: svjDoc ? { name: svjName || 'project.svj.json', doc: svjDoc.svj } : null,
     sketch: skel ? { name: skel.name, parts: skel.parts, opts: skel.opts, active: skel.active } : null,
-    take: takeValues, export: exportForm, ties: savedTies(), powertrain: ptEdit, scratch: { ...scratchForm, note: '' },
+    take: takeValues, export: exportForm, ties: savedTies(), powertrain: ptEdit, scratch: { ...scratchForm, note: '' }, wheels: wheelsForm,
   };
 }
 
@@ -2452,6 +2547,7 @@ async function applyProject(p) {
     }
     if (p.powertrain) ptEdit = { ...PT_EMPTY, ...p.powertrain };
     if (p.scratch) scratchForm = { ...scratchForm, ...p.scratch };
+    if (p.wheels) wheelsForm = { ...wheelsForm, ...p.wheels };
     if (p.sketch) {
       let parts = p.sketch.parts;
       if (!parts && p.sketch.text) parts = JSON.parse(skpy.import_json(p.sketch.text, JSON.stringify(p.sketch.opts || {}))).parts;   // a project saved before sketches had their own parts
@@ -2530,6 +2626,7 @@ window.beamforge = {
   get workspace() { return ws; },
   get powertrain() { return ptEdit; },
   get library() { return library; },
+  get wheels() { return wheelsForm; },
   get sketchTool() { return skTool; },
   // where a sketch node is on screen (client px), to click it in a test
   skelScreen(id) {
