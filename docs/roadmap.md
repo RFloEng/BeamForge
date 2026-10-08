@@ -55,6 +55,12 @@ Next:
 - Test a mounted sketch in the game (a brace or a new mechanism on a vanilla car).
 - Downforce devices once BeamNG's triangle aero can be calibrated in the game.
 
+Also done: **springs and dampers where they really are** (`beamforge/dampers.py`). A damper part per corner in the
+sketch, drawn by hand or added from the SVJ's strut or mounts, else on the lower arm (Assetto Corsa SVJs only give a
+placeholder at the wheel). Its motion ratio is measured on the structure, and spring and damping are the wheel's ÷ MR²,
+so the wheel keeps the SVJ's values wherever the unit goes. MacPherson struts get a slide-node guide. The Suspension
+study now solves a link named `strut` as a strut and keeps an AC wheel rate at the wheel.
+
 Also done: **electric cars from scratch**. A vanilla electric motor (the EV sports car's) drives the differentials directly, its
 reduction as their gear ratio (8 by default), with a battery (kWh) and the controller's electric shift logic.
 

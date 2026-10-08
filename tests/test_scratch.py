@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from beamforge import beamng as bng, rigidity, scratch  # noqa: E402
+from beamforge import beamng as bng, dampers, rigidity, scratch  # noqa: E402
 
 TRACK, WB, RW = 1.45, 2.5, 0.29
 
@@ -78,6 +78,20 @@ def sketch():
         if c[0] == "f":
             parts.append({"name": f"tie_rod_{c}", "lines": [[[X - 0.12, s * 0.35, -0.25], ter]]})
         wheels[c.upper()] = {"center": wc}
+    return parts + dampers.suggest(parts)["parts"], wheels       # a damper on each lower arm
+
+
+def strut_sketch():
+    """The same car with MacPherson struts at the front: a lower arm, an upright from the ball joint up to the strut's
+    lower end, and the strut from there to a top on the frame (the frame gets a tower for it)."""
+    parts, wheels = sketch()
+    parts = [p for p in parts if not (p["name"].endswith(("_fl", "_fr")) and ("upper" in p["name"] or "upright" in p["name"] or "damper" in p["name"]))]
+    for c, s in (("fl", -1), ("fr", 1)):
+        lbj, ter, sb = [0.0, s * 0.66, -0.15], [-0.12, s * 0.65, -0.25], [0.0, s * 0.62, -0.42]
+        top = [0.0, s * 0.55, -0.72]
+        parts.append({"name": f"upright_{c}", "lines": [[lbj, sb], [sb, ter], [ter, lbj]], "points": [[0.0, s * TRACK / 2, -RW]]})
+        parts.append({"name": f"strut_{c}", "lines": [[top, sb]]})
+        parts.append({"name": f"tower_{c}", "lines": [[[0.15, s * 0.45, -0.45], top], [[-0.20, s * 0.45, -0.45], top], [[0.15, s * 0.40, -0.17], top]]})
     return parts, wheels
 
 
@@ -91,7 +105,9 @@ class TestScratch(unittest.TestCase):
                     "gearbox": {"source": {"model": "toy", "part": "toy_transmission_5M", "device": "gearbox"}, "ratios": [3.2, 2.0, 1.4, 1.0, 0.8]},
                     "final_drive": 4.1, "rim": {"front": {"model": "common", "part": "steel_13x5_F"}, "rear": {"model": "common", "part": "steel_13x5_R"}},
                     "tyre": {"front": {"model": "common", "part": "tire_F_186_68_13_sport"}, "rear": {"model": "common", "part": "tire_R_176_68_13_standard"}},
-                    "steering": {"lock_deg": 33, "turns": 3}}
+                    "steering": {"lock_deg": 33, "turns": 3},
+                    "suspension": {"front": {"wheel_rate": 30000, "bump": 2000, "rebound": 3500},
+                                   "rear": {"wheel_rate": 26000, "bump": 1800, "rebound": 3000}}}
 
     def test_vehicle_reads_back(self):
         out = json.loads(scratch.build(json.dumps(self.car)))
@@ -120,7 +136,7 @@ class TestScratch(unittest.TestCase):
         me = body["mainEngine"]
         self.assertEqual((me["maxRPM"], me["torque"][1], "breakTriggerBeam" in me, "radiator" in me), (7200.0, [1000.0, 120.0], False, False))
         self.assertEqual(body["clutch"], {"clutchFreePlay": 0.75})
-        beams = {tuple(sorted(b[:2])) for b in body["beams"][2:]}
+        beams = {tuple(sorted(b[:2])) for b in body["beams"][2:] if isinstance(b, list)}
         self.assertIn(("eng1l", "eng1r"), beams)                                  # the engine block copied whole
         self.assertNotIn(("body_node", "eng1l"), beams)                         # not its mount to the donor's body
         hy = body["hydros"][3:]
@@ -128,6 +144,49 @@ class TestScratch(unittest.TestCase):
         self.assertEqual(hy[0][2]["factor"], -hy[1][2]["factor"])            # the two hydros cross
         self.assertGreater(hy[0][2]["factor"], 0)                             # tie rods behind the axle: positive moves the rack left
         self.assertEqual(sorted(body["rails"]), ["bf_steeringrack"])
+
+    def test_springs_and_dampers(self):
+        # the wheel's values kept wherever the unit is: k = wheel rate / MR^2, c = wheel damping / MR^2
+        out = json.loads(scratch.build(json.dumps(self.car)))
+        s = out["suspension"]["FL"]
+        self.assertTrue(0.6 < s["motion_ratio"] < 0.72)                     # 70 % out on the arm, nearly upright
+        self.assertAlmostEqual(s["spring"], 30000 / s["motion_ratio"] ** 2, delta=30000 * 0.01 / s["motion_ratio"] ** 2)
+        self.assertAlmostEqual(s["bump"], 2000 / s["motion_ratio"] ** 2, delta=20)
+        self.assertFalse(s["strut"])
+        body = json.loads(out["files"]["vehicles/bf_test_scratch/bf_test_scratch.jbeam"])["bf_test_scratch_body"]
+        named = {r[2]["name"]: r for r in body["beams"] if isinstance(r, list) and isinstance(r[-1], dict) and "name" in r[-1]}
+        self.assertEqual(sorted(k for k in named if k.startswith("spring_")), ["spring_FL", "spring_FR", "spring_RL", "spring_RR"])
+        self.assertGreater(named["spring_FL"][2]["precompressionRange"], 0)  # preloaded by the corner's weight
+        self.assertEqual(sum(out["counts"]["bands"][b] for b in ("high", "extreme", "beyond")), 0)
+        nof = dict(self.car, sketch={"parts": [p for p in self.car["sketch"]["parts"] if p["name"] != "damper_rl"], "opts": {}})
+        with self.assertRaisesRegex(ValueError, "RL"):
+            scratch.build(json.dumps(nof))
+
+    def test_strut(self):
+        parts, _ = strut_sketch()
+        car = {k: v for k, v in self.car.items() if k != "suspension"}       # no values: a ride frequency on the corner's weight
+        out = json.loads(scratch.build(json.dumps(dict(car, sketch={"parts": parts, "opts": {}}))))
+        s = out["suspension"]["FL"]
+        self.assertAlmostEqual(s["wheel_rate"], s["sprung_kg"] * (2 * 3.14159265 * dampers.FREQ["front"]) ** 2, delta=s["wheel_rate"] * 0.01)
+        self.assertTrue(s["strut"])                                          # guided: a slide node on a rail up the strut
+        self.assertTrue(0.85 < s["motion_ratio"] < 1.0)
+        body = json.loads(out["files"]["vehicles/bf_test_scratch/bf_test_scratch.jbeam"])["bf_test_scratch_body"]
+        self.assertIn("bf_strut_FL", body["rails"])
+        self.assertIn("bfstrutfl", [r[0] for r in body["slidenodes"][1:]])
+
+    def test_at_wheel_placeholder(self):
+        svj = json.loads((Path(__file__).resolve().parent.parent / "svjs/acrm_honda_civic_eg6/civic_(eg6)_si-r.svj.json").read_text(encoding="utf-8"))
+        self.assertTrue(dampers.at_wheel(svj["suspension"]["FL"]))
+        v = dampers.wheel_values(svj)["front"]
+        self.assertEqual((v["wheel_rate"], v["at_wheel"]), (29950.0, True))
+        parts, _ = sketch()
+        bare = [p for p in parts if not p["name"].startswith("damper")]
+        sug = dampers.suggest(bare, svj)
+        self.assertEqual(len(sug["parts"]), 4)
+        self.assertTrue(all("Assetto Corsa" in n for n in sug["notes"]))     # not at the wheel: on the lower arm
+        e30 = json.loads((Path(__file__).resolve().parent.parent / "svjs/bmw_m3_e30/m3_e30.svj.json").read_text(encoding="utf-8"))
+        n = dampers.suggest([], e30)["notes"]
+        self.assertTrue(any(x.startswith("FL") and "from the SVJ's strut" in x for x in n))   # MacPherson: the real strut
 
     def test_electric(self):
         car = dict(self.car, engine={"source": {"model": "toy", "part": "toy_motor_R", "device": "rearMotor"}, "max_rpm": 15000},

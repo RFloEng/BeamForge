@@ -503,9 +503,16 @@ def _row(pos, ia, ib, a, b):
 # ---------------------------------------------------------------- build
 
 def kind_of(name, kinds=None):
-    """"frame" (welded tubes: members and bending beams) or "link" (a rigid body: its lines braced stiff): as the user
-    set it, else a link for a part with a suspension role (svj.part_role), a frame for anything else."""
-    return (kinds or {}).get(name) or ("link" if svjmod.part_role(name) else "frame")
+    """"frame" (welded tubes: members and bending beams), "link" (a rigid body: its lines braced stiff) or "damper" (a
+    spring and damper unit: its ends are nodes, its line no beam of the structure; scratch.py makes the spring and the
+    damper there): as the user set it, else a damper for a part named as one (damper_fl, strut_rl, coilover, shock; not a
+    strut brace or tower), a link for another suspension role (svj.part_role), a frame for anything else."""
+    if (kinds or {}).get(name):
+        return kinds[name]
+    role = svjmod.part_role(name)
+    if role == "strut" and not re.search(r"brace|bar|tower", str(name), re.I):
+        return "damper"
+    return "link" if role else "frame"
 
 
 def tube_of(name, kind, given=None):
@@ -516,12 +523,13 @@ def tube_of(name, kind, given=None):
     m = _TUBE_NAME.search(name)
     if m:
         return f"{'sqtube' if m.group(1) else 'tube'} {m.group(2).replace('_', '.')}x{m.group(3).replace('_', '.')} {m.group(4) or 'steel_1018'}"
-    return TUBE[kind]
+    return TUBE.get(kind, TUBE["link"])
 
 
 def build(parts, unit=0.001, rot=(0, 0, 0), offset=(0.0, 0.0, 0.0), tol=TOL, flat=FLAT, kinds=None):
     """The jbeam structure of a skeleton (read()'s parts, file units). Returns {"nodes": {id: {"pos" (SVJ, m), "parts",
-    "owner", "helper"}}, "beams": [{"a", "b", "part", "kind": "line" | "bend" | "brace" | "helper"}], "parts": [{"name",
+    "owner", "helper"}}, "beams": [{"a", "b", "part", "kind": "line" | "bend" | "brace" | "helper"}], "dampers": [{"part",
+    "a", "b"}] (the damper parts' ends, kind_of), "parts": [{"name",
     "role", "kind", "body", "nodes", "lines"}], "bodies": [{"parts", "kind", "nodes", "beams", "rank", "need", "helpers",
     "shape"}], "joints": [{"parts", "nodes", "type"}], "report": {...}}. kinds: {part: "frame" | "link"} (kind_of).
     A frame's welded corners get bending beams (tubes.corners, FBeam 8.10) before any brace for rigidity."""
@@ -568,6 +576,17 @@ def build(parts, unit=0.001, rot=(0, 0, 0), offset=(0.0, 0.0, 0.0), tol=TOL, fla
             out.extend(zip(chain, chain[1:]))
         p["segs"] = out
         p["nodes"] = sorted({n for s in out for n in s})
+    # dampers: their ends only (the line is the spring and damper, not structure)
+    dampers = []
+    for p in plist:
+        if p["kind"] == "damper" and p["segs"]:
+            deg = {}
+            for a, b in p["segs"]:
+                deg[a] = deg.get(a, 0) + 1
+                deg[b] = deg.get(b, 0) + 1
+            ends = [n for n, d in deg.items() if d == 1] or [p["segs"][0][0], p["segs"][-1][1]]
+            dampers.append({"part": p["name"], "a": ends[0], "b": ends[-1]})
+    rigid = [i for i, p in enumerate(plist) if p["kind"] != "damper"]
     # welded parts: sharing 3 or more nodes not on one line make one rigid body
     parent = list(range(len(plist)))
 
@@ -576,13 +595,15 @@ def build(parts, unit=0.001, rot=(0, 0, 0), offset=(0.0, 0.0, 0.0), tol=TOL, fla
             parent[i] = parent[parent[i]]
             i = parent[i]
         return i
-    for i in range(len(plist)):
-        for j in range(i + 1, len(plist)):
+    for i in rigid:
+        for j in rigid:
+            if j <= i:
+                continue
             shared = sorted(set(plist[i]["nodes"]) & set(plist[j]["nodes"]))
             if len(shared) >= 3 and _shape([pos[n] for n in shared])[1][1][0] > 1e-3:
                 parent[find(i)] = find(j)
     groups = {}
-    for i in range(len(plist)):
+    for i in rigid:
         groups.setdefault(find(i), []).append(i)
     beams, bodies = [], []
     for members in groups.values():
@@ -692,8 +713,9 @@ def build(parts, unit=0.001, rot=(0, 0, 0), offset=(0.0, 0.0, 0.0), tol=TOL, fla
               "bending": sum(1 for x in beams if x["kind"] == "bend"), "bodies": len(bodies),
               "joints": {t: sum(1 for j in joints if j["type"] == t) for t in ("ball", "hinge", "weld")},
               "free_motions": free, "mechanism": free - 6 if len(allidx) >= 3 else None,
-              "not_rigid": [b["parts"] for b in bodies if b["rank"] < b["need"]]}
+              "not_rigid": [b["parts"] for b in bodies if b["rank"] < b["need"]], "dampers": len(dampers)}
     return {"nodes": out_nodes,
+            "dampers": [{"part": d["part"], "a": names[d["a"]], "b": names[d["b"]]} for d in dampers],
             "beams": [{"a": names[x["a"]], "b": names[x["b"]], "part": x["part"], "kind": x["kind"]} for x in beams],
             "parts": [{"name": p["name"], "role": p["role"], "kind": p["kind"], "body": p.get("body"), "nodes": [names[n] for n in p["nodes"]],
                        "lines": len(p["segs"])} for p in plist],
@@ -721,7 +743,7 @@ def values(result, tubes_given=None, min_kg=MIN_KG):
         try:
             sec[p["name"]] = tubes.section(tube_of(p["name"], kind[p["name"]], tubes_given))
         except tubes.SectionError:
-            sec[p["name"]] = tubes.section(TUBE[kind[p["name"]]])
+            sec[p["name"]] = tubes.section(TUBE.get(kind[p["name"]], TUBE["link"]))
     B = result["beams"]
     members = [{"id": i, "a": b["a"], "b": b["b"]} for i, b in enumerate(B) if b["kind"] == "line"]
     run = tubes.buckling_lengths(P, [m for m in members if kind[B[m["id"]]["part"]] == "frame"])

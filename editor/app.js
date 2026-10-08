@@ -34,7 +34,7 @@ import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, reme
 const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py',
   'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py', 'beamforge/dae.py', 'beamforge/values.py',
   'beamforge/rigidity.py', 'beamforge/kinematics.py', 'beamforge/roles.py', 'beamforge/convert.py',
-  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py', 'beamforge/scratch.py', 'beamforge/tyres.py', 'beamforge/aero.py', 'beamforge/components.py', 'beamforge/mount.py'];
+  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py', 'beamforge/scratch.py', 'beamforge/tyres.py', 'beamforge/aero.py', 'beamforge/components.py', 'beamforge/mount.py', 'beamforge/dampers.py'];
 const REPO = new URL('../', import.meta.url);
 
 const $ = (id) => document.getElementById(id);
@@ -44,7 +44,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 // last line of a Python traceback, without the exception class
 const pyError = (e) => String(e.message || e).trim().split('\n').pop().replace(/^\w+Error: /, '');
 
-let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy, strpy, ptpy, donpy, scpy, typy, aepy, copy_, rigpy, mtpy;
+let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy, strpy, ptpy, donpy, scpy, typy, aepy, copy_, rigpy, mtpy, dmpy;
 const timing = {};         // ms per step, shown in the footer by drawTiming
 
 // ---------- Python engine ----------
@@ -75,6 +75,7 @@ async function boot() {
   aepy = py.pyimport('beamforge.aero');
   rigpy = py.pyimport('beamforge.rigidity');
   mtpy = py.pyimport('beamforge.mount');
+  dmpy = py.pyimport('beamforge.dampers');
   copy_ = py.pyimport('beamforge.components');
   timing.files = performance.now() - t1;
   $('loading').remove();
@@ -1685,6 +1686,7 @@ function newSketch(name, parts = []) {
 }
 
 // an edit of the sketch: undoable, then built and drawn again
+let skDamperNotes = [];      // what Add dampers did, per corner
 function skEdit(fn) {
   skUndo.push(skState());
   if (skUndo.length > 200) skUndo.shift();
@@ -1742,6 +1744,8 @@ function drawSkeleton() {
       skelG.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts),
         new THREE.LineBasicMaterial({ color: SKEL_KIND[kind], transparent: kind !== 'line', opacity: kind === 'line' ? 1 : 0.7 })));
     }
+    const dmp = (skel.res.dampers || []).flatMap((d) => [v3(N[d.a].bng), v3(N[d.b].bng)]);   // springs and dampers: purple
+    if (dmp.length) skelG.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(dmp), new THREE.LineBasicMaterial({ color: 0xa371f7 })));
   }
   const act = skel.parts.find((x) => x.name === skel.active);       // the active part's lines on top, brighter
   if (act && act.lines.length) {
@@ -1922,11 +1926,18 @@ function skeletonPanel() {
       ${skel.parts.map((p) => { const x = info(p.name); return `<tr class="${p.name === skel.active ? 'on' : ''}">
         <td><input type="radio" name="skactive" data-skactive="${esc(p.name)}" ${p.name === skel.active ? 'checked' : ''} title="New lines go into the active part"></td>
         <td><input data-skrename="${esc(p.name)}" value="${esc(p.name)}" size="13" list="skpartnames" title="${p.lines.length} lines, ${(p.points || []).length} points${x.role ? '; ' + x.role : ''}"></td>
-        <td><select data-skkind="${esc(p.name)}">${['frame', 'link'].map((k) => `<option ${(x.kind || o.kinds[p.name] || '') === k ? 'selected' : ''}>${k}</option>`).join('')}</select></td>
+        <td><select data-skkind="${esc(p.name)}">${['frame', 'link', 'damper'].map((k) => `<option ${(x.kind || o.kinds[p.name] || '') === k ? 'selected' : ''}>${k}</option>`).join('')}</select></td>
         <td><input data-sktube="${esc(p.name)}" value="${esc(x.tube || o.tubes[p.name] || '')}" size="12" title="tube|sqtube DxT material (mm): steel_1018, steel_4130n, al_6061_t6"></td>
         <td>${fmt(x.mass, 1)}</td>
         <td><button class="mini" data-skmirror="${esc(p.name)}" title="A mirror image on the other side (Y to -Y), named for that side">mirror</button><button class="mini" data-skdel="${esc(p.name)}">×</button></td></tr>`; }).join('')}</table>
     <div class="inl"><input id="sknewpart" list="skpartnames" placeholder="lower_wishbone_fl, frame…" size="18"><button id="skaddpart" class="mini">Add part</button></div>
+    <h3>Springs and dampers</h3>
+    <p class="quiet">One damper part per corner (damper_fl, strut_fl…; purple): its top on the frame, its lower end on an arm or the upright.
+      Put it where the real one is: the car from scratch keeps the wheel's stiffness and damping wherever it goes (spring and damping / motion ratio²).
+      A strut on the upright with no upper arm is guided like a MacPherson.</p>
+    <div class="inl"><button id="skdampers" class="mini" title="A damper for each corner that has none: the SVJ's strut or mounts where it has real ones, else on the lower arm">Add dampers</button>
+      <span class="q">${(r && r.dampers ? r.dampers.length : 0)} drawn</span></div>
+    ${skDamperNotes.length ? `<p class="quiet">${skDamperNotes.map(esc).join('<br>')}</p>` : ''}
     <datalist id="skpartnames">${PART_NAMES.flatMap((n) => ['frame', 'subframe', 'rack', 'watts_pivot'].includes(n) ? [n] : [n + '_fl', n + '_fr', n + '_rl', n + '_rr']).map((n) => `<option value="${n}">`).join('')}</datalist>
     <details><summary>Turn, move, scale</summary>
       <p><label><input type="checkbox" id="skonlyact" checked> only the active part (about its centre)</label></p>
@@ -1991,6 +2002,14 @@ function bindSkeleton(el) {
     const name = $('sknewpart').value.trim().replace(/[^\w]+/g, '_');
     if (!name || skel.parts.some((p) => p.name === name)) return;
     skEdit(() => { skel.parts.push({ name, lines: [], points: [] }); skel.active = name; });
+  };
+  if ($('skdampers')) $('skdampers').onclick = () => {
+    let s;
+    try { s = JSON.parse(dmpy.suggest_json(JSON.stringify(skel.parts), svjDoc ? JSON.stringify(svjDoc.svj) : null)); }
+    catch (err) { skDamperNotes = [pyError(err)]; drawInspector(); return; }
+    skDamperNotes = s.notes.length ? s.notes : ['Every corner has its damper already.'];
+    if (!s.parts.length) { drawInspector(); return; }
+    skEdit(() => { for (const p of s.parts) skel.parts.push({ ...p, points: [] }); skel.active = s.parts[0].name; });
   };
   el.querySelectorAll('[data-skturn]').forEach((b) => { b.onclick = () => transformSketch(TURN[b.dataset.skturn], $('skonlyact').checked); });
   $('skmoveok').onclick = () => { const d = val('skmove'); transformSketch((q) => [q[0] + d[0], q[1] + d[1], q[2] + d[2]], $('skonlyact').checked); };
@@ -2685,7 +2704,20 @@ function scratchPanel() {
   const ok = (c, t) => `<span class="${c ? 'good' : 'bad'}">${c ? '✓' : '✗'}</span> ${t}`;
   const frame = skel.res && skel.res.parts.some((p) => p.kind === 'frame' && p.nodes.length >= 4);
   const ev = !!(eng && eng.device);
-  const ready = frame && wn.length >= 3 && eng && (gb || ev) && rim && library && rims.length;
+  const dmpCorners = new Set(((skel.res && skel.res.dampers) || []).map((d) => (d.part.match(/_(f[lr]|r[lr])$/i) || [])[1]).filter(Boolean).map((c) => c.toUpperCase()));
+  const noDamper = wn.filter((c) => !dmpCorners.has(c));
+  const ready = frame && wn.length >= 3 && eng && (gb || ev) && rim && library && rims.length && !noDamper.length;
+  const sv = svjDoc ? JSON.parse(dmpy.wheel_values_json(JSON.stringify(svjDoc.svj))) : {};
+  const sf = scratchForm.susp || {};
+  const suspIn = (ax, k, scale, label) => {
+    const svjV = sv[ax] && sv[ax][k], mine = sf[ax] && sf[ax][k];
+    return `<td><input type="number" step="any" data-scsusp="${ax}:${k}:${scale}" value="${mine != null ? +(mine / scale).toFixed(3) : ''}"
+      placeholder="${svjV != null ? +(svjV / scale).toFixed(1) : 'by weight'}" title="${esc(label)}" style="width:5.5em"></td>`;
+  };
+  const suspTable = `<table class="cmp"><tr><th>At the wheel</th><th>Rate N/mm</th><th>Bump N·s/m</th><th>Rebound N·s/m</th></tr>
+    ${['front', 'rear'].map((ax) => `<tr><td>${ax}</td>${suspIn(ax, 'wheel_rate', 1000, 'wheel rate')}${suspIn(ax, 'bump', 1, 'bump damping, slow')}${suspIn(ax, 'rebound', 1, 'rebound damping, slow')}</tr>`).join('')}</table>
+    <p class="quiet">Empty: the SVJ's${Object.values(sv).some((v) => v.at_wheel) ? ' (given at the wheel, as Assetto Corsa does: kept at the wheel wherever the dampers are)' : ''}, else a ride frequency on the corner's weight.
+      The springs and dampers get these divided by their motion ratio², measured on the sketch.</p>`;
   return `<h2>Make a car from scratch</h2>
     <p class="quiet">The sketch is the car: its frame, arms and uprights. The engine and gearbox, rims and tyres come from
       the vanilla cars' parts in your install. Unverified in the game: test it and tell what it does.</p>
@@ -2695,6 +2727,7 @@ function scratchPanel() {
       <span>Gearbox</span><span>${ev ? '<span class="good">✓</span> none: the electric motor drives the differentials (final drive = its reduction)' : ok(gb, gb ? esc(gb.title) : 'choose one in Powertrain')}</span>
       <span>Library</span><span>${ok(library, library ? `${library.vehicles} vehicles` : 'learn from the install in Powertrain')}</span></div>
     <div class="kv"><span>Wheels</span><span>${ok(rim, rim ? ['front', 'rear'].map((a) => { const c = wheelChoice(a); return `${a} ${esc(c.rim.name)}${c.tyre ? ', ' + esc(c.tyre.name) : ''}`; }).join(' · ') : 'choose rims and tyres')} <button class="mini" data-goto="wheels">Wheels</button></span>
+      <span>Springs, dampers</span><span>${ok(!noDamper.length, noDamper.length ? `none for ${noDamper.join(', ')}: Sketch, Add dampers (or draw damper_fl…)` : 'a damper part at each corner')} <button class="mini" data-goto="sketch">Sketch</button></span>
       <span>Body</span><span>${svjDoc && svjDoc.meshes.some((m) => m.file) ? `<span class="good">✓</span> the SVJ's chassis mesh, on the frame` : '<span class="q">none (optional: an SVJ with its meshes gives the body)</span>'}</span></div>
     <div class="kv"><span>Layout</span><span><select id="sclayout">${['FWD', 'RWD', 'AWD'].map((l) => `<option ${scratchForm.layout === l ? 'selected' : ''}>${l}</option>`).join('')}</select></span>
       <span>Lock (deg)</span><span><input type="number" id="sclock" value="${scratchForm.lock}" min="15" max="60" step="1"></span>
@@ -2702,6 +2735,7 @@ function scratchPanel() {
       <span>Vehicle id</span><span><input id="scid" value="${esc(scratchForm.id || (skel.name || 'scratch').toLowerCase().replace(/[^a-z0-9_]+/g, '_'))}"></span>
       <span>Name</span><span><input id="scname" value="${esc(scratchForm.name || skel.name || 'Scratch car')}"></span>
       <span>Brand</span><span><input id="scbrand" value="${esc(scratchForm.brand || 'BeamForge')}"></span></div>
+    ${suspTable}
     <p><button id="scbuild" class="primary" ${ready ? '' : 'disabled'}>Make the car (mod zip)…</button></p>
     ${scratchForm.note ? `<p class="quiet">${scratchForm.note}</p>` : ''}`;
 }
@@ -2714,6 +2748,13 @@ function bindScratch(el) {
     if ($('sclayout')) scratchForm.layout = $('sclayout').value;
   };
   for (const id of ['scid', 'scname', 'scbrand', 'sclock', 'sclayout', 'scbattery']) if ($(id)) $(id).onchange = keep;
+  el.querySelectorAll('[data-scsusp]').forEach((x) => { x.onchange = () => {
+    const [ax, k, scale] = x.dataset.scsusp.split(':');
+    const s = scratchForm.susp = { ...(scratchForm.susp || {}) };
+    s[ax] = { ...(s[ax] || {}) };
+    if (x.value === '' || !(+x.value > 0)) delete s[ax][k]; else s[ax][k] = +x.value * +scale;
+    redraw();
+  }; });
   if ($('scbuild')) $('scbuild').onclick = () => { keep(); buildScratch(); };
 }
 
@@ -2744,6 +2785,9 @@ async function buildScratch() {
       rim: { front: src(W.front.rim.pick, 'F'), rear: src(W.rear.rim.pick, 'R') },
       tyre: Object.fromEntries(['front', 'rear'].filter((a) => W[a].tyre).map((a) => [a, src(W[a].tyre.pick, a === 'front' ? 'F' : 'R', W[a].f.overrides)])),
       steering: { lock_deg: scratchForm.lock, turns: ptEdit.steering_turns || 3 } };
+    const sv = svjDoc ? JSON.parse(dmpy.wheel_values_json(JSON.stringify(svjDoc.svj))) : {};   // at the wheel: the SVJ's, then yours
+    car.suspension = Object.fromEntries(['front', 'rear'].map((ax) => [ax, { ...Object.fromEntries(Object.entries(sv[ax] || {}).filter(([, x]) => typeof x === 'number')),
+      ...((scratchForm.susp || {})[ax] || {}) }]));
     if (svjDoc && svjDoc.meshes.some((m) => m.file))        // the SVJ's body mesh, on the sketch's frame
       car.body = { svj: svjDoc.svj, files: Object.fromEntries(svjDoc.meshes.filter((m) => m.file).map((m) => [m.id, m.file])) };
     say('Making the car…');

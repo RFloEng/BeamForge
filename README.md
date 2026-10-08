@@ -2,6 +2,8 @@
 
 Start from **any BeamNG.drive vehicle**, vanilla or mod, and modify it from there. Lay an **SVJ** ([Standard Vehicle JSON](https://github.com/RFloEng/SVJ-standard-vehicle-json)) over it to compare and, step by step, take its geometry, setup and meshes.
 
+**How to use it: the [manual](docs/manual.md).**
+
 > **Status: v0.3 prototype.** Base vehicle, SVJ overlay, values and export to the game work and are being tested in-game. New and **not yet verified in the game**: the editor's workspaces, cars made from scratch, the Wheels, Aero and Components workspaces. See the [roadmap](docs/roadmap.md).
 
 ## What it does today
@@ -76,6 +78,7 @@ beamforge/tyres.py     the Magic Formula against BeamNG's tyre load coefficient,
 beamforge/aero.py      drag and downforce, forces per axle, a drag plate
 beamforge/components.py  masses, mass and CG, ballast
 editor/                the browser editor (three.js + Pyodide); library.js finds the BeamNG folders
+docs/manual.md         how to use the editor: workspaces, recipes, testing in the game
 docs/beamng-vehicles.md  how BeamNG builds and modifies vehicles
 docs/roadmap.md        what comes next
 docs/study-step-and-full-editor.md  the study behind the sketch and the workspaces (rigidity of parts, stable values)

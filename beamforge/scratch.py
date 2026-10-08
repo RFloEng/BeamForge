@@ -304,6 +304,138 @@ def _rack(car, res, wheels, steering, frame):
     return hydros, rails, slides
 
 
+def _suspension(car, res, wheels, spec, frame, held_extra=()):
+    """The springs and dampers: one unit per corner on the sketch's damper part (dampers.py), its motion ratio measured
+    on the structure, its beams given the wheel's stiffness and damping (spec["suspension"][axle], else defaults on the
+    corner's sprung mass). A strut (the unit's lower end on the upright, no upper arm) gets its guide: a slide node on the
+    upright riding a rail up the strut. Returns (beam rows, rails, slidenode rows, per corner report)."""
+    from . import dampers
+    from .components import WHEEL_KG
+    units = {}
+    for d in res.get("dampers") or []:
+        c = dampers._corner_of(d["part"])
+        if c in wheels:
+            units[c] = d
+    missing = [c for c in sorted(wheels) if c not in units]
+    if missing:
+        raise ValueError("no spring and damper for " + ", ".join(missing) + ": draw a damper part for each corner "
+                         "(damper_fl...: its top on the frame, its lower end on an arm or the upright), or Sketch: Add dampers")
+    frame_set = set(frame)
+    rigid_of = {}                                           # node -> the corner parts (not frame, not damper) it is in
+    kinds = {p["name"]: p["kind"] for p in res["parts"]}
+    for n, v in res["nodes"].items():                      # a helper node is in no part: its body's owner's
+        ps = v["parts"] or ([v["owner"]] if v.get("owner") else [])
+        rigid_of[n] = [p for p in ps if kinds.get(p) not in ("frame", "damper")]
+    # the car's weight on each corner (its nodes, the wheels), and each corner's unsprung share
+    tot = sum(car.kg[n] for n in car.nodes) + WHEEL_KG * len(wheels)
+    ycg = (sum(car.kg[n] * car.nodes[n][1] for n in car.nodes) + sum(WHEEL_KG * w["centre"][1] for w in wheels.values())) / tot
+    yf_ = sum(w["centre"][1] for c, w in wheels.items() if c[0] == "F") / max(1, sum(1 for c in wheels if c[0] == "F"))
+    yr_ = sum(w["centre"][1] for c, w in wheels.items() if c[0] == "R") / max(1, sum(1 for c in wheels if c[0] == "R"))
+    front_share = min(0.9, max(0.1, (yr_ - ycg) / (yr_ - yf_))) if abs(yr_ - yf_) > 0.5 else 0.5
+    rows, rails, slides, report = [], {}, [], {}
+    guides, ends, virtual = [], {}, {}
+    for c, d in sorted(units.items()):
+        a, b = d["a"], d["b"]
+        on_frame = [n for n in (a, b) if n in frame_set]
+        moving = [n for n in (a, b) if rigid_of.get(n) and n not in frame_set]
+        if len(moving) != 1:
+            raise ValueError(f"{d['part']}: one end must be on an arm or the upright and the other on the frame (or free, "
+                             "to be tied to it)")
+        bottom = moving[0]
+        top = a if bottom == b else b
+        if top not in frame_set:                            # a top in the air: tied to the frame
+            for f in car.nearest(car.nodes[top], frame, 3):
+                car.beam(top, f, aim="p50")
+            car.notes.append(f"{d['part']}: its top is on no frame node: tied to the 3 nearest")
+        w = wheels[c]
+        suffix = "_" + c.lower()
+        arms = [p for p in res["parts"] if p["name"].lower().endswith(suffix) and p["role"] == "arm"]
+        strut = bottom in w["upright_nodes"] and not any("upper" in p["name"].lower() for p in arms) and len(arms) <= 1
+        if strut:                                           # the strut's guide (BeamNG's MacPherson: a slide node on a rail)
+            B, T = car.nodes[bottom], car.nodes[top]
+            s = f"bfstrut{c.lower()}"
+            car.node(s, [B[i] + dampers.SLIDE_AT * (T[i] - B[i]) for i in range(3)], 2.0, group=f"sk_{w['upright']}")
+            for u in w["upright_nodes"]:
+                car.beam(s, u, aim="p90")
+            rails[f"bf_strut_{c}"] = {"links:": [bottom, top], "broken:": [], "looped": False, "capped": True}
+            slides.append([s, f"bf_strut_{c}", True, True, 0.0, 15001000, "FLT_MAX", "FLT_MAX"])
+            guides.append((s, bottom, top, dampers.SLIDE_AT))
+        ends[c] = (bottom, top, strut)
+        vn = f"bfwc{c.lower()}"
+        virtual[c] = vn
+    # the motion ratios: each axle's wheels pushed up together, the frame and the steering rack held
+    susp = {n for n, ps in rigid_of.items() if ps and n not in frame_set and n in car.nodes} - set(held_extra)
+    susp |= {g[0] for g in guides}
+    nodes = dict(car.nodes)
+    kmax = max([float(x[2].get("beamSpring") or 0) for x in car.beams] or [1e6])
+    beams = [(x[0], x[1], float(x[2].get("beamSpring") or 0)) for x in car.beams if x[0] in nodes and x[1] in nodes
+             and float(x[2].get("beamSpring") or 0) > 0]
+    for c, vn in virtual.items():                           # the wheel centre, held to its upright
+        nodes[vn] = wheels[c]["centre"]
+        beams += [(vn, u, kmax) for u in wheels[c]["upright_nodes"]]
+    mr = {}
+    for AX in ("F", "R"):
+        cs_ = [c for c in ends if c[0] == AX]
+        if cs_:
+            mr.update(dampers.motion_ratios(nodes, beams, sorted(susp | set(virtual.values())), [virtual[c] for c in cs_],
+                                            {c: ends[c][:2] for c in cs_}, [g for g in guides if any(g[1] == ends[c][0] for c in cs_)]))
+    # the values: the wheel's, through the measured ratio
+    given = spec.get("suspension") or {}
+    dt = rigidity.DT
+    rows.append(dict(_RESET_BOUNDED))
+    for c in sorted(ends):
+        bottom, top, strut = ends[c]
+        axle = "front" if c[0] == "F" else "rear"
+        r = abs(mr.get(c) or 0.0)
+        if r < dampers.MIN_MR:
+            car.notes.append(f"{units[c]['part']}: it moves {r:.2f} m per m of wheel travel: placed wrong (it must "
+                             f"shorten as the wheel goes up); taken as {dampers.MIN_MR}")
+            r = dampers.MIN_MR
+        w = wheels[c]
+        unsprung = WHEEL_KG + sum(car.kg[n] for n in w["upright_nodes"])
+        share = front_share if axle == "front" else 1 - front_share
+        n_ax = sum(1 for x in wheels if x[0] == c[0])
+        sprung = max(20.0, tot * share / n_ax - unsprung)
+        v = dampers.defaults(sprung, axle)
+        v.update({k: x for k, x in (given.get(axle) or {}).items() if isinstance(x, (int, float)) and not isinstance(x, bool) and x > 0})
+        k = v["wheel_rate"] / (r * r)
+        damp = {key: v[key] / (r * r) for key in ("bump", "bump_fast", "rebound", "rebound_fast")}
+        pre = sprung * 9.81 / r / k
+        for n in (bottom, top):                             # the ends heavy enough for the unit at the physics step
+            need = max((car.ks.get(n, 0.0) + k) * dt * dt / rigidity.VANILLA["node_k"]["p90"],
+                       (car.cs.get(n, 0.0) + max(damp["bump"], damp["rebound"])) * dt / rigidity.VANILLA["node_c"]["p90"])
+            if car.kg[n] < need:
+                car.notes.append(f"{units[c]['part']}: node {n} made {need * 1.02 - car.kg[n]:.1f} kg heavier to carry it")
+                car.kg[n] = round(need * 1.02, 3)
+        rows.append(dict(_RESET_BOUNDED, beamSpring=round(k), beamDamp=0, beamLimitSpring=49000, beamLimitDamp=500))
+        rows.append([bottom, top, {"name": f"spring_{c}", "precompressionRange": round(pre, 4), "longBoundRange": 1,
+                                   "shortBoundRange": 0.1, "boundZone": 0.08, "beamLimitDampRebound": 0, "dampCutoffHz": 500}])
+        rows.append(dict(_RESET_BOUNDED, beamSpring=0, beamDamp=round(damp["bump"]), beamLimitSpring=0, beamLimitDamp=0))
+        rows.append([bottom, top, {"name": f"damper_{c}", "beamDampFast": round(damp["bump_fast"]), "beamDampRebound": round(damp["rebound"]),
+                                   "beamDampReboundFast": round(damp["rebound_fast"]),
+                                   "beamDampVelocitySplit": round((v.get("split") or dampers.SPLIT) * r, 3), "dampCutoffHz": 500}])
+        rows.append(dict(_RESET_BOUNDED, beamSpring=0, beamDamp=0, beamLimitSpring=181000, beamLimitDamp=5000))
+        rows.append([bottom, top, {"name": f"limit_{c}", "longBoundRange": round(0.12 * r, 3), "shortBoundRange": round(0.15 * r, 3),
+                                   "boundZone": 0.02, "beamLimitDampRebound": 0, "dampCutoffHz": 500}])
+        for n in (bottom, top):
+            car.ks[n] = car.ks.get(n, 0.0) + k
+            car.cs[n] = car.cs.get(n, 0.0) + max(damp["bump"], damp["rebound"])
+        report[c] = {"part": units[c]["part"], "motion_ratio": round(r, 3), "strut": strut, "wheel_rate": round(v["wheel_rate"]),
+                     "spring": round(k), "bump": round(damp["bump"]), "rebound": round(damp["rebound"]), "preload_mm": round(pre * 1000),
+                     "sprung_kg": round(sprung, 1)}
+        car.notes.append(f"{c}: {units[c]['part']}{' (strut, guided)' if strut else ''}, motion ratio {r:.2f}: spring "
+                         f"{k / 1000:.0f} N/mm for {v['wheel_rate'] / 1000:.0f} N/mm at the wheel, damping bump {damp['bump']:.0f} / "
+                         f"rebound {damp['rebound']:.0f} N s/m, preload {pre * 1000:.0f} mm")
+    rows.append(dict(_RESET_NORMAL))
+    return rows, rails, slides, report
+
+
+_RESET_BOUNDED = {"beamType": "|BOUNDED", "beamLongBound": 1, "beamShortBound": 1, "beamPrecompression": 1,
+                  "beamDeform": "FLT_MAX", "beamStrength": "FLT_MAX"}
+_RESET_NORMAL = {"beamType": "|NORMAL", "beamPrecompression": 1, "beamSpring": 4300000, "beamDamp": 580,
+                 "beamDeform": 80000, "beamStrength": "FLT_MAX", "beamLimitSpring": 0, "beamLimitDamp": 0}
+
+
 def _ref_nodes(car, frame, yf):
     """ref, back, left, up: four frame nodes spanning the vehicle's axes (BeamNG reads its frame from them)."""
     ref = min(frame, key=lambda n: abs(car.nodes[n][0]) + abs(car.nodes[n][1] - yf) * 0.5)
@@ -536,6 +668,8 @@ def build(car_json):
         vc.setdefault("topSpeedLimitReverse", 15)
         vc.setdefault("onePedalRegenCoef", 0.85)
     steering = _rack(car, res, wheels, spec.get("steering") or {}, frame)
+    rack_ends = [steering[0][3][0], steering[0][4][0]] if steering else []
+    srows, srails, sslides, susp_report = _suspension(car, res, wheels, spec, frame, rack_ends)
 
     # the main part
     p = {"information": {"authors": "BeamForge", "name": spec.get("name") or vid}, "slotType": "main",
@@ -562,6 +696,9 @@ def build(car_json):
                 p[k] = _resolve(copy.deepcopy(epart[k]), evars)
     if steering:
         p["hydros"], p["rails"], p["slidenodes"] = steering
+    if srails:                                              # the struts' guides
+        p["rails"] = {**(p.get("rails") or {}), **srails}
+        p["slidenodes"] = (p.get("slidenodes") or [["id:", "railName", "attached", "fixToRail", "tolerance", "spring", "strength", "capStrength"]]) + sslides
     cda = (spec.get("aero") or {}).get("cda")
     if cda:                                                  # the drag plate: no body, so one triangle takes the drag
         from . import aero
@@ -576,7 +713,7 @@ def build(car_json):
         extra["nodeWeight"] = round(car.kg[n], 3)
         nrows.append([n, pos[0], pos[1], pos[2], extra])
     p["nodes"] = nrows
-    p["beams"] = [["id1:", "id2:"], {"beamType": "|NORMAL", "beamPrecompression": 1, "beamDeform": 80000, "beamStrength": "FLT_MAX"}] + car.beams
+    p["beams"] = [["id1:", "id2:"], {"beamType": "|NORMAL", "beamPrecompression": 1, "beamDeform": 80000, "beamStrength": "FLT_MAX"}] + car.beams + srows
     # the body: the SVJ's meshes (the sketch is in its frame: they sit on it as they are), following the frame's nodes
     binary, svj_body = {}, spec.get("body") or {}
     mesh_files = {}
@@ -610,6 +747,6 @@ def build(car_json):
     return json.dumps({"files": {f"vehicles/{vid}/info.json": json.dumps(info, indent=1),
                                  f"vehicles/{vid}/{vid}.jbeam": json.dumps(jb, indent=1),
                                  f"vehicles/{vid}/base.pc": json.dumps(pc, indent=1), **mesh_files},
-                       "binary": binary,
+                       "binary": binary, "suspension": susp_report,
                        "notes": car.notes, "counts": {"nodes": len(car.nodes), "beams": len(car.beams), "mass": mass,
                                                       "bands": bands, "wheels": len(wheels)}})

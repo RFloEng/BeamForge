@@ -743,6 +743,8 @@ def svj_corner(corner, key, override=None):
     db = damper.get("outboard_mount") or hps.get("damper_outboard")
     for link in topo.get("links") or []:
         name, kind = str(link.get("name", "link")), link.get("type")
+        if re.fullmatch(r"(macpherson_)?strut", name):         # a strut by name (converters write it as a rod)
+            kind = "strut"
         ins = [p for p in link.get("inboard_points") or [] if isinstance(p, list) and len(p) == 3]
         ref = str(link.get("outboard_ref") or "").split(".")[-1]
         if re.search(r"push|pull|rocker|anti_roll|arb|sway", name):
@@ -868,6 +870,17 @@ def study_svj(svj, travel_mm=100, overrides=None, suffix=""):
         except ValueError as exc:
             notes += [f"{name}: {x}" for x in n] + [f"{name}: {exc}"]
             continue
+        from . import dampers
+        rate = (susp[name].get("spring") or {}).get("rate")
+        mr0 = res["static"].get("motion_ratio")
+        if dampers.at_wheel(susp[name]) and isinstance(rate, (int, float)) and mr0 and mr0 > 0.05:
+            # Assetto Corsa: the rate is at the wheel whatever the geometry, so the coil on this corner's own damper is
+            # rate / MR^2 (the file's MR of 1 is its placeholder at the wheel, not this damper's)
+            k = rate / 1000 / (mr0 * mr0)
+            res["curves"]["wheel_rate_N_per_mm"] = [k * m * m for m in res["curves"]["motion_ratio"]]
+            res["static"]["wheel_rate_N_per_mm"] = k * mr0 * mr0
+            n = n + [f"spring and damper given at the wheel (Assetto Corsa): {rate / 1000:.1f} N/mm at the wheel, "
+                     f"{k:.1f} N/mm on this damper (motion ratio {mr0:.2f})"]
         lay = describe()[key]
         res.update(corner=name, type=key, name=lay["name"], points=pts, labels=labels, lines=lay["lines"],
                    single=lay["single"], notes=n)
