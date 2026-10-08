@@ -144,6 +144,17 @@ class TestScratch(unittest.TestCase):
         w = {x["name"]: x for x in json.loads(bng.configure("bf_test_scratch", "base"))["wheels"]}
         self.assertEqual((w["FL"]["radius"], w["FL"]["width"]), (0.29, 0.15))   # the donor's size, kept
 
+    def test_drag_plate(self):
+        from beamforge import values
+        out = json.loads(scratch.build(json.dumps(dict(self.car, aero={"cda": 0.65}))))
+        bng.add_files(json.dumps(out["files"]))
+        c = json.loads(bng.configure("bf_test_scratch", "base"))
+        tris = values.aero_triangles("bf_test_scratch", c)
+        self.assertEqual(len(tris), 1)
+        self.assertAlmostEqual(values.drag_area(tris), 0.65, places=3)          # the drag area asked for, by the estimate
+        body = json.loads(out["files"]["vehicles/bf_test_scratch/bf_test_scratch.jbeam"])["bf_test_scratch_body"]
+        self.assertEqual((body["triangles"][1]["triangleType"], body["triangles"][1]["liftCoef"]), ("NONCOLLIDABLE", 0))
+
     def test_refused(self):
         bad = dict(self.car, engine={})
         with self.assertRaises(ValueError):

@@ -517,6 +517,14 @@ def build(car_json):
             p[k] = _resolve(copy.deepcopy(epart[k]), evars)
     if steering:
         p["hydros"], p["rails"], p["slidenodes"] = steering
+    cda = (spec.get("aero") or {}).get("cda")
+    if cda:                                                  # the drag plate: no body, so one triangle takes the drag
+        from . import aero
+        plate = aero.drag_plate(car.nodes, frame, float(cda))
+        if plate:
+            ids, coef = plate
+            p["triangles"] = [["id1:", "id2:", "id3:"], {"triangleType": "NONCOLLIDABLE", "dragCoef": coef, "liftCoef": 0}, ids]
+            car.notes.append(f"aero: a drag plate on {', '.join(ids)} for a drag area of {cda} m2 (dragCoef {coef} %), no lift")
     nrows = [["id", "posX", "posY", "posZ"], {"selfCollision": False}, {"collision": True}, {"nodeMaterial": "|NM_METAL"}, {"frictionCoef": 0.5}]
     for n, pos in car.nodes.items():
         extra = {k: v for k, v in car.props[n].items() if v not in (None, "")}

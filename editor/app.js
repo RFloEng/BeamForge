@@ -34,7 +34,7 @@ import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, reme
 const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py',
   'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py', 'beamforge/dae.py', 'beamforge/values.py',
   'beamforge/rigidity.py', 'beamforge/kinematics.py', 'beamforge/roles.py', 'beamforge/convert.py',
-  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py', 'beamforge/scratch.py', 'beamforge/tyres.py'];
+  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py', 'beamforge/scratch.py', 'beamforge/tyres.py', 'beamforge/aero.py'];
 const REPO = new URL('../', import.meta.url);
 
 const $ = (id) => document.getElementById(id);
@@ -44,7 +44,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 // last line of a Python traceback, without the exception class
 const pyError = (e) => String(e.message || e).trim().split('\n').pop().replace(/^\w+Error: /, '');
 
-let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy, strpy, ptpy, donpy, scpy, typy;
+let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy, strpy, ptpy, donpy, scpy, typy, aepy;
 const timing = {};         // ms per step, shown in the footer by drawTiming
 
 // ---------- Python engine ----------
@@ -72,6 +72,7 @@ async function boot() {
   donpy = py.pyimport('beamforge.donors');
   scpy = py.pyimport('beamforge.scratch');
   typy = py.pyimport('beamforge.tyres');
+  aepy = py.pyimport('beamforge.aero');
   timing.files = performance.now() - t1;
   $('loading').remove();
   await restoreProject();
@@ -914,6 +915,7 @@ async function finishImport(name) {
   svjDoc = JSON.parse(svjpy.load_bundle(svjSrc, '/tmp/svj_in'));
   svjName = name;
   if (!ptEdit.touched) ptEdit = { ...JSON.parse(ptpy.from_svj_json(JSON.stringify(svjDoc.svj))), touched: false };
+  if (!aeroTouched) aeroEdit = aeroFromSvj();
   studySuspension();
   await loadSvjMeshes();
   redraw();
@@ -1466,6 +1468,11 @@ async function runExport() {
         svjOpt = { ...(svjOpt || {}), svj: pt.svj, take: { ...((svjOpt && svjOpt.take) || {}), ...pt.take } };
       }
     }
+    if (aeroEdit && aeroEdit.cd && aeroEdit.area) {        // the drag: the Aero workspace's (lift is not written)
+      svjOpt = svjOpt || { svj: {}, take: {} };
+      svjOpt.svj = { ...svjOpt.svj, aerodynamics: { reference: { frontal_area: aeroEdit.area }, coefficients: { Cd: aeroEdit.cd } } };
+      svjOpt.take = { ...(svjOpt.take || {}), aero: true };
+    } else if (svjOpt && svjOpt.take) svjOpt.take.aero = false;
     if (svjOpt && Object.keys(vehEdit.fit || {}).length && vehEdit.fitReport?.axles) {
       svjOpt.axles = vehEdit.fitReport.axles;        // the wheels' camber and toe, set by preloading the upright's beams
     }
@@ -1513,6 +1520,7 @@ function drawInspector() {
     checks: () => checksPanel(),
     powertrain: () => powertrainPanel(),
     wheels: () => wheelsPanel(),
+    aero: () => aeroPanel(),
     assembly: () => assemblyPanel(),
   }[ws]();
   el.innerHTML = html;
@@ -1523,6 +1531,7 @@ function drawInspector() {
   if (ws === 'checks') bindChecks(el);
   if (ws === 'powertrain') bindPowertrain(el);
   if (ws === 'wheels') bindWheels(el);
+  if (ws === 'aero') bindAero(el);
   if (ws === 'assembly') { bindExport(); bindAssembly(el); }
   el.querySelectorAll('[data-goto]').forEach((b) => { b.onclick = () => setWorkspace(b.dataset.goto); });
 }
@@ -1973,6 +1982,7 @@ const WORKSPACES = [
   ['sketch', 'Sketch', 'Mechanisms and structures from points and lines (a STEP assembly): rigid parts, joints, tubes'],
   ['suspension', 'Suspension', "The SVJ's corners over wheel travel"],
   ['wheels', 'Wheels', "Rims and tyres from the vanilla cars' archetypes, your values, the SVJ's Pacejka tyre as a benchmark"],
+  ['aero', 'Aero', 'Drag and downforce: the base, the SVJ or your own numbers, the forces per axle at speed'],
   ['powertrain', 'Powertrain', 'Engine, gearbox, final drive and steering: the base\'s, the SVJ\'s or your own; the transmission parts'],
   ['checks', 'Checks', 'Stability and structure of the vehicle and the sketch'],
   ['assembly', 'Assembly', 'Everything together: the new vehicle to export'],
@@ -1984,7 +1994,7 @@ if (!WORKSPACES.some(([k]) => k === ws)) ws = 'base';
 function drawSpaces() {
   const has = { base: !!veh, svj: !!svjDoc, sketch: !!skel, suspension: !!svjSusp,
     powertrain: !!(ptEdit.engine || ptEdit.gears || ptEdit.final_drive || ptEdit.steering_turns),
-    wheels: !!(wheelsForm.front.rim !== '' || wheelsForm.rear.rim !== '') };
+    wheels: !!(wheelsForm.front.rim !== '' || wheelsForm.rear.rim !== ''), aero: !!aeroEdit };
   const el = document.querySelector('.spaces');
   el.innerHTML = WORKSPACES.map(([k, label, tip]) =>
     `<button class="${k === ws ? 'on' : ''}" data-ws="${k}" title="${esc(tip)}">${esc(label)}${has[k] ? ' <span class="dot"></span>' : ''}</button>`).join('');
@@ -2060,7 +2070,7 @@ function libraryPicker(kind, label, chosen) {
   return `<div class="inl"><select data-libpick="${kind}"><option value="">${esc(label)}…</option>
     ${list.map((a, i) => `<option value="${i}" ${chosen && chosen.part === a.pick.part && chosen.model === a.pick.model ? 'selected' : ''}>${esc(a.name)} · ${a.count} (${esc(a.pick.model)})</option>`).join('')}</select></div>`;
 }
-const PT_KEYS = ['engine', 'engine_power', 'gears', 'final_drive', 'steering'];
+const PT_KEYS = ['engine', 'engine_power', 'gears', 'final_drive', 'steering', 'aero'];   // values their own workspaces set
 let ptEdit = { ...PT_EMPTY }, ptEditing = null;     // ptEditing: the group whose hand fields are open
 
 const peakOf = (curve) => {
@@ -2232,6 +2242,59 @@ function bindPowertrain(el) {
     const source = { model: p.model, part: p.part, title: a.name, device: p.device || null, type: p.type || null };
     if (x.dataset.libpick === 'engines') set('engine', { torque: p.torque, idle_rpm: p.idle_rpm || (p.torque[0] || [800])[0], max_rpm: p.max_rpm || p.torque[p.torque.length - 1][0], source });
     else { ptEdit = { ...ptEdit, gears: p.ratios, gearbox_source: source, touched: true }; ptEditing = null; redraw(); }
+  }; });
+}
+
+// ---------- Aero: drag and downforce (beamforge/aero.py) ----------
+// aeroEdit: { cd, area, cl_front, cl_rear } the new vehicle's numbers, or null (the base's as they are). From the SVJ by
+// default. The drag goes into a base car's aero triangles (scaled to the drag area) and a scratch car's drag plate; the
+// lift is shown, not written (BeamNG's triangle aero law is not public, so a wing cannot be sized to a downforce yet).
+let aeroEdit = null, aeroTouched = false;
+
+function aeroFromSvj() {
+  if (!svjDoc) return null;
+  const wb = (veh && veh.measure && veh.measure.wheelbase) || svjDoc.summary.wheelbase || 2.5;
+  return JSON.parse(aepy.edit_from_svj_json(JSON.stringify(svjDoc.svj), wb));
+}
+function aepyRead() { return JSON.parse(aepy.read_json(JSON.stringify(svjDoc.svj))); }
+
+function aeroPanel() {
+  const wb = (veh && veh.measure && veh.measure.wheelbase) || (svjDoc && svjDoc.summary.wheelbase) || 2.5;
+  const base = veh ? JSON.parse(aepy.base_json(veh.model, JSON.stringify(veh))) : null;
+  const s = svjDoc ? aepyRead() : null;
+  const e = aeroEdit || {};
+  const asAero = (x) => x ? { area: x.area, Cd: x.cd, Cl: (x.cl_front != null || x.cl_rear != null) ? (x.cl_front || 0) + (x.cl_rear || 0) : null,
+    Cl_front: x.cl_front, Cl_rear: x.cl_rear, rho: x.rho || 1.225 } : null;
+  const rows = aeroEdit ? JSON.parse(aepy.forces_json(JSON.stringify(asAero(aeroEdit)), wb)) : [];
+  const sweep = aeroEdit ? (() => { const out = { drag: [], f: [], r: [] }; for (let v = 0; v <= 250; v += 10) {
+    const q = 0.5 * 1.225 * (v / 3.6) ** 2; out.drag.push([v, q * (e.cd || 0) * (e.area || 0)]);
+    out.f.push([v, -q * (e.cl_front || 0) * (e.area || 0) + 0]); out.r.push([v, -q * (e.cl_rear || 0) * (e.area || 0) + 0]); } return out; })() : null;
+  const field = (k, label, step) => `<span>${label}</span><span><input type="number" step="${step}" data-aero="${k}" value="${e[k] != null ? e[k] : ''}" style="width:6em"></span>`;
+  return `<h2>Aero</h2>
+    <table class="cmp"><tr><th></th><th>Base</th><th>SVJ</th><th>New</th></tr>
+      <tr><td>Drag area CdA m²</td><td>${base ? fmt(base.cda, 3) : '–'}</td><td>${s && s.Cd && s.area ? fmt(s.Cd * s.area, 3) : '–'}</td><td><b>${e.cd && e.area ? fmt(e.cd * e.area, 3) : 'the base\'s'}</b></td></tr>
+      <tr><td>Cd · area</td><td>–</td><td>${s ? `${fmt(s.Cd, 3)} · ${fmt(s.area, 2)}` : '–'}</td><td>${e.cd ? `${fmt(e.cd, 3)} · ${fmt(e.area, 2)}` : '–'}</td></tr>
+      <tr><td>Cl front · rear</td><td>–</td><td>${s ? `${fmt(s.Cl_front, 3)} · ${fmt(s.Cl_rear, 3)}${s.Cl != null && s.Cl_front == null ? ` (Cl ${fmt(s.Cl, 3)})` : ''}` : '–'}</td><td>${aeroEdit ? `${fmt(e.cl_front, 3)} · ${fmt(e.cl_rear, 3)}` : '–'}</td></tr></table>
+    <div class="inl"><button class="mini${aeroEdit ? '' : ' on'}" id="aerokeep" ${veh ? '' : 'disabled'}>base</button><button class="mini" id="aerosvj" ${s && s.Cd ? '' : 'disabled'}>SVJ</button></div>
+    <div class="kv">${field('cd', 'Cd', 0.01)}${field('area', 'Frontal area m²', 0.01)}${field('cl_front', 'Cl front (− downforce)', 0.01)}${field('cl_rear', 'Cl rear (− downforce)', 0.01)}</div>
+    ${s && s.components.length ? `<details><summary>The SVJ's devices (${s.components.length})</summary><table class="cmp"><tr><th>Device</th><th>Type</th><th>Cd</th><th>Cl</th></tr>
+      ${s.components.map((c) => `<tr><td>${esc(c.id || '')}</td><td>${esc(c.type || '')}</td><td>${fmt(c.Cd, 3)}</td><td>${fmt(c.Cl, 3)}</td></tr>`).join('')}</table></details>` : ''}
+    ${rows.length ? `<table class="cmp"><tr><th>km/h</th><th>Drag N</th><th>Power kW</th><th>Down front N</th><th>Down rear N</th></tr>
+      ${rows.map((r) => `<tr><td>${r.kmh}</td><td>${fmt(r.drag, 0)}</td><td>${fmt(r.power, 1)}</td><td>${fmt(r.down_front, 0)}</td><td>${fmt(r.down_rear, 0)}</td></tr>`).join('')}</table>
+      ${lineChart('Drag', [{ label: 'drag', color: '#2f6fdf', pts: sweep.drag }], 'km/h', 'N')}
+      ${e.cl_front != null || e.cl_rear != null ? lineChart('Downforce', [{ label: 'front', color: '#2f6fdf', pts: sweep.f }, { label: 'rear', color: '#e0782a', pts: sweep.r }], 'km/h', 'N') : ''}` : ''}
+    <p class="quiet">The drag goes into the new vehicle: a base car's aero triangles scaled to this drag area (BeamForge's estimate of it),
+      a car made from scratch gets a drag plate. The downforce is shown, not written: BeamNG's aero law for its triangles is not public,
+      so a wing cannot be sized to a downforce yet. Air ${fmt(1.225, 3)} kg/m³, wheelbase ${fmt(wb, 2)} m.</p>`;
+}
+
+function bindAero(el) {
+  if ($('aerokeep')) $('aerokeep').onclick = () => { aeroEdit = null; aeroTouched = true; redraw(); };
+  if ($('aerosvj')) $('aerosvj').onclick = () => { aeroEdit = aeroFromSvj(); aeroTouched = true; redraw(); };
+  el.querySelectorAll('[data-aero]').forEach((x) => { x.onchange = () => {
+    aeroEdit = { ...(aeroEdit || {}), [x.dataset.aero]: x.value === '' ? null : +x.value };
+    if (!aeroEdit.cd && !aeroEdit.area && aeroEdit.cl_front == null && aeroEdit.cl_rear == null) aeroEdit = null;
+    aeroTouched = true; redraw();
   }; });
 }
 
@@ -2471,6 +2534,7 @@ async function buildScratch() {
       engine: { source: eng.source, torque: eng.torque, idle_rpm: eng.idle_rpm, max_rpm: eng.max_rpm, inertia: eng.inertia, friction: eng.friction,
         engine_brake: eng.engine_brake, mass: eng.mass },
       diffs: ptEdit.diffs || {},
+      aero: aeroEdit && aeroEdit.cd && aeroEdit.area ? { cda: +(aeroEdit.cd * aeroEdit.area).toFixed(4) } : {},
       gearbox: { source: gb, ratios: ptEdit.gears }, final_drive: ptEdit.final_drive || 4.0,
       rim: { front: src(W.front.rim.pick, 'F'), rear: src(W.rear.rim.pick, 'R') },
       tyre: Object.fromEntries(['front', 'rear'].filter((a) => W[a].tyre).map((a) => [a, src(W[a].tyre.pick, a === 'front' ? 'F' : 'R', W[a].f.overrides)])),
@@ -2509,7 +2573,7 @@ function projectData() {
       hidden: [...hiddenParts], locked: [...lockedParts] } : pendingBase,
     svj: svjDoc ? { name: svjName || 'project.svj.json', doc: svjDoc.svj } : null,
     sketch: skel ? { name: skel.name, parts: skel.parts, opts: skel.opts, active: skel.active } : null,
-    take: takeValues, export: exportForm, ties: savedTies(), powertrain: ptEdit, scratch: { ...scratchForm, note: '' }, wheels: wheelsForm,
+    take: takeValues, export: exportForm, ties: savedTies(), powertrain: ptEdit, scratch: { ...scratchForm, note: '' }, wheels: wheelsForm, aero: aeroEdit, aero_touched: aeroTouched,
   };
 }
 
@@ -2548,6 +2612,7 @@ async function applyProject(p) {
     if (p.powertrain) ptEdit = { ...PT_EMPTY, ...p.powertrain };
     if (p.scratch) scratchForm = { ...scratchForm, ...p.scratch };
     if (p.wheels) wheelsForm = { ...wheelsForm, ...p.wheels };
+    if ('aero' in p) { aeroEdit = p.aero; aeroTouched = !!p.aero_touched; }
     if (p.sketch) {
       let parts = p.sketch.parts;
       if (!parts && p.sketch.text) parts = JSON.parse(skpy.import_json(p.sketch.text, JSON.stringify(p.sketch.opts || {}))).parts;   // a project saved before sketches had their own parts
