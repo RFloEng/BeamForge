@@ -2,7 +2,7 @@
 
 Start from **any BeamNG.drive vehicle**, vanilla or mod, and modify it from there. Lay an **SVJ** ([Standard Vehicle JSON](https://github.com/RFloEng/SVJ-standard-vehicle-json)) over it to compare and, step by step, take its geometry, setup and meshes.
 
-> **Status: v0.2 prototype.** Base vehicle and SVJ overlay work. Applying SVJ values and exporting meshes to the game are next: see the [roadmap](docs/roadmap.md).
+> **Status: v0.3 prototype.** Base vehicle, SVJ overlay, values and export to the game work and are being tested in-game. New and **not yet verified in the game**: the editor's workspaces, cars made from scratch, the Wheels, Aero and Components workspaces. See the [roadmap](docs/roadmap.md).
 
 ## What it does today
 
@@ -14,6 +14,25 @@ Start from **any BeamNG.drive vehicle**, vanilla or mod, and modify it from ther
 - **Compare meshes.** Overlap the base vehicle's meshes (as fitted, or before the fit) and the SVJ's, each with its own opacity and style (part colours, grey, orange, wireframe).
 - **Suspension study.** The SVJ's corners are solved over ±100 mm of wheel travel (the kinematics from FBeam): camber, toe, track change, roll centre, motion ratio and wheel rate curves, kingpin, caster, scrub and trail, with the linkage moving in 3D. After a fit, the base vehicle's own points are solved too and shown beside the SVJ's, so you see what the fit changes. Corners that are over- or under-constrained, or files with an upward Z axis, are named.
 - **SVJ overlay.** **Import SVJ** asks for the folder holding the SVJ: its `.svj.json` (or a `.zip` bundle) and its glTF meshes are found in that folder and below it (a page cannot open a path beside a file it was given, so the folder is picked once; **Files…** takes loose files instead). Its glTF meshes and suspension hardpoints are placed on the base vehicle's front axle and ground. The visual bindings are checked, and wheelbase, tracks and mass are compared with the base vehicle.
+
+## Workspaces
+
+The editor has one 3D view and one project; its workspaces (tabs at the top) choose the panels.
+
+| Workspace | What it does |
+| --- | --- |
+| **Base vehicle** | The BeamNG folders and vehicles; parts, tuning and moves of the vehicle to start from |
+| **SVJ** | An SVJ over the base: compare, fit, take its values |
+| **Sketch** | Mechanisms and structures as points and lines, drawn or imported from a STEP assembly. Each part is a rigid body; parts with an end at the same place share it (ball joint, hinge, weld); frame parts are welded tubes (FBeam's rule: stiffness E A / L capped for stability, strength and mass from the tube, bending beams at welded corners). Undo, mirror, snapping, save as STEP |
+| **Suspension** | The SVJ's corners over wheel travel |
+| **Wheels** | Rims and tyres from the vanilla cars' archetypes, the tyre's values, the SVJ's Pacejka tyre as a benchmark (grip against load) and a fit of BeamNG's load sensitivity to it |
+| **Components** | The masses the car carries (driver, fuel, battery, ballast...): mass, CG and front share against the SVJ's, and the ballast that reaches them |
+| **Aero** | Drag and downforce from the base, the SVJ or by hand, the forces per axle at speed. The drag is written; the downforce is shown only (BeamNG's triangle aero law is not public) |
+| **Powertrain** | Engine curve, inertia, friction, engine braking; gears and final drive; differentials (open, limited slip, viscous, locked) and an AWD split; steering turns; the base's transmission parts. From the base, the SVJ, the vanilla cars' archetypes (learnt from your install: 117 engines, 124 gearboxes, 1126 tyres, 1649 rims on a 2026 install) or by hand |
+| **Checks** | Each node's stiffness and damping against the nodes of ten vanilla cars (ok, high, extreme, beyond), nodes held in fewer than three directions, the sketch's free motions |
+| **Assembly** | What goes into the car; the new vehicle from the base, or **a car made from scratch**: the sketch's structure, the archetypes' rims and tyres (as slots, with their meshes), engine and gearbox blocks, a generated driveline and steering rack, the components, a drag plate |
+
+Projects (**Save** / **Open**, `.beamforge.json`) keep the work, not game files, and the work is also kept in the browser after every change.
 
 ## Run it
 
@@ -47,9 +66,19 @@ beamforge/values.py    springs, dampers and tyres taken from the SVJ
 beamforge/kinematics.py  the base's spring and damper motion ratios, from a small static solve on its beams
 beamforge/rigidity.py  beam stiffness and node weights kept consistent when lengths and masses change
 beamforge/gltf.py      minimal glTF 2.0 reader / writer
+beamforge/skeleton.py  STEP skeletons and sketches: rigid parts, joints, bracing to 3n - 6, helper nodes, jbeam
+beamforge/tubes.py     real tubes behind beams: sections, bending beams, buckling (ported from FBeam)
+beamforge/structure.py nodes held in fewer than three directions; the Checks workspace
+beamforge/powertrain.py  engine, gearbox, differentials and steering as an SVJ-shaped block
+beamforge/donors.py    the vanilla cars' engines, gearboxes, tyres and rims, and archetypes of them
+beamforge/scratch.py   a whole vehicle made from scratch (unverified in-game)
+beamforge/tyres.py     the Magic Formula against BeamNG's tyre load coefficient, and a fit
+beamforge/aero.py      drag and downforce, forces per axle, a drag plate
+beamforge/components.py  masses, mass and CG, ballast
 editor/                the browser editor (three.js + Pyodide); library.js finds the BeamNG folders
 docs/beamng-vehicles.md  how BeamNG builds and modifies vehicles
 docs/roadmap.md        what comes next
+docs/study-step-and-full-editor.md  the study behind the sketch and the workspaces (rigidity of parts, stable values)
 tests/                 unit tests on made-up vehicles and SVJ files
 ```
 

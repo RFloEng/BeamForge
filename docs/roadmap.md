@@ -32,6 +32,24 @@ BeamForge starts from **any BeamNG vehicle** (vanilla or mod) and modifies it fr
    - Generate `flexbodies` entries that bind each mesh to its part's node groups.
    - **Check in-game first:** BeamNG vehicles use `.dae`, so glTF may need converting to DAE. Test this before building on it.
 
+## A full editor and cars from scratch (v0.3, in progress)
+
+Done, to be checked in the game:
+- **Workspaces and projects**: one view, one project (`.beamforge.json`, autosaved in the browser), a workspace per use.
+- **Sketch**: points and lines, drawn or from a STEP assembly; each part rigid (rank 3n - 6, helper nodes where flat or
+  straight), joints from shared ends, tubes from FBeam, stable values from the vanilla cars' measured stiffness and damping.
+- **The vanilla cars' archetypes**: engines, gearboxes, tyres and rims learnt from the user's install.
+- **Powertrain, Wheels, Aero, Components** workspaces, each with the SVJ's values importable.
+- **A car made from scratch** (Assembly): the sketch's structure, archetype rims and tyres as slots, engine and gearbox
+  blocks, a generated driveline (FWD, RWD, AWD) and steering rack, the components, a drag plate.
+
+Next:
+- Test the scratch car in the game, and fix what it does (the first one is in the mods folder as "v1 Scratch test (BF)").
+- The SVJ's body mesh on a car made from scratch (flexbodies on the frame's node groups), so it has a look.
+- Adding beams by hand to a base vehicle with stable values (rigidity.beam_values: the room left at both nodes).
+- Mounting a sketch on a base vehicle (shared nodes, archetype-style mounts): new mechanisms on vanilla cars.
+- Downforce devices once BeamNG's triangle aero can be calibrated in the game; electric drivetrains for scratch cars.
+
 ## Not planned
 
 Rule checking. BeamForge is a general BeamNG and SVJ tool. Spec-series rules live in their own projects (for example FBeam).
