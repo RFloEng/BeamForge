@@ -2584,7 +2584,8 @@ function scratchPanel() {
       <span>Engine</span><span>${ok(eng, eng ? esc(eng.title) : 'choose one in Powertrain, from the vanilla cars')} <button class="mini" data-goto="powertrain">Powertrain</button></span>
       <span>Gearbox</span><span>${ok(gb, gb ? esc(gb.title) : 'choose one in Powertrain')}</span>
       <span>Library</span><span>${ok(library, library ? `${library.vehicles} vehicles` : 'learn from the install in Powertrain')}</span></div>
-    <div class="kv"><span>Wheels</span><span>${ok(rim, rim ? ['front', 'rear'].map((a) => { const c = wheelChoice(a); return `${a} ${esc(c.rim.name)}${c.tyre ? ', ' + esc(c.tyre.name) : ''}`; }).join(' · ') : 'choose rims and tyres')} <button class="mini" data-goto="wheels">Wheels</button></span></div>
+    <div class="kv"><span>Wheels</span><span>${ok(rim, rim ? ['front', 'rear'].map((a) => { const c = wheelChoice(a); return `${a} ${esc(c.rim.name)}${c.tyre ? ', ' + esc(c.tyre.name) : ''}`; }).join(' · ') : 'choose rims and tyres')} <button class="mini" data-goto="wheels">Wheels</button></span>
+      <span>Body</span><span>${svjDoc && svjDoc.meshes.some((m) => m.file) ? `<span class="good">✓</span> the SVJ's chassis mesh, on the frame` : '<span class="q">none (optional: an SVJ with its meshes gives the body)</span>'}</span></div>
     <div class="kv"><span>Layout</span><span><select id="sclayout">${['FWD', 'RWD', 'AWD'].map((l) => `<option ${scratchForm.layout === l ? 'selected' : ''}>${l}</option>`).join('')}</select></span>
       <span>Lock (deg)</span><span><input type="number" id="sclock" value="${scratchForm.lock}" min="15" max="60" step="1"></span>
       <span>Vehicle id</span><span><input id="scid" value="${esc(scratchForm.id || (skel.name || 'scratch').toLowerCase().replace(/[^a-z0-9_]+/g, '_'))}"></span>
@@ -2630,11 +2631,18 @@ async function buildScratch() {
       rim: { front: src(W.front.rim.pick, 'F'), rear: src(W.rear.rim.pick, 'R') },
       tyre: Object.fromEntries(['front', 'rear'].filter((a) => W[a].tyre).map((a) => [a, src(W[a].tyre.pick, a === 'front' ? 'F' : 'R', W[a].f.overrides)])),
       steering: { lock_deg: scratchForm.lock, turns: ptEdit.steering_turns || 3 } };
+    if (svjDoc && svjDoc.meshes.some((m) => m.file))        // the SVJ's body mesh, on the sketch's frame
+      car.body = { svj: svjDoc.svj, files: Object.fromEntries(svjDoc.meshes.filter((m) => m.file).map((m) => [m.id, m.file])) };
     say('Making the car…');
     await new Promise((r) => setTimeout(r, 20));
     const out = JSON.parse(scpy.build(JSON.stringify(car)));
     const zw = new ZipWriter(new BlobWriter('application/zip'));
     for (const [p, text] of Object.entries(out.files)) await zw.add(p, new TextReader(text));
+    for (const [p, b64] of Object.entries(out.binary || {})) {      // the SVJ mesh textures
+      const bin = atob(b64), u8 = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      await zw.add(p, new BlobReader(new Blob([u8])));
+    }
     const blob = await zw.close();
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);

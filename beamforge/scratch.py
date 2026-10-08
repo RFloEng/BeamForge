@@ -544,6 +544,25 @@ def build(car_json):
         nrows.append([n, pos[0], pos[1], pos[2], extra])
     p["nodes"] = nrows
     p["beams"] = [["id1:", "id2:"], {"beamType": "|NORMAL", "beamPrecompression": 1, "beamDeform": 80000, "beamStrength": "FLT_MAX"}] + car.beams
+    # the body: the SVJ's meshes (the sketch is in its frame: they sit on it as they are), following the frame's nodes
+    binary, svj_body = {}, spec.get("body") or {}
+    mesh_files = {}
+    if svj_body.get("svj") and svj_body.get("files"):
+        from . import export
+        bindings = [b for b in svjmod.visual_bindings(svj_body["svj"]) if b["path"] == "chassis"]
+        groups = sorted({f"sk_{p_['name']}" for p_ in res["parts"] if p_["kind"] == "frame"})
+        attach = [{"path": "chassis", "node": b["node"], "mesh_ref": b["mesh_ref"], "part": f"{vid}_body", "groups": groups} for b in bindings]
+        svjm = export.svj_meshes(svj_body["svj"], svj_body["files"], {"yf": yf, "ground": zg}, attach, vid) if attach else []
+        for m in svjm:
+            export._add_flexbody(p, m["name"], m["groups"])
+        if svjm:
+            from . import dae
+            import base64
+            mesh_files[f"vehicles/{vid}/{vid}_svj.dae"] = dae.write(svjm)
+            mats, images = export.svj_materials(svjm, vid)
+            mesh_files[f"vehicles/{vid}/{vid}_svj.materials.json"] = json.dumps(mats, indent=2)
+            binary = {path: base64.b64encode(data).decode("ascii") for path, data in images.items()}
+            car.notes.append(f"body: the SVJ's mesh ({sum(len(m['indices']) // 3 for m in svjm)} triangles, {len(images)} textures) on the frame's nodes")
     jb = {f"{vid}_body": p, **extra_parts}
     info = {"Name": spec.get("name") or vid, "Brand": spec.get("brand") or "BeamForge", "Author": "BeamForge", "Type": "Car",
             "Body Style": "Custom", "Description": "Made from scratch in BeamForge.", "Years": {"min": 2026, "max": 2026},
@@ -557,6 +576,7 @@ def build(car_json):
         bands[rigidity.node_index(car.kg[n], car.ks[n], car.cs[n])[2]] += 1
     return json.dumps({"files": {f"vehicles/{vid}/info.json": json.dumps(info, indent=1),
                                  f"vehicles/{vid}/{vid}.jbeam": json.dumps(jb, indent=1),
-                                 f"vehicles/{vid}/base.pc": json.dumps(pc, indent=1)},
+                                 f"vehicles/{vid}/base.pc": json.dumps(pc, indent=1), **mesh_files},
+                       "binary": binary,
                        "notes": car.notes, "counts": {"nodes": len(car.nodes), "beams": len(car.beams), "mass": mass,
                                                       "bands": bands, "wheels": len(wheels)}})

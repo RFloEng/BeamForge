@@ -163,6 +163,19 @@ class TestScratch(unittest.TestCase):
         self.assertAlmostEqual(out["counts"]["mass"] - plain, 115, delta=0.5)
         self.assertEqual(sum(out["counts"]["bands"][b] for b in ("high", "extreme", "beyond")), 0)   # heavier nodes: still stable
 
+    def test_svj_body(self):
+        import os
+        import tempfile
+        from beamforge import gltf
+        svj = {"assets": {"meshes": [{"id": "m", "uri": "body.glb"}]}, "chassis": {"visual": {"mesh_ref": "m", "node": "SVJ::body::chassis"}}}
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "body.glb")
+            Path(path).write_bytes(gltf.triangles_glb([[[0.5, 0, -1.0], [-3.0, 0, -1.0], [0.5, 0.8, -0.3]]], "SVJ::body::chassis"))
+            out = json.loads(scratch.build(json.dumps(dict(self.car, body={"svj": svj, "files": {"m": path}}))))
+        self.assertIn("vehicles/bf_test_scratch/bf_test_scratch_svj.dae", out["files"])
+        body = json.loads(out["files"]["vehicles/bf_test_scratch/bf_test_scratch.jbeam"])["bf_test_scratch_body"]
+        self.assertEqual(body["flexbodies"][1][:2], ["bf_test_scratch_svj_chassis", ["sk_frame"]])   # the body follows the frame
+
     def test_refused(self):
         bad = dict(self.car, engine={})
         with self.assertRaises(ValueError):
