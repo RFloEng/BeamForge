@@ -521,6 +521,7 @@ $('partcolors').onchange = () => { drawVehicle(); styleMeshes(); drawInspector()
 let downAt = null;
 renderer.domElement.addEventListener('pointerdown', (e) => { downAt = [e.clientX, e.clientY]; });
 renderer.domElement.addEventListener('pointerup', (e) => {
+  if (ws === 'sketch' && skel && downAt && e.button === 0 && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) <= 4) { sketchClick(e); return; }
   if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 4 || e.button !== 0 || !veh || !vehG.visible) return;
   const r = renderer.domElement.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
   let best = null, bestD = 10, bestZ = Infinity;
@@ -1560,27 +1561,66 @@ function drawTiming() {
   $('timing').textContent = parts.join(' · ');
 }
 
-// ---------- STEP skeleton (beamforge/skeleton.py): an assembly of wireframe parts, each a rigid body ----------
-// The line ends are nodes; each part gets the beams that make it rigid (its lines, then braces, helper nodes where it is
-// flat or straight); parts with a node at the same place share it (1 shared node: ball joint, 2: hinge, 3+: welded).
-// The CAD frame is turned into the SVJ frame (X forward, Y right, Z down, origin on the ground under the front axle) by
-// 90 degree turns and an offset, then placed on the base vehicle like an SVJ. Beam values are stable by construction
-// (rigidity.beam_values: vanilla cars' median per beam, no node past their 90th percentile).
-//   skel   { name, text, opts: { rot: [x, y, z] degrees, offset: [x, y, z] m, unit (m per file unit) or null, tol (m),
-//            kinds: {part: "frame" | "link"}, tubes: {part: "tube 40x2 steel_1018"}, min_kg }, res, error }
-// A frame part's lines are welded tubes (FBeam's rule, beamforge/tubes.py): stiffness E A / L capped for stability,
-// strength from the section, nodes carrying the tubes' mass, bending beams at the welded corners. A link is a rigid body.
-let skel = null;
+// ---------- Sketch (beamforge/skeleton.py): mechanisms and structures drawn as points and lines ----------
+// A sketch is an assembly of parts, each a rigid body given by its lines: the line ends are its nodes, and it gets the
+// beams that make it rigid (its lines, bending beams at a frame's welded corners, braces, helper nodes where it is flat
+// or straight). Parts with an end at the same place share that node (1 shared node: a ball joint, 2: a hinge, 3 or more:
+// welded). Frame parts are welded tubes (FBeam's rule, beamforge/tubes.py), links rigid bodies. Beam values are stable
+// by construction (rigidity.beam_values). Points are kept in the SVJ frame (X forward, Y right, Z down, origin on the
+// ground under the front axle; shown in mm) and drawn on the base vehicle like an SVJ.
+// A STEP import fills a sketch; the tools draw and change it; it saves as STEP again and lives in the project.
+//   skel    { name, parts: [{ name, lines: [[a, b]], points: [p] }] (SVJ frame, m), opts: { tol, kinds, tubes, min_kg },
+//             active (the part new lines go into), source (what the STEP import reported), res (the build), error }
+//   skTool  'select' | 'line' | 'point';  skSel: { kind: 'node', id, pos } | { kind: 'line', part, i } | null
+//   skStart the first end of the line being drawn (SVJ frame, m); a click on a snap target ends it and starts the next
+let skel = null, skTool = 'select', skSel = null, skStart = null;
+const skSnap = { sketch: true, vehicle: true, svj: true };
+const skUndo = [], skRedo = [];
 const SKEL_KIND = { line: 0xe0782a, bend: 0x2da44e, brace: 0x2f81f7, helper: 0x9aa4ae };
 const SKEL_BAND = { ok: 0x2da44e, high: 0xd4a72c, extreme: 0xe0782a, beyond: 0xcf222e };
+const PART_NAMES = ['frame', 'subframe', 'upright', 'hub', 'upper_wishbone', 'lower_wishbone', 'upper_link_front', 'upper_link_rear',
+  'lower_link_front', 'lower_link_rear', 'trailing_arm', 'semi_trailing_arm', 'leading_arm', 'tie_rod', 'toe_link', 'camber_link',
+  'drag_link', 'pushrod', 'pullrod', 'rocker', 'strut', 'torque_rod', 'panhard_rod', 'watts_link_rod', 'watts_pivot', 'axle_body',
+  'spring', 'damper', 'arb', 'drop_link', 'rack'];
+
+const skelPlace = () => { const m = (veh && veh.measure) || {}; return { yf: m.front_axle_y || 0, ground: m.ground_z || 0 }; };
+const saeToBng = (p, pl = skelPlace()) => [-p[1], pl.yf - p[0], pl.ground - p[2]];     // svj.from_sae
+const bngToSae = (p, pl = skelPlace()) => [pl.yf - p[1], -p[0], pl.ground - p[2]];     // svj.to_sae
+const toMm = (x) => Math.round(x * 10000) / 10;
+const same = (a, b, tol) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) <= tol;
+const skState = () => JSON.stringify({ parts: skel.parts, active: skel.active, opts: skel.opts, name: skel.name });
+
+function newSketch(name, parts = []) {
+  skel = { name, parts, opts: { tol: 0.002, kinds: {}, tubes: {}, min_kg: 1 }, active: parts.length ? parts[0].name : null,
+    source: null, res: null, error: null };
+  skUndo.length = 0; skRedo.length = 0; skSel = null; skStart = null;
+}
+
+// an edit of the sketch: undoable, then built and drawn again
+function skEdit(fn) {
+  skUndo.push(skState());
+  if (skUndo.length > 200) skUndo.shift();
+  skRedo.length = 0;
+  fn();
+  buildSkeleton();
+  redraw();
+}
+
+function skUndoRedo(from, to) {
+  if (!skel || !from.length) return;
+  to.push(skState());
+  Object.assign(skel, JSON.parse(from.pop()));
+  skSel = null; skStart = null;
+  buildSkeleton();
+  redraw();
+}
 
 function buildSkeleton() {
   if (!skel) return;
-  const m = (veh && veh.measure) || {};
-  const opts = { ...skel.opts, yf: m.front_axle_y || 0, ground: m.ground_z || 0 };
   const t0 = performance.now();
   try {
-    skel.res = JSON.parse(skpy.build_json(skel.text, JSON.stringify(opts)));
+    const any = skel.parts.some((p) => p.lines.length || (p.points || []).length);
+    skel.res = any ? JSON.parse(skpy.build_parts_json(JSON.stringify(skel.parts), JSON.stringify({ ...skel.opts, ...skelPlace() }))) : null;
     skel.error = null;
   } catch (e) {
     skel.res = null;
@@ -1589,85 +1629,286 @@ function buildSkeleton() {
   timing.skeleton = performance.now() - t0;
 }
 
+function activePart(create = true) {
+  let p = skel.parts.find((x) => x.name === skel.active);
+  if (!p && create) {
+    let k = 1;
+    while (skel.parts.some((x) => x.name === `part_${k}`)) k++;
+    p = { name: `part_${k}`, lines: [], points: [] };
+    skel.parts.push(p);
+    skel.active = p.name;
+  }
+  return p;
+}
+
 function drawSkeleton() {
   skelG.clear();
-  $('skeltoggle').hidden = !(skel && skel.res);
-  if (!skel || !skel.res) return;
-  const N = skel.res.nodes;
-  for (const kind of Object.keys(SKEL_KIND)) {
-    const pts = [];
-    for (const b of skel.res.beams) if (b.kind === kind) pts.push(v3(N[b.a].bng), v3(N[b.b].bng));
-    if (!pts.length) continue;
-    const geo = new THREE.BufferGeometry().setFromPoints(pts);
-    skelG.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: SKEL_KIND[kind], transparent: kind !== 'line', opacity: kind === 'line' ? 1 : 0.7 })));
+  $('skeltoggle').hidden = !skel;
+  if (!skel) return;
+  const N = skel.res ? skel.res.nodes : {};
+  if (skel.res) {
+    for (const kind of Object.keys(SKEL_KIND)) {
+      const pts = [];
+      for (const b of skel.res.beams) if (b.kind === kind) pts.push(v3(N[b.a].bng), v3(N[b.b].bng));
+      if (!pts.length) continue;
+      skelG.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts),
+        new THREE.LineBasicMaterial({ color: SKEL_KIND[kind], transparent: kind !== 'line', opacity: kind === 'line' ? 1 : 0.7 })));
+    }
+  }
+  const act = skel.parts.find((x) => x.name === skel.active);       // the active part's lines on top, brighter
+  if (act && act.lines.length) {
+    skelG.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(act.lines.flatMap(([a, b]) => [v3(saeToBng(a)), v3(saeToBng(b))])),
+      new THREE.LineBasicMaterial({ color: 0xffb35c, depthTest: false })));
   }
   const geo = new THREE.SphereGeometry(0.012, 10, 6);
   for (const [id, n] of Object.entries(N)) {
     const color = n.reference ? 0x8250df : n.helper ? 0x9aa4ae : SKEL_BAND[n.band] || 0x57606a;
     const s = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color }));
     s.position.copy(v3(n.bng));
-    s.userData = { skelNode: id };
     skelG.add(s);
   }
+  const mark = (pos, color, size) => {
+    const s = new THREE.Mesh(new THREE.SphereGeometry(size, 14, 10), new THREE.MeshBasicMaterial({ color, depthTest: false }));
+    s.position.copy(v3(saeToBng(pos)));
+    s.renderOrder = 10;
+    skelG.add(s);
+  };
+  if (skSel && skSel.kind === 'node') mark(skSel.pos, 0xcf222e, 0.022);
+  if (skSel && skSel.kind === 'line') {
+    const p = skel.parts.find((x) => x.name === skSel.part), l = p && p.lines[skSel.i];
+    if (l) {
+      skelG.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([v3(saeToBng(l[0])), v3(saeToBng(l[1]))]),
+        new THREE.LineBasicMaterial({ color: 0xcf222e, depthTest: false })));
+    }
+  }
+  if (skStart) mark(skStart, 0xf2cc60, 0.02);
   skelG.visible = $('showskel').checked;
 }
 
+// the snap target nearest the pointer on screen (within 10 px): a sketch node, an SVJ hardpoint, a vehicle node; else,
+// for the select tool, the sketch line nearest within 6 px
+function skelPick(mx, my, r, lines) {
+  const p = new THREE.Vector3();
+  const scr = (bng) => { p.copy(v3(bng)).project(camera); return [(p.x + 1) / 2 * r.width, (1 - p.y) / 2 * r.height, p.z]; };
+  let best = null, bd = 10;
+  const consider = (bng, hit) => {
+    const s = scr(bng);
+    if (s[2] > 1) return;
+    const d = Math.hypot(s[0] - mx, s[1] - my);
+    if (d < bd) { bd = d; best = hit; }
+  };
+  if (skSnap.sketch && skel.res) for (const [id, n] of Object.entries(skel.res.nodes)) if (!n.helper) consider(n.bng, { kind: 'node', id, pos: n.pos, label: id });
+  if (skSnap.svj) for (const h of svjHp) consider(h.pos, { kind: 'point', pos: bngToSae(h.pos), label: `${h.corner} ${h.name}` });
+  if (skSnap.vehicle && veh && vehG.visible) for (const id of nodeIds) consider(veh.geometry.nodes[id], { kind: 'point', pos: bngToSae(veh.geometry.nodes[id]), label: id });
+  if (best || !lines) return best;
+  let bl = null, bld = 6;
+  skel.parts.forEach((part) => part.lines.forEach(([a, b], i) => {
+    const A = scr(saeToBng(a)), B = scr(saeToBng(b));
+    if (A[2] > 1 || B[2] > 1) return;
+    const dx = B[0] - A[0], dy = B[1] - A[1], L = dx * dx + dy * dy;
+    const t = L ? Math.max(0, Math.min(1, ((mx - A[0]) * dx + (my - A[1]) * dy) / L)) : 0;
+    const d = Math.hypot(A[0] + t * dx - mx, A[1] + t * dy - my);
+    if (d < bld) { bld = d; bl = { kind: 'line', part: part.name, i }; }
+  }));
+  return bl;
+}
+
+function sketchClick(e) {
+  const r = renderer.domElement.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  const hit = skelPick(mx, my, r, skTool === 'select');
+  if (skTool === 'select') {
+    skSel = hit ? (hit.kind === 'point' ? null : hit) : null;
+    if (hit && hit.kind === 'line') skel.active = hit.part;
+    drawSkeleton(); drawInspector();
+    return;
+  }
+  if (!hit) { showIssues([{ level: 'INFO', rule: 'sketch', message: 'Click a node, an SVJ hardpoint or a vehicle node (or type the coordinates in the panel).' }]); return; }
+  if (skTool === 'point') { skEdit(() => { activePart().points.push(hit.pos.map((x) => +x.toFixed(6))); }); return; }
+  if (!skStart) { skStart = hit.pos.slice(); drawSkeleton(); drawInspector(); return; }
+  if (same(skStart, hit.pos, 1e-6)) return;
+  const a = skStart.map((x) => +x.toFixed(6)), b = hit.pos.map((x) => +x.toFixed(6));
+  skEdit(() => { activePart().lines.push([a, b]); skStart = b; });
+}
+
+// a node moved: every line end and point of every part at its place follows (the node is shared)
+function moveSketchNode(from, to) {
+  const tol = skel.opts.tol;
+  skEdit(() => {
+    for (const p of skel.parts) {
+      p.lines = p.lines.map(([a, b]) => [same(a, from, tol) ? to.slice() : a, same(b, from, tol) ? to.slice() : b]);
+      p.points = (p.points || []).map((q) => (same(q, from, tol) ? to.slice() : q));
+    }
+    skSel = { kind: 'node', id: skSel.id, pos: to.slice() };
+  });
+}
+
+function deleteSketchNode(pos) {
+  const tol = skel.opts.tol;
+  skEdit(() => {
+    for (const p of skel.parts) {
+      p.lines = p.lines.filter(([a, b]) => !same(a, pos, tol) && !same(b, pos, tol));
+      p.points = (p.points || []).filter((q) => !same(q, pos, tol));
+    }
+    skSel = null;
+  });
+}
+
+// turn (90 degrees about an axis), move or scale the active part (about its centre) or the whole sketch (about the origin)
+function transformSketch(f, onlyActive) {
+  skEdit(() => {
+    const parts = onlyActive ? skel.parts.filter((p) => p.name === skel.active) : skel.parts;
+    const all = parts.flatMap((p) => p.lines.flat().concat(p.points || []));
+    const c = onlyActive && all.length ? [0, 1, 2].map((i) => all.reduce((s, q) => s + q[i], 0) / all.length) : [0, 0, 0];
+    const g = (q) => { const d = f([q[0] - c[0], q[1] - c[1], q[2] - c[2]]); return d.map((x, i) => +(x + c[i]).toFixed(6)); };
+    for (const p of parts) { p.lines = p.lines.map(([a, b]) => [g(a), g(b)]); p.points = (p.points || []).map(g); }
+    skSel = null; skStart = null;
+  });
+}
+const TURN = { x: ([x, y, z]) => [x, -z, y], y: ([x, y, z]) => [z, y, -x], z: ([x, y, z]) => [-y, x, z] };
+
+function renamePart(old, name) {
+  name = name.trim().replace(/[^\w]+/g, '_');
+  if (!name || name === old || skel.parts.some((p) => p.name === name)) return;
+  skEdit(() => {
+    skel.parts.find((p) => p.name === old).name = name;
+    for (const k of ['kinds', 'tubes']) if (old in skel.opts[k]) { skel.opts[k][name] = skel.opts[k][old]; delete skel.opts[k][old]; }
+    if (skel.active === old) skel.active = name;
+  });
+}
+
 function skeletonPanel() {
-  if (!skel) return `<h2>Skeleton</h2><p class="quiet">Import STEP to build a structure from a CAD assembly of points and lines:
-    each part is a rigid body, the line ends are its nodes, parts with an end at the same place share it.</p>`;
-  const o = skel.opts, r = skel.res;
-  const turns = (ax) => `<select data-skrot="${ax}">${[0, 90, 180, 270].map((d) => `<option value="${d}" ${o.rot[ax] === d ? 'selected' : ''}>${d}°</option>`).join('')}</select>`;
-  const off = (ax) => `<input type="number" step="0.001" data-skoff="${ax}" value="${o.offset[ax]}">`;
-  const units = [['', 'as the file'], ['0.001', 'mm'], ['0.01', 'cm'], ['1', 'm'], ['0.0254', 'inch']];
-  let body = '';
-  if (skel.error) body = `<p class="bad">${esc(skel.error)}</p>`;
+  if (!skel) return `<h2>Sketch</h2><p class="quiet">Draw mechanisms and structures as points and lines, or import a STEP assembly of
+    wireframe parts. Each part is a rigid body; parts with an end at the same place share it.</p>
+    <p><button id="sknew" class="primary">New sketch</button> <button id="skimport">Import STEP…</button></p>`;
+  const r = skel.res, o = skel.opts;
+  const xyz = (id, q) => ['X', 'Y', 'Z'].map((a, i) => `<input type="number" step="1" id="${id}${i}" value="${q ? toMm(q[i]) : ''}" title="${a} (mm)">`).join('');
+  const tools = [['select', 'Select', 'Click a node or a line to see and change it (V)'], ['line', 'Line', 'Click two points: a node, an SVJ hardpoint or a vehicle node; it goes on from the last end (L, Esc to stop)'],
+    ['point', 'Point', 'Click a point to add it to the active part as a reference point (P)']];
+  const act = skel.parts.find((p) => p.name === skel.active);
+  let sel = '';
+  if (skSel && skSel.kind === 'node') {
+    const users = skel.parts.filter((p) => p.lines.some(([a, b]) => same(a, skSel.pos, o.tol) || same(b, skSel.pos, o.tol))).map((p) => p.name);
+    sel = `<h3>Node ${esc(skSel.id)}</h3><div class="xyz">${xyz('sknode', skSel.pos)} <span class="q">mm</span></div>
+      <p class="quiet">${users.length > 1 ? `Shared by ${users.map(esc).join(', ')}: ${users.length === 2 ? 'a joint' : 'a joint of several parts'}.` : `In ${esc(users[0] || '–')}.`}</p>
+      <div class="inl"><button id="sknodemove" class="mini">Move here</button><button id="sknodestart" class="mini">Start a line here</button><button id="sknodedel" class="mini">Delete the node</button></div>`;
+  } else if (skSel && skSel.kind === 'line') {
+    const l = (skel.parts.find((p) => p.name === skSel.part) || { lines: [] }).lines[skSel.i];
+    if (l) sel = `<h3>Line of ${esc(skSel.part)}</h3><div class="kv"><span>From</span><span>${l[0].map(toMm).join(' / ')} mm</span><span>To</span><span>${l[1].map(toMm).join(' / ')} mm</span>
+      <span>Length</span><span>${fmt(Math.hypot(l[1][0] - l[0][0], l[1][1] - l[0][1], l[1][2] - l[0][2]) * 1000, 1)} mm</span></div>
+      <div class="inl"><button id="sklinedel" class="mini">Delete the line</button></div>`;
+  }
+  let report = '';
+  if (skel.error) report = `<p class="bad">${esc(skel.error)}</p>`;
   else if (r) {
     const rep = r.report;
-    const skipped = Object.entries(r.skipped || {});
-    body = `<div class="kv"><span>Unit</span><span>${esc(r.unit_name)}</span>
-        <span>Parts / lines</span><span>${rep.parts} / ${rep.lines}</span>
-        <span>Nodes</span><span>${rep.nodes} <span class="q">${rep.helper_nodes} helper, ${rep.ends_merged} ends merged, ${rep.splits} lines split</span></span>
-        <span>Beams</span><span>${rep.beams} <span class="q">${rep.bending} bending (welded corners), ${rep.braces} braces for rigidity</span></span>
-        <span>Mass</span><span>${fmt(rep.node_mass, 1)} kg <span class="q">tubes ${fmt(rep.tube_mass, 1)} kg</span></span>
+    report = `<div class="kv"><span>Nodes</span><span>${rep.nodes} <span class="q">${rep.helper_nodes} helper, ${rep.splits} lines split</span></span>
+        <span>Beams</span><span>${rep.beams} <span class="q">${rep.bending} bending, ${rep.braces} braces</span></span>
         <span>Rigid bodies</span><span>${rep.bodies}</span>
         <span>Joints</span><span>${rep.joints.ball} ball, ${rep.joints.hinge} hinge, ${rep.joints.weld} weld</span>
         <span>Free motions</span><span>${rep.free_motions} <span class="q">${rep.mechanism === null ? '' : `6 of the whole, ${rep.mechanism} of the mechanism`}</span></span>
-        <span>Stability</span><span>${Object.entries(rep.bands || {}).filter(([, n]) => n).map(([b, n]) => `${n} ${b}`).join(', ')}</span></div>
+        <span>Mass</span><span>${fmt(rep.node_mass, 1)} kg <span class="q">tubes ${fmt(rep.tube_mass, 1)} kg</span></span>
+        <span>Stability</span><span>${Object.entries(rep.bands || {}).filter(([, n]) => n).map(([b, n]) => `<span class="band ${b}">${n} ${b}</span>`).join(' ')}</span></div>
       ${rep.not_rigid.length ? `<p class="bad">Not rigid: ${esc(rep.not_rigid.map((p) => p.join('+')).join(', '))}</p>` : ''}
-      ${skipped.length ? `<p class="quiet">Not read (yet): ${esc(skipped.map(([k, n]) => `${n} ${k}`).join(', '))}</p>` : ''}
-      ${(r.notes || []).map((n) => `<p class="quiet">${esc(n)}</p>`).join('')}
-      <details open><summary>Parts</summary><table class="cmp"><tr><th>Part</th><th>Kind</th><th>Tube</th><th>kg</th></tr>
-        ${r.parts.map((p) => `<tr><td title="${esc(p.role || 'structure')}, ${p.nodes.length} nodes, ${p.lines} lines">${esc(p.name)}</td>
-          <td><select data-skkind="${esc(p.name)}">${['frame', 'link'].map((k) => `<option ${p.kind === k ? 'selected' : ''}>${k}</option>`).join('')}</select></td>
-          <td><input data-sktube="${esc(p.name)}" value="${esc(p.tube)}" size="18" title="tube|sqtube DxT material (mm): steel_1018, steel_4130n, al_6061_t6"></td>
-          <td>${fmt(p.mass, 2)}${p.buckling ? ` <span class="q" title="members that buckle before they yield">${p.buckling} buckle</span>` : ''}</td></tr>`).join('')}</table></details>
-      <details><summary>Joints</summary><div class="kv">${r.joints.map((j) => `<span>${esc(j.parts[0].join('+'))} – ${esc(j.parts[1].join('+'))}</span><span>${esc(j.type)} (${esc(j.nodes.join(', '))})</span>`).join('') || '<span>none</span><span></span>'}</div></details>
-      <p class="quiet">Lines: orange the CAD's (tubes), green bending beams at welded corners, blue braces, grey to helper nodes. Nodes: green, amber, orange, red by their stiffness and damping against vanilla cars' nodes (ok, high, extreme, beyond: Checks).</p>
-      <p><button id="skjbeam">Download jbeam</button></p>`;
+      <details><summary>Joints</summary><div class="kv">${r.joints.map((j) => `<span>${esc(j.parts[0].join('+'))} – ${esc(j.parts[1].join('+'))}</span><span>${esc(j.type)}</span>`).join('') || '<span>none</span><span></span>'}</div></details>`;
   }
-  return `<h2>Skeleton <span class="q">${esc(skel.name)}</span></h2>
-    <p class="quiet">CAD frame to the SVJ frame (X forward, Y right, Z down, origin on the ground under the front axle): turns about X, then Y, then Z, and an offset in metres.</p>
-    <div class="kv"><span>Turn X / Y / Z</span><span>${turns(0)} ${turns(1)} ${turns(2)}</span>
-      <span>Offset X / Y / Z (m)</span><span>${off(0)} ${off(1)} ${off(2)}</span>
-      <span>Unit</span><span><select id="skunit">${units.map(([v, l]) => `<option value="${v}" ${String(o.unit || '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></span>
+  const info = (pn) => (r && r.parts.find((x) => x.name === pn)) || {};
+  const src = skel.source ? `<p class="quiet">From a STEP in ${esc(skel.source.unit_name)}${Object.keys(skel.source.skipped || {}).length ? `; not read: ${esc(Object.entries(skel.source.skipped).map(([k, n]) => `${n} ${k}`).join(', '))}` : ''}.</p>` : '';
+  return `<h2>Sketch <input id="skname" value="${esc(skel.name)}" size="16"></h2>
+    <div class="inl"><button id="skundo" class="mini" ${skUndo.length ? '' : 'disabled'} title="Ctrl+Z">undo</button><button id="skredo" class="mini" ${skRedo.length ? '' : 'disabled'} title="Ctrl+Y">redo</button>
+      <button id="sknew" class="mini">new</button><button id="skimport" class="mini">import STEP</button><button id="skstep" class="mini">save STEP</button>
+      <button id="skjbeam" class="mini" ${r ? '' : 'disabled'}>jbeam</button><button id="skclose" class="mini">close</button></div>
+    ${src}
+    <h3>Draw</h3>
+    <div class="inl">${tools.map(([k, l, t]) => `<button class="${skTool === k ? 'on' : ''}" data-sktool="${k}" title="${esc(t)}">${l}</button>`).join('')}</div>
+    <p class="quiet">Snap to <label><input type="checkbox" data-sksnap="sketch" ${skSnap.sketch ? 'checked' : ''}> sketch nodes</label>
+      <label><input type="checkbox" data-sksnap="svj" ${skSnap.svj ? 'checked' : ''}> SVJ hardpoints</label>
+      <label><input type="checkbox" data-sksnap="vehicle" ${skSnap.vehicle ? 'checked' : ''}> vehicle nodes</label></p>
+    ${skStart ? `<p class="quiet">Drawing from ${skStart.map(toMm).join(' / ')} mm: click the next point. <button id="skstop" class="mini">stop (Esc)</button></p>` : ''}
+    <details ${skStart || skTool === 'line' ? 'open' : ''}><summary>Type a line (mm, X forward, Y right, Z down)</summary>
+      <div class="xyz"><span class="q">from</span>${xyz('skfrom', skStart || (skSel && skSel.kind === 'node' ? skSel.pos : null))}</div>
+      <div class="xyz"><span class="q">to</span>${xyz('skto', null)}</div>
+      <button id="skaddline" class="mini">Add to ${esc(act ? act.name : 'a new part')}</button></details>
+    ${sel}
+    <h3>Parts</h3>
+    <table class="cmp"><tr><th></th><th>Part</th><th>Kind</th><th>Tube</th><th>kg</th><th></th></tr>
+      ${skel.parts.map((p) => { const x = info(p.name); return `<tr class="${p.name === skel.active ? 'on' : ''}">
+        <td><input type="radio" name="skactive" data-skactive="${esc(p.name)}" ${p.name === skel.active ? 'checked' : ''} title="New lines go into the active part"></td>
+        <td><input data-skrename="${esc(p.name)}" value="${esc(p.name)}" size="13" list="skpartnames" title="${p.lines.length} lines, ${(p.points || []).length} points${x.role ? '; ' + x.role : ''}"></td>
+        <td><select data-skkind="${esc(p.name)}">${['frame', 'link'].map((k) => `<option ${(x.kind || o.kinds[p.name] || '') === k ? 'selected' : ''}>${k}</option>`).join('')}</select></td>
+        <td><input data-sktube="${esc(p.name)}" value="${esc(x.tube || o.tubes[p.name] || '')}" size="12" title="tube|sqtube DxT material (mm): steel_1018, steel_4130n, al_6061_t6"></td>
+        <td>${fmt(x.mass, 1)}</td>
+        <td><button class="mini" data-skmirror="${esc(p.name)}" title="A mirror image on the other side (Y to -Y), named for that side">mirror</button><button class="mini" data-skdel="${esc(p.name)}">×</button></td></tr>`; }).join('')}</table>
+    <div class="inl"><input id="sknewpart" list="skpartnames" placeholder="lower_wishbone_fl, frame…" size="18"><button id="skaddpart" class="mini">Add part</button></div>
+    <datalist id="skpartnames">${PART_NAMES.flatMap((n) => ['frame', 'subframe', 'rack', 'watts_pivot'].includes(n) ? [n] : [n + '_fl', n + '_fr', n + '_rl', n + '_rr']).map((n) => `<option value="${n}">`).join('')}</datalist>
+    <details><summary>Turn, move, scale</summary>
+      <p><label><input type="checkbox" id="skonlyact" checked> only the active part (about its centre)</label></p>
+      <div class="inl">${['x', 'y', 'z'].map((a) => `<button class="mini" data-skturn="${a}">turn 90° about ${a.toUpperCase()}</button>`).join('')}</div>
+      <div class="xyz"><span class="q">move</span>${xyz('skmove', [0, 0, 0])}<button id="skmoveok" class="mini">move</button></div>
+      <div class="inl"><span class="q">scale ×</span><input type="number" id="skscale" value="1" step="0.001" style="width:6em"><button id="skscaleok" class="mini">scale</button>
+        <span class="q" title="A STEP read in the wrong unit: 0.001 (it was in mm, read as m), 1000, 25.4…">unit fix</span></div></details>
+    <details><summary>Settings</summary><div class="kv">
       <span>Merge tolerance (mm)</span><span><input type="number" step="0.5" min="0.1" id="sktol" value="${o.tol * 1000}"></span>
-      <span title="A node weighs its share of the tubes, but no less than this: heavier nodes allow stiffer beams">Minimum node mass (kg)</span><span><input type="number" step="0.1" min="0.1" id="skminkg" value="${o.min_kg}"></span></div>
-    ${body}
-    <p><button id="skclose" class="mini">Close skeleton</button></p>`;
+      <span title="A node weighs its share of the tubes, but no less than this: heavier nodes allow stiffer beams">Minimum node mass (kg)</span><span><input type="number" step="0.1" min="0.1" id="skminkg" value="${o.min_kg}"></span></div></details>
+    <h3>Structure</h3>
+    ${report || '<p class="quiet">Draw a line to start.</p>'}
+    <p class="quiet">Lines: orange the parts' (tubes), green bending beams at welded corners, blue braces, grey to helper nodes; the active part's lines light.
+      Nodes: green, amber, orange, red by stiffness against vanilla cars' (Checks).</p>`;
 }
 
 function bindSkeleton(el) {
+  const val = (id) => [0, 1, 2].map((i) => +$(id + i).value / 1000);
+  const filled = (id) => [0, 1, 2].every((i) => $(id + i) && $(id + i).value !== '' && Number.isFinite(+$(id + i).value));
+  if ($('sknew')) $('sknew').onclick = () => { newSketch('sketch'); setWorkspace('sketch'); };
+  if ($('skimport')) $('skimport').onclick = () => $('stepfile').click();
   if (!skel) return;
-  const rebuild = () => { buildSkeleton(); redraw(); };
-  el.querySelectorAll('[data-skrot]').forEach((x) => { x.onchange = () => { skel.opts.rot[+x.dataset.skrot] = +x.value; rebuild(); }; });
-  el.querySelectorAll('[data-skoff]').forEach((x) => { x.onchange = () => { skel.opts.offset[+x.dataset.skoff] = +x.value || 0; rebuild(); }; });
-  if ($('skunit')) $('skunit').onchange = () => { skel.opts.unit = $('skunit').value ? +$('skunit').value : null; rebuild(); };
-  if ($('sktol')) $('sktol').onchange = () => { skel.opts.tol = Math.max(0.0001, (+$('sktol').value || 2) / 1000); rebuild(); };
-  if ($('skminkg')) $('skminkg').onchange = () => { skel.opts.min_kg = Math.max(0.1, +$('skminkg').value || 1); rebuild(); };
-  el.querySelectorAll('[data-skkind]').forEach((x) => { x.onchange = () => { skel.opts.kinds[x.dataset.skkind] = x.value; delete skel.opts.tubes[x.dataset.skkind]; rebuild(); }; });
-  el.querySelectorAll('[data-sktube]').forEach((x) => { x.onchange = () => { skel.opts.tubes[x.dataset.sktube] = x.value.trim(); rebuild(); }; });
-  if ($('skclose')) $('skclose').onclick = () => { skel = null; redraw(); };
-  if ($('skjbeam')) $('skjbeam').onclick = skeletonJbeam;
+  $('skundo').onclick = () => skUndoRedo(skUndo, skRedo);
+  $('skredo').onclick = () => skUndoRedo(skRedo, skUndo);
+  $('skname').onchange = () => { skel.name = $('skname').value.trim() || 'sketch'; redraw(); };
+  $('skclose').onclick = () => { if (confirm('Close the sketch? It is not kept unless saved (project or STEP).')) { skel = null; skSel = null; skStart = null; redraw(); } };
+  $('skstep').onclick = () => download(skel.name.replace(/\.(step|stp)$/i, '') + '.step', skpy.step_json(JSON.stringify(skel.parts)), 'application/step');
+  $('skjbeam').onclick = skeletonJbeam;
+  el.querySelectorAll('[data-sktool]').forEach((b) => { b.onclick = () => { skTool = b.dataset.sktool; skStart = null; redraw(); }; });
+  el.querySelectorAll('[data-sksnap]').forEach((c) => { c.onchange = () => { skSnap[c.dataset.sksnap] = c.checked; }; });
+  if ($('skstop')) $('skstop').onclick = () => { skStart = null; redraw(); };
+  $('skaddline').onclick = () => {
+    if (!filled('skfrom') || !filled('skto')) { showIssues([{ level: 'ERROR', rule: 'sketch', message: 'Both ends need X, Y and Z (mm).' }]); return; }
+    const a = val('skfrom'), b = val('skto');
+    if (same(a, b, 1e-6)) return;
+    skEdit(() => { activePart().lines.push([a, b]); skStart = b; });
+  };
+  if ($('sknodemove')) $('sknodemove').onclick = () => { if (filled('sknode')) moveSketchNode(skSel.pos, val('sknode')); };
+  if ($('sknodestart')) $('sknodestart').onclick = () => { skStart = skSel.pos.slice(); skTool = 'line'; redraw(); };
+  if ($('sknodedel')) $('sknodedel').onclick = () => deleteSketchNode(skSel.pos);
+  if ($('sklinedel')) $('sklinedel').onclick = () => skEdit(() => { skel.parts.find((p) => p.name === skSel.part).lines.splice(skSel.i, 1); skSel = null; });
+  el.querySelectorAll('[data-skactive]').forEach((x) => { x.onchange = () => { skel.active = x.dataset.skactive; redraw(); }; });
+  el.querySelectorAll('[data-skrename]').forEach((x) => { x.onchange = () => renamePart(x.dataset.skrename, x.value); });
+  el.querySelectorAll('[data-skkind]').forEach((x) => { x.onchange = () => skEdit(() => { skel.opts.kinds[x.dataset.skkind] = x.value; delete skel.opts.tubes[x.dataset.skkind]; }); });
+  el.querySelectorAll('[data-sktube]').forEach((x) => { x.onchange = () => skEdit(() => { skel.opts.tubes[x.dataset.sktube] = x.value.trim(); }); });
+  el.querySelectorAll('[data-skmirror]').forEach((x) => { x.onclick = () => {
+    const p = skel.parts.find((q) => q.name === x.dataset.skmirror);
+    const m = JSON.parse(skpy.mirror_json(JSON.stringify(p)));
+    while (skel.parts.some((q) => q.name === m.name)) m.name += '_2';
+    skEdit(() => {
+      skel.parts.push(m);
+      for (const k of ['kinds', 'tubes']) if (p.name in skel.opts[k]) skel.opts[k][m.name] = skel.opts[k][p.name];
+      skel.active = m.name;
+    });
+  }; });
+  el.querySelectorAll('[data-skdel]').forEach((x) => { x.onclick = () => skEdit(() => {
+    skel.parts = skel.parts.filter((p) => p.name !== x.dataset.skdel);
+    if (skel.active === x.dataset.skdel) skel.active = skel.parts.length ? skel.parts[0].name : null;
+    skSel = null;
+  }); });
+  $('skaddpart').onclick = () => {
+    const name = $('sknewpart').value.trim().replace(/[^\w]+/g, '_');
+    if (!name || skel.parts.some((p) => p.name === name)) return;
+    skEdit(() => { skel.parts.push({ name, lines: [], points: [] }); skel.active = name; });
+  };
+  el.querySelectorAll('[data-skturn]').forEach((b) => { b.onclick = () => transformSketch(TURN[b.dataset.skturn], $('skonlyact').checked); });
+  $('skmoveok').onclick = () => { const d = val('skmove'); transformSketch((q) => [q[0] + d[0], q[1] + d[1], q[2] + d[2]], $('skonlyact').checked); };
+  $('skscaleok').onclick = () => { const k = +$('skscale').value; if (k > 0 && k !== 1) transformSketch((q) => q.map((x) => x * k), $('skonlyact').checked); };
+  $('sktol').onchange = () => skEdit(() => { skel.opts.tol = Math.max(0.0001, (+$('sktol').value || 2) / 1000); });
+  $('skminkg').onchange = () => skEdit(() => { skel.opts.min_kg = Math.max(0.1, +$('skminkg').value || 1); });
 }
 
 function download(name, text, type = 'application/json') {
@@ -1679,9 +1920,8 @@ function download(name, text, type = 'application/json') {
 }
 
 function skeletonJbeam() {
-  const m = (veh && veh.measure) || {};
-  const opts = { ...skel.opts, yf: m.front_axle_y || 0, ground: m.ground_z || 0 };
-  download(skel.name.replace(/\.(step|stp)$/i, '') + '.jbeam', skpy.jbeam_json(skel.text, JSON.stringify(opts), 'skeleton'));
+  download(skel.name.replace(/\.(step|stp)$/i, '') + '.jbeam',
+    skpy.jbeam_parts_json(JSON.stringify(skel.parts), JSON.stringify({ ...skel.opts, ...skelPlace() }), 'skeleton'));
 }
 
 $('stepin').onclick = () => $('stepfile').click();
@@ -1689,11 +1929,15 @@ $('stepfile').onchange = async (e) => {
   const f = e.target.files[0];
   e.target.value = '';
   if (!f) return;
-  skel = { name: f.name, text: await f.text(), opts: { rot: [0, 0, 0], offset: [0, 0, 0], unit: null, tol: 0.002, kinds: {}, tubes: {}, min_kg: 1 }, res: null, error: null };
+  try {
+    const imp = JSON.parse(skpy.import_json(await f.text(), '{}'));
+    newSketch(f.name.replace(/\.(step|stp)$/i, ''), imp.parts);
+    skel.source = { unit_name: imp.unit_name, skipped: imp.skipped, notes: imp.notes };
+  } catch (err) { showIssues([{ level: 'ERROR', rule: 'sketch', message: `Could not read ${f.name}: ${pyError(err)}` }]); return; }
   buildSkeleton();
-  if (ws !== 'sketch') ws = 'sketch';
+  ws = 'sketch';
   redraw();
-  if (!veh) {                                   // nothing else in the view: aim at the skeleton
+  if (!veh) {                                   // nothing else in the view: aim at the sketch
     const box = new THREE.Box3().setFromObject(skelG);
     if (!box.isEmpty()) {
       const c = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3()).length() || 1;
@@ -1703,6 +1947,17 @@ $('stepfile').onchange = async (e) => {
   }
 };
 $('showskel').onchange = () => { skelG.visible = $('showskel').checked; };
+
+// keys in the Sketch workspace (not while typing in a field)
+document.addEventListener('keydown', (e) => {
+  if (ws !== 'sketch' || !skel || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement && document.activeElement.tagName)) return;
+  const k = e.key.toLowerCase();
+  if ((e.ctrlKey || e.metaKey) && k === 'z' && !e.shiftKey) { e.preventDefault(); skUndoRedo(skUndo, skRedo); }
+  else if ((e.ctrlKey || e.metaKey) && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); skUndoRedo(skRedo, skUndo); }
+  else if (k === 'escape') { skStart = null; skSel = null; redraw(); }
+  else if (k === 'delete' && skSel) { if (skSel.kind === 'node') deleteSketchNode(skSel.pos); else skEdit(() => { skel.parts.find((p) => p.name === skSel.part).lines.splice(skSel.i, 1); skSel = null; }); }
+  else if (!e.ctrlKey && !e.metaKey && !e.altKey && ({ v: 'select', l: 'line', p: 'point' })[k]) { skTool = { v: 'select', l: 'line', p: 'point' }[k]; skStart = null; redraw(); }
+});
 
 // ---------- workspaces: one view, the panels of each use ----------
 // The 3D view, the vehicle and everything loaded are shared; a workspace only chooses the panels (right) and what the
@@ -1940,7 +2195,7 @@ function projectData() {
       fit: vehEdit.fit, fitReport: vehEdit.fitReport, fitOverrides: vehEdit.fitOverrides,
       hidden: [...hiddenParts], locked: [...lockedParts] } : pendingBase,
     svj: svjDoc ? { name: svjName || 'project.svj.json', doc: svjDoc.svj } : null,
-    sketch: skel ? { name: skel.name, text: skel.text, opts: skel.opts } : null,
+    sketch: skel ? { name: skel.name, parts: skel.parts, opts: skel.opts, active: skel.active } : null,
     take: takeValues, export: exportForm, ties: savedTies(), powertrain: ptEdit,
   };
 }
@@ -1978,7 +2233,15 @@ async function applyProject(p) {
       await finishImport(p.svj.name);
     }
     if (p.powertrain) ptEdit = { ...PT_EMPTY, ...p.powertrain };
-    if (p.sketch) { skel = { ...p.sketch, res: null, error: null }; buildSkeleton(); }
+    if (p.sketch) {
+      let parts = p.sketch.parts;
+      if (!parts && p.sketch.text) parts = JSON.parse(skpy.import_json(p.sketch.text, JSON.stringify(p.sketch.opts || {}))).parts;   // a project saved before sketches had their own parts
+      newSketch(p.sketch.name || 'sketch', parts || []);
+      skel.opts = { ...skel.opts, ...(p.sketch.opts || {}) };
+      for (const k of ['rot', 'offset', 'unit']) delete skel.opts[k];
+      if (p.sketch.active) skel.active = p.sketch.active;
+      buildSkeleton();
+    }
   } finally { restoring = false; }
   redraw();
   showIssues([{ level: 'PASS', rule: 'project', message: `Project opened (saved ${new Date(p.saved).toLocaleString()}).` },
@@ -2047,6 +2310,12 @@ window.beamforge = {
   get skeleton() { return skel; },
   get workspace() { return ws; },
   get powertrain() { return ptEdit; },
+  get sketchTool() { return skTool; },
+  // where a sketch node is on screen (client px), to click it in a test
+  skelScreen(id) {
+    const r = renderer.domElement.getBoundingClientRect(), p = v3(skel.res.nodes[id].bng).project(camera);
+    return [r.left + (p.x + 1) / 2 * r.width, r.top + (1 - p.y) / 2 * r.height];
+  },
   setWorkspace,
   projectData,
   applyProject,

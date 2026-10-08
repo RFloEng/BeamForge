@@ -119,6 +119,31 @@ class TestBuild(unittest.TestCase):
         self.assertEqual(rigidity.node_index(2.0, 8e7, 400)[2], "beyond")       # index 10: none does
 
 
+class TestSketch(unittest.TestCase):
+    """The editor's sketch: parts in the SVJ frame (m), built, written as jbeam and STEP, mirrored."""
+
+    def test_import_build_and_round_trip(self):
+        imp = json.loads(sk.import_json(sk.write(CORNER)))
+        self.assertEqual(imp["parts"][1]["lines"][0], [[0.3, -0.3, -0.2], [0.0, -0.7, -0.18]])     # mm to m
+        self.assertEqual(json.loads(sk.build_parts_json(json.dumps(imp["parts"])))["report"],
+                         json.loads(sk.build_json(sk.write(CORNER)))["report"])
+        self.assertEqual(json.loads(sk.import_json(sk.step_json(json.dumps(imp["parts"]))))["parts"], imp["parts"])
+
+    def test_empty_parts_and_reference_points(self):
+        parts = [{"name": "frame", "lines": [[[0, 0, 0], [1, 0, 0]], [[1, 0, 0], [1, 0.5, 0]]], "points": []},
+                 {"name": "empty", "lines": [], "points": []}, {"name": "refs", "lines": [], "points": [[0.5, 0.5, -0.2]]}]
+        r = json.loads(sk.build_parts_json(json.dumps(parts)))
+        self.assertEqual((r["report"]["nodes"], r["report"]["beams"]), (3, 3))
+        jb = json.loads(sk.jbeam_parts_json(json.dumps(parts)))
+        self.assertEqual(sum(len(p["nodes"]) - 2 for p in jb.values()), 3)               # the reference point is not a node
+
+    def test_mirror(self):
+        self.assertEqual([sk.mirror_name(n) for n in ("lower_wishbone_fl", "tie_rod_rr", "arm_l_tube_25x2", "frame")],
+                         ["lower_wishbone_fr", "tie_rod_rl", "arm_r_tube_25x2", "frame_mirror"])
+        m = json.loads(sk.mirror_json(json.dumps({"name": "tie_rod_fl", "lines": [[[0.1, -0.3, -0.3], [0.1, -0.7, -0.3]]]})))
+        self.assertEqual(m, {"name": "tie_rod_fr", "lines": [[[0.1, 0.3, -0.3], [0.1, 0.7, -0.3]]], "points": []})
+
+
 class TestTubes(unittest.TestCase):
     """Real tubes behind the beams (beamforge/tubes.py, ported from FBeam)."""
 

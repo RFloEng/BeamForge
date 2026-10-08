@@ -150,3 +150,7 @@ select[data-skrot] { width: 4.2em; }
 .ptbtns { font-weight: 400; margin-left: 6px; text-transform: none; letter-spacing: 0; }
 .ptedit { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
 .ptedit textarea { width: 100%; font: 12px/1.4 ui-monospace, Consolas, monospace; }
+/* Sketch: coordinate rows, the active part */
+.xyz { display: flex; gap: 4px; align-items: center; margin: 4px 0; }
+.xyz input { width: 5.2em; }
+table.cmp tr.on td { background: var(--accent-soft); }

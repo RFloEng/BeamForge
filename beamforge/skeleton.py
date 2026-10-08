@@ -779,7 +779,7 @@ def to_jbeam(result, prefix="skeleton", yf=0.0, ground=0.0, tubes_given=None, mi
     out = {}
     for p in result["parts"]:
         name = f"{prefix}_{p['name']}"
-        own = [n for n, v in result["nodes"].items() if v["owner"] == p["name"]]
+        own = [n for n, v in result["nodes"].items() if v["owner"] == p["name"] and not v["reference"]]   # reference points: not structure
         rows = [["id", "posX", "posY", "posZ"], {"group": name}]
         for n in own:
             x, y, z = svjmod.from_sae(result["nodes"][n]["pos"], yf, ground)
@@ -799,13 +799,9 @@ def _built(text, opts):
     return r, res
 
 
-def build_json(text, opts_json="{}"):
-    """For the editor: STEP text and {"rot", "offset", "unit", "tol", "flat", "kinds": {part: "frame" | "link"},
-    "tubes": {part: section text}, "min_kg", "yf", "ground"} in; the build out (JSON) with each node's BeamNG position
-    ("bng"), weight and stability band, each beam's values, each part's tube and mass, the file's unit and what was not
-    read."""
-    opts = json.loads(opts_json or "{}")
-    r, res = _built(text, opts)
+def _finish(res, opts):
+    """A build with what the editor draws and lists: each node's BeamNG position ("bng"), weight and band, each beam's
+    values, each part's tube and mass, the totals."""
     yf, ground = opts.get("yf") or 0.0, opts.get("ground") or 0.0
     for v in res["nodes"].values():
         v["bng"] = [round(x, 5) for x in svjmod.from_sae(v["pos"], yf, ground)]
@@ -819,6 +815,16 @@ def build_json(text, opts_json="{}"):
     res["report"]["bands"] = {x: sum(1 for t in idx.values() if t[2] == x) for x in ("ok", "high", "extreme", "beyond")}
     res["report"]["tube_mass"] = round(sum(x["mass"] for x in parts.values()), 2)
     res["report"]["node_mass"] = round(sum(kg.values()), 2)
+    return res
+
+
+def build_json(text, opts_json="{}"):
+    """For the editor: STEP text and {"rot", "offset", "unit", "tol", "flat", "kinds": {part: "frame" | "link"},
+    "tubes": {part: section text}, "min_kg", "yf", "ground"} in; the build out (JSON, _finish), the file's unit and what
+    was not read."""
+    opts = json.loads(opts_json or "{}")
+    r, res = _built(text, opts)
+    res = _finish(res, opts)
     res.update(unit=r["unit"], unit_name=r["unit_name"], skipped=r["skipped"], notes=r["notes"])
     return json.dumps(res)
 
@@ -829,6 +835,65 @@ def jbeam_json(text, opts_json="{}", prefix="skeleton"):
     _, res = _built(text, opts)
     return json.dumps(to_jbeam(res, prefix, opts.get("yf") or 0.0, opts.get("ground") or 0.0, opts.get("tubes"),
                                opts.get("min_kg") or MIN_KG), indent=1)
+
+
+# ---------------------------------------------------------------- the editor's sketch: parts in the SVJ frame, metres
+# A sketch is [{"name", "lines": [[a, b]], "points": [p]}] with every point in the SVJ frame (m): what a STEP import
+# gives once placed (import_json), what the drawing tools edit, what a project keeps. The build takes it as it is.
+
+def import_json(text, opts_json="{}"):
+    """A STEP file as a sketch: {"parts" (SVJ frame, m: the file's unit, turned by "rot" and moved by "offset" (m)),
+    "unit", "unit_name", "skipped", "notes"}."""
+    opts = json.loads(opts_json or "{}")
+    r = read(text)
+    f = place_fn(opts.get("unit") or r["unit"], opts.get("rot") or (0, 0, 0), opts.get("offset") or (0.0, 0.0, 0.0))
+    rnd = lambda q: [round(x, 6) for x in f(q)]      # noqa: E731
+    parts = [{"name": p["name"], "lines": [[rnd(a), rnd(b)] for a, b in p["lines"]], "points": [rnd(q) for q in p.get("points") or []]}
+             for p in r["parts"]]
+    return json.dumps({"parts": parts, "unit": r["unit"], "unit_name": r["unit_name"], "skipped": r["skipped"], "notes": r["notes"]})
+
+
+def build_parts_json(parts_json, opts_json="{}"):
+    """The build of a sketch (parts in the SVJ frame, m), as build_json."""
+    opts = json.loads(opts_json or "{}")
+    res = build(json.loads(parts_json), 1.0, (0, 0, 0), (0.0, 0.0, 0.0), opts.get("tol") or TOL, opts.get("flat") or FLAT, opts.get("kinds"))
+    return json.dumps(_finish(res, opts))
+
+
+def jbeam_parts_json(parts_json, opts_json="{}", prefix="skeleton"):
+    """The jbeam of a sketch, as jbeam_json."""
+    opts = json.loads(opts_json or "{}")
+    res = build(json.loads(parts_json), 1.0, (0, 0, 0), (0.0, 0.0, 0.0), opts.get("tol") or TOL, opts.get("flat") or FLAT, opts.get("kinds"))
+    return json.dumps(to_jbeam(res, prefix, opts.get("yf") or 0.0, opts.get("ground") or 0.0, opts.get("tubes"),
+                               opts.get("min_kg") or MIN_KG), indent=1)
+
+
+def step_json(parts_json):
+    """A sketch written as a STEP assembly (in mm, the SVJ frame), for a CAD program or to open again."""
+    mm = lambda q: [x * 1000.0 for x in q]           # noqa: E731
+    return write([{"name": p["name"], "lines": [[mm(a), mm(b)] for a, b in p["lines"]], "points": [mm(q) for q in p.get("points") or []]}
+                  for p in json.loads(parts_json)], unit="mm")
+
+
+_SIDE = (("_fl", "_fr"), ("_rl", "_rr"), ("_l", "_r"), ("_left", "_right"))
+
+
+def mirror_name(name):
+    """The name of a part's mirror image: the side suffix swapped (lower_wishbone_fl -> lower_wishbone_fr), else _mirror."""
+    for a, b in _SIDE:
+        for x, y in ((a, b), (b, a)):
+            if name.endswith(x):
+                return name[: -len(x)] + y
+            if f"{x}_" in name:
+                return name.replace(f"{x}_", f"{y}_", 1)
+    return name + "_mirror"
+
+
+def mirror_json(part_json):
+    """A sketch part mirrored to the other side (Y to -Y in the SVJ frame), renamed (mirror_name)."""
+    p = json.loads(part_json)
+    m = lambda q: [q[0], -q[1], q[2]]                # noqa: E731
+    return json.dumps({"name": mirror_name(p["name"]), "lines": [[m(a), m(b)] for a, b in p["lines"]], "points": [m(q) for q in p.get("points") or []]})
 
 
 # ---------------------------------------------------------------- writing (tests, and skeletons made by BeamForge)
