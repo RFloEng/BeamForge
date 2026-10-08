@@ -735,9 +735,30 @@ def driveline(model, configured, axle):
     return round(prod, 4), chain
 
 
+# an SVJ differential type -> BeamNG's diffType (its lsd takes a preload and lock coefficients, power and coast)
+DIFF_TYPE = {"open": "open", "locked": "locked", "spool": "locked", "lsd_clutch": "lsd", "lsd_torsen": "lsd", "active": "lsd",
+             "lsd_viscous": "viscous", "viscous": "viscous", "lsd": "lsd"}
+
+
+def bng_diff(d):
+    """A differential's BeamNG settings from SVJ-like values ({"type", "preload", "lock_power", "lock_coast"}): the inline
+    keys of its powertrain row, {} for a type BeamNG has no equal of."""
+    t = DIFF_TYPE.get(str((d or {}).get("type") or "").lower())
+    if not t:
+        return {}
+    out = {"diffType": t}
+    if t == "lsd":
+        for k, key in (("preload", "lsdPreload"), ("lock_power", "lsdLockCoef"), ("lock_coast", "lsdRevLockCoef")):
+            if isinstance(d.get(k), (int, float)):
+                out[key] = d[k]
+    return out
+
+
 def svj_powertrain(svj):
     """{"layout", "torque": [[rpm, Nm]], "idle_rpm", "max_rpm", "ratios": [forward], "final_drive",
-    "gearbox_type", "driven": "front" | "rear" | "both", "turbo": bool, "diff_type"} of the SVJ."""
+    "gearbox_type", "driven": "front" | "rear" | "both", "turbo": bool, "diff_type", "inertia", "reverse",
+    "diffs": {"front" | "rear" | "center": differential}, "split" (front share of an AWD's torque), "x_beamng" (the
+    engine's BeamNG-only values set by hand: friction, engineBrakeTorque)} of the SVJ."""
     pt = svj.get("powertrain") or {}
     eng, gb = pt.get("engine") or {}, pt.get("gearbox") or {}
     layout = str(pt.get("layout") or "").upper()
@@ -745,10 +766,17 @@ def svj_powertrain(svj):
     diffs = pt.get("differentials") or []
     diff = next((d for d in diffs if d.get("location") == driven), diffs[0] if diffs else {})
     text = json.dumps(eng).lower()
+    tc = pt.get("transfer_case") or {}
+    split = tc.get("torque_split")
+    rev = gb.get("reverse_ratios")
     return {"layout": layout or None, "torque": [list(x) for x in eng.get("torque_curve") or [] if isinstance(x, list) and len(x) == 2],
             "idle_rpm": eng.get("idle_rpm"), "max_rpm": eng.get("max_rpm"), "ratios": gb.get("ratios"),
             "final_drive": diff.get("final_drive"), "gearbox_type": gb.get("type"), "driven": driven,
-            "turbo": "turbo" in text or "supercharg" in text, "diff_type": diff.get("type")}
+            "turbo": "turbo" in text or "supercharg" in text, "diff_type": diff.get("type"),
+            "inertia": eng.get("inertia"), "reverse": rev[0] if isinstance(rev, list) and rev else None,
+            "diffs": {d.get("location"): d for d in diffs if isinstance(d, dict) and d.get("location")},
+            "split": split[0] if isinstance(split, list) and split and isinstance(split[0], (int, float)) else None,
+            "x_beamng": eng.get("x_beamng") if isinstance(eng.get("x_beamng"), dict) else {}}
 
 
 def _peak(torque):
@@ -855,6 +883,11 @@ def powertrain_changes(model, configured, svj, take):
         rows += [[r, round(t - _interp(mod, r), 1)] for r, t in curve]   # the exhaust's change added back
         e = ch.setdefault(base["engine"], {})
         e["mainEngine.torque"] = rows
+        if isinstance(sp.get("inertia"), (int, float)):
+            e["mainEngine.inertia"] = sp["inertia"]
+        for k in ("friction", "dynamicFriction", "engineBrakeTorque"):
+            if isinstance(sp["x_beamng"].get(k), (int, float)):
+                e[f"mainEngine.{k}"] = sp["x_beamng"][k]
         if sp["idle_rpm"]:
             e["mainEngine.idleRPM"] = sp["idle_rpm"]
         if sp["max_rpm"]:
@@ -880,7 +913,29 @@ def powertrain_changes(model, configured, svj, take):
             value = round(sp["final_drive"] / others, 4)
             key = pick[1] if isinstance(pick[1], str) else pick[1]
             ch.setdefault(pick[0], {})[key] = value if isinstance(key, str) else {"gearRatio": value}
+    if take.get("diffs"):                                  # each driven axle's differential: its type and lock
+        for ax in ("front", "rear"):
+            d = bng_diff(sp["diffs"].get(ax))
+            row = diff_row(model, configured, ax) if d else None
+            if row:
+                ch.setdefault(row[0], {})[("powertrain", row[1])] = {**ch.get(row[0], {}).get(("powertrain", row[1]), {}), **d}
     return ch
+
+
+def diff_row(model, configured, axle):
+    """(part, row index) of the powertrain row of an axle's differential (the device of type differential on the way
+    from its wheels to the gearbox), or None."""
+    _, chain = driveline(model, configured, axle)
+    names = {c[3] for c in chain}
+    parts = beamng._parts_held(model)
+    for name in _active(configured):
+        pt = (parts.get(name) or {}).get("part", {}).get("powertrain")
+        if not (isinstance(pt, list) and pt and isinstance(pt[0], list)):
+            continue
+        for i, row in enumerate(pt[1:], 1):
+            if isinstance(row, list) and len(row) > 1 and row[0] == "differential" and row[1] in names:
+                return name, i
+    return None
 
 
 def apply_powertrain(name, part, changes):

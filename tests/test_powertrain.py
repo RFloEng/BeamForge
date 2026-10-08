@@ -29,7 +29,7 @@ class TestPowertrain(unittest.TestCase):
     def test_export_by_hand_and_from_the_svj(self):
         # by hand, without any SVJ: only what is set is taken
         x = json.loads(pt.export_json(json.dumps({"gears": [3.0, 1.9, 1.3], "final_drive": 4.1}), None))
-        self.assertEqual(x["take"], {"engine": False, "gears": True, "final_drive": True, "steering": False})
+        self.assertEqual(x["take"], {"engine": False, "gears": True, "final_drive": True, "steering": False, "diffs": False})
         sp = values.svj_powertrain(x["svj"])
         self.assertEqual((sp["ratios"], sp["final_drive"]), ([3.0, 1.9, 1.3], 4.1))
         # an edit over the SVJ's block replaces its values, the rest of the SVJ stays
@@ -38,8 +38,26 @@ class TestPowertrain(unittest.TestCase):
         sp = values.svj_powertrain(y["svj"])
         self.assertEqual((sp["torque"], sp["idle_rpm"], sp["max_rpm"], sp["final_drive"]), ([[1000.0, 100.0], [7000.0, 200.0]], 900.0, 7200.0, 4.4))
         self.assertEqual(values.svj_steering(y["svj"])[0], 2.5)
-        self.assertEqual(y["take"], {"engine": True, "gears": False, "final_drive": False, "steering": True})
+        self.assertEqual(y["take"], {"engine": True, "gears": False, "final_drive": False, "steering": True, "diffs": False})
         self.assertEqual(SVJ["steering"]["lock_to_lock_turns"], 3.2)                    # the SVJ itself untouched
+
+
+    def test_differentials_inertia_and_hand_values(self):
+        svj = json.loads(json.dumps(SVJ))
+        svj["powertrain"]["engine"]["inertia"] = 0.11
+        svj["powertrain"]["differentials"][0].update(type="lsd_clutch", preload=60, lock_power=0.35, lock_coast=0.15)
+        svj["powertrain"]["transfer_case"] = {"torque_split": [0.4, 0.6]}
+        e = json.loads(pt.from_svj_json(json.dumps(svj)))
+        self.assertEqual((e["engine"]["inertia"], e["diffs"]["front"]["type"], e["diffs"]["split"]), (0.11, "lsd_clutch", 0.4))
+        self.assertEqual(values.bng_diff(e["diffs"]["front"]), {"diffType": "lsd", "lsdPreload": 60, "lsdLockCoef": 0.35, "lsdRevLockCoef": 0.15})
+        self.assertEqual(values.bng_diff({"type": "lsd_viscous"}), {"diffType": "viscous"})
+        self.assertEqual(values.bng_diff({"type": "spool"}), {"diffType": "locked"})
+        self.assertEqual(values.bng_diff({"type": "unknown"}), {})
+        e["engine"].update(friction=12, engine_brake=40)
+        y = json.loads(pt.export_json(json.dumps(e), None))
+        sp = values.svj_powertrain(y["svj"])
+        self.assertEqual((sp["inertia"], sp["x_beamng"], sp["diffs"]["front"]["type"], sp["split"], y["take"]["diffs"]),
+                         (0.11, {"friction": 12.0, "engineBrakeTorque": 40.0}, "lsd_clutch", 0.4, True))
 
 
 if __name__ == "__main__":

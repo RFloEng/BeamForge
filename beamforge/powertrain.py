@@ -7,8 +7,10 @@ steering.lock_to_lock_turns), so what the user sets goes into the new vehicle th
 added back), the ratios into the gearbox (reverse and neutral kept), the final drive into the driven axle's reduction,
 the turns into the steering hydros' steeringWheelLock.
 
-The edit (the editor's ptEdit, saved in the project): {"engine": {"torque": [[rpm, Nm]], "idle_rpm", "max_rpm"} | None,
-"gears": [forward ratios] | None, "final_drive": float | None, "steering_turns": float | None}; None keeps the base's.
+The edit (the editor's ptEdit, saved in the project): {"engine": {"torque": [[rpm, Nm]], "idle_rpm", "max_rpm", "inertia",
+"friction", "engine_brake"} | None, "gears": [forward ratios] | None, "final_drive": float | None, "steering_turns": float |
+None, "diffs": {"front" | "rear": {"type" (SVJ: open, locked, lsd_clutch, lsd_viscous...), "preload", "lock_power",
+"lock_coast"}, "split": front share of an AWD's torque} | None}; None keeps the base's.
 """
 
 import json
@@ -60,7 +62,8 @@ def summary_json(model, configured_json, svj_json=None):
     sp = values.svj_powertrain(svj) if svj else None
     if sp:
         turns, _ = values.svj_steering(svj)
-        out["svj"] = {"torque": sp["torque"], "idle_rpm": sp["idle_rpm"], "max_rpm": sp["max_rpm"],
+        out["svj"] = {"torque": sp["torque"], "idle_rpm": sp["idle_rpm"], "max_rpm": sp["max_rpm"], "inertia": sp["inertia"],
+                      "diffs": {k: v for k, v in sp["diffs"].items() if k in ("front", "rear")}, "split": sp["split"],
                       "ratios": [r for r in sp["ratios"] or [] if isinstance(r, (int, float)) and r > 0],
                       "final_drive": sp["final_drive"], "turns": turns, "layout": sp["layout"], "driven": sp["driven"],
                       "gearbox_type": sp["gearbox_type"], "turbo": sp["turbo"]}
@@ -70,7 +73,19 @@ def summary_json(model, configured_json, svj_json=None):
         pb = values.powertrain_base(model, configured)
         mod = pb.get("exhaust_mod") or []
         _, turns = values.steering_base(model, configured)
-        out["base"] = {"torque": [[r, round(t + values._interp(mod, r), 1)] for r, t in pb.get("torque") or []],
+        parts = beamng._parts_held(model)
+        me = ((parts.get(pb.get("engine")) or {}).get("part") or {}).get("mainEngine") or {}
+        diffs = {}
+        for ax in ("front", "rear"):
+            row = values.diff_row(model, configured, ax)
+            if row:
+                r = (parts[row[0]]["part"]["powertrain"])[row[1]]
+                inl = r[-1] if isinstance(r[-1], dict) else {}
+                diffs[ax] = {"type": inl.get("diffType"), "preload": inl.get("lsdPreload"), "lock_power": inl.get("lsdLockCoef"),
+                             "lock_coast": inl.get("lsdRevLockCoef")}
+        out["base"] = {"inertia": _num(me.get("inertia"), vars_), "friction": _num(me.get("friction"), vars_),
+                       "engine_brake": _num(me.get("engineBrakeTorque"), vars_), "diffs": diffs,
+                       "torque": [[r, round(t + values._interp(mod, r), 1)] for r, t in pb.get("torque") or []],
                        "idle_rpm": _num(pb.get("idle_rpm"), vars_), "max_rpm": _num(pb.get("rev_limiter") or pb.get("max_rpm"), vars_),
                        "ratios": forward(pb.get("ratios"), vars_), "final_drive": _num(pb.get("final_drive"), vars_), "turns": turns,
                        "turbo": bool(pb.get("turbo")), "automatic": bool(pb.get("automatic")), "driven": pb.get("diff_axle")}
@@ -88,7 +103,7 @@ def export_json(edit_json, svj_json=None):
     svj = json.loads(svj_json) if svj_json else {}
     doc = json.loads(json.dumps(svj))
     pt = doc.setdefault("powertrain", {})
-    take = {"engine": False, "gears": False, "final_drive": False, "steering": False}
+    take = {"engine": False, "gears": False, "final_drive": False, "steering": False, "diffs": False}
     if edit.get("engine") and edit["engine"].get("torque"):
         e = pt.setdefault("engine", {})
         e["torque_curve"] = [[float(r), float(t)] for r, t in edit["engine"]["torque"]]
@@ -99,6 +114,28 @@ def export_json(edit_json, svj_json=None):
     if edit.get("gears"):
         pt.setdefault("gearbox", {})["ratios"] = [float(r) for r in edit["gears"]]
         take["gears"] = True
+    if edit.get("engine") and take["engine"]:
+        e = pt["engine"]
+        if edit["engine"].get("inertia"):
+            e["inertia"] = float(edit["engine"]["inertia"])
+        x = {k: float(edit["engine"][src]) for src, k in (("friction", "friction"), ("engine_brake", "engineBrakeTorque"))
+             if isinstance(edit["engine"].get(src), (int, float))}
+        if x:
+            e["x_beamng"] = {**(e.get("x_beamng") or {}), **x}
+    if edit.get("diffs"):
+        diffs = pt.setdefault("differentials", [])
+        for loc in ("front", "rear"):
+            d = (edit["diffs"] or {}).get(loc)
+            if not d or not d.get("type"):
+                continue
+            row = next((x for x in diffs if x.get("location") == loc), None)
+            if row is None:
+                row = {"id": f"diff_{loc}", "location": loc}
+                diffs.append(row)
+            row.update({k: d[k] for k in ("type", "preload", "lock_power", "lock_coast") if d.get(k) is not None})
+        if isinstance(edit["diffs"].get("split"), (int, float)):
+            pt.setdefault("transfer_case", {})["torque_split"] = [edit["diffs"]["split"], round(1 - edit["diffs"]["split"], 4)]
+        take["diffs"] = True
     if edit.get("final_drive"):
         diffs = pt.setdefault("differentials", [])
         sp = values.svj_powertrain(doc)
@@ -119,5 +156,14 @@ def export_json(edit_json, svj_json=None):
 def from_svj_json(svj_json):
     """The edit that takes every powertrain and steering value the SVJ has (what Import from the SVJ sets)."""
     s = json.loads(summary_json(None, None, svj_json))["svj"] or {}
-    return json.dumps({"engine": {"torque": s["torque"], "idle_rpm": s["idle_rpm"], "max_rpm": s["max_rpm"]} if s.get("torque") else None,
-                       "gears": s.get("ratios") or None, "final_drive": s.get("final_drive"), "steering_turns": s.get("turns")})
+    sp = values.svj_powertrain(json.loads(svj_json))
+    diffs = {loc: {k: d.get(k) for k in ("type", "preload", "lock_power", "lock_coast") if d.get(k) is not None}
+             for loc, d in sp["diffs"].items() if loc in ("front", "rear") and d.get("type")}
+    if sp["split"] is not None:
+        diffs["split"] = sp["split"]
+    eng = {"torque": s["torque"], "idle_rpm": s["idle_rpm"], "max_rpm": s["max_rpm"]} if s.get("torque") else None
+    if eng and sp["inertia"]:
+        eng["inertia"] = sp["inertia"]
+    return json.dumps({"engine": eng, "gears": s.get("ratios") or None, "final_drive": s.get("final_drive"),
+                       "steering_turns": s.get("turns"), "diffs": diffs or None, "gearbox_type": s.get("gearbox_type"),
+                       "layout": s.get("layout")})

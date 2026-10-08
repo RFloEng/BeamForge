@@ -25,7 +25,7 @@ import json
 import math
 import re
 
-from . import beamng, jbeam, rigidity, skeleton, svj as svjmod
+from . import beamng, jbeam, rigidity, skeleton, svj as svjmod, values
 
 RACK_KG, SLIDER_KG = 3.0, 2.0
 MOUNTS = 3               # beams from each engine or gearbox node to the frame
@@ -434,6 +434,13 @@ def build(car_json):
                         "energyStorage": ["mainTank"], "thermalsEnabled": False})
     if eng.get("idle_rpm"):
         main_engine["idleRPM"] = float(eng["idle_rpm"])
+    for k, key in (("inertia", "inertia"), ("friction", "friction"), ("engine_brake", "engineBrakeTorque")):
+        if isinstance(eng.get(k), (int, float)):
+            main_engine[key] = float(eng[k])
+    if isinstance(eng.get("mass"), (int, float)) and eids:     # the engine's mass: its block's node weights scaled to it
+        k = eng["mass"] / sum(car.kg[n] for n in eids)
+        for n in eids:
+            car.kg[n] = round(car.kg[n] * k, 3)
     if eng.get("max_rpm"):
         main_engine.update(maxRPM=float(eng["max_rpm"]), revLimiterRPM=float(eng["max_rpm"]), hasRevLimiter=True)
     main_engine["torqueReactionNodes:"] = [n for n in (main_engine.get("torqueReactionNodes:") or []) if n in car.nodes] or eids[:3]
@@ -465,15 +472,19 @@ def build(car_json):
             sections[r[1]] = _resolve(copy.deepcopy(gpart[r[1]]), gvars)
     halfshaft = lambda c, diff, i: ["shaft", f"wheelaxle{c}", diff, i, {"uiName": f"{c} halfshaft", "friction": 0.77, "dynamicFriction": 0.0019}]   # noqa: E731
     spindle = lambda c: ["shaft", f"spindle{c}", f"wheelaxle{c}", 1, {"connectedWheel": c, "friction": 0.8, "dynamicFriction": 0.0015}]   # noqa: E731
+    diffs = spec.get("diffs") or {}
     if layout == "AWD":
-        pt.append(["differential", "differential_C", out_dev, 1, {"diffType": "open", "diffTorqueSplit": 0.4, "gearRatio": 1, "uiName": "Centre Differential"}])
+        split = diffs.get("split") if isinstance(diffs.get("split"), (int, float)) else 0.4
+        pt.append(["differential", "differential_C", out_dev, 1, {"diffType": "open", "diffTorqueSplit": round(split, 3), "gearRatio": 1, "uiName": "Centre Differential"}])
         feeds = {"F": ("differential_C", 1), "R": ("differential_C", 2)}
     else:
         feeds = {driven[0]: (out_dev, 1)}
     for ax in driven:
         src, idx = feeds[ax]
         pt.append(["shaft", f"driveshaft_{ax}", src, idx, {"friction": 0.5, "dynamicFriction": 0.0005, "uiName": f"Driveshaft {ax}"}])
-        pt.append(["differential", f"differential_{ax}", f"driveshaft_{ax}", 1, {"diffType": "open", "gearRatio": fd, "uiName": f"{'Front' if ax == 'F' else 'Rear'} Differential", "defaultVirtualInertia": 0.25}])
+        dset = {"diffType": "open", "gearRatio": fd, "uiName": f"{'Front' if ax == 'F' else 'Rear'} Differential", "defaultVirtualInertia": 0.25}
+        dset.update(values.bng_diff(diffs.get("front" if ax == "F" else "rear")))
+        pt.append(["differential", f"differential_{ax}", f"driveshaft_{ax}", 1, dset])
         sections[f"differential_{ax}"] = {"friction": 1.5, "dynamicFriction": 0.0007, "torqueLossCoef": 0.016}
         for i, c in enumerate((f"{ax}L", f"{ax}R"), 1):
             if c in wheels:

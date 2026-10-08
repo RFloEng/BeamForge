@@ -1999,7 +1999,29 @@ function setWorkspace(k) {
 // SVJ-shaped block (beamforge/powertrain.py) written by the same code as an SVJ's values: the torque curve into the
 // engine part, the ratios into the gearbox (reverse kept), the final drive into the driven axle, the turns into the
 // steering. The transmission itself (gearbox type, differential, transfer case...) is chosen among the base's parts.
-const PT_EMPTY = { engine: null, gears: null, final_drive: null, steering_turns: null, touched: false };
+const PT_EMPTY = { engine: null, gears: null, final_drive: null, steering_turns: null, diffs: null, touched: false };
+const DIFF_TYPES = [['', 'keep'], ['open', 'open'], ['lsd_clutch', 'limited slip'], ['lsd_viscous', 'viscous'], ['locked', 'locked']];
+
+// the archetypes nearest the SVJ's engine (its configuration, fuel and power) and gearbox (type and gears)
+function suggestFromSvj() {
+  if (!library || !svjDoc) return null;
+  const pt = svjDoc.svj.powertrain || {}, eng = pt.engine || {}, gb = pt.gearbox || {};
+  const cfg = String(eng.configuration || '').toUpperCase().replace('FLAT', 'B').replace('BOXER', 'B');
+  const [, power] = peakOf(eng.torque_curve || []);
+  const text = JSON.stringify(eng).toLowerCase();
+  const fuel = /electric/.test(cfg.toLowerCase() + text) ? 'electricEnergy' : /diesel/.test(text) ? 'diesel' : 'gasoline';   // petrol unless it says
+  let pool = library.archetypes.engines.filter((a) => a.pick.fuel === fuel);
+  const same = pool.filter((a) => cfg && a.pick.cylinders === cfg.replace(/[^A-Z0-9]/g, ''));
+  if (same.length) pool = same;
+  // nearest in power; within that, the common groups (a typical engine of its kind) a little ahead
+  const score = (a) => Math.abs(a.pick.peak_power - power) / Math.max(power, 1) - 0.03 * Math.log(a.count);
+  const e = power && pool.length ? pool.reduce((b2, a) => (score(a) < score(b2) ? a : b2), pool[0]) : null;
+  const want = { manual: 'manual', sequential: 'sequential', dct: 'dct', auto: 'automatic', automatic: 'automatic', cvt: 'cvt' }[String(gb.type || 'manual')] || 'manual';
+  const n = (gb.ratios || []).length;
+  const gbs = library.archetypes.gearboxes.filter((a) => a.pick.type === want);
+  const g = (gbs.length ? gbs : library.archetypes.gearboxes).reduce((b, a) => (Math.abs(a.pick.gears - n) < Math.abs(b.pick.gears - n) ? a : b), (gbs.length ? gbs : library.archetypes.gearboxes)[0]);
+  return { engine: e, gearbox: g };
+}
 
 // ---------- the vanilla cars' parts: engines, gearboxes, tyres and rims, grouped into archetypes (beamforge/donors.py)
 // Learnt from the user's install (only the files of those parts are read), kept in this browser. An archetype points at
@@ -2098,6 +2120,7 @@ function powertrainPanel() {
       <button id="liblearn" class="mini" ${resolved ? '' : 'disabled title="Add your BeamNG folders first"'}>Learn from the install</button></p>`;
   return `<h2>Powertrain</h2>
     ${libraryBusy ? `<p class="quiet">${esc(libraryBusy)}</p>` : lib}
+    ${library && svjDoc ? '<p><button id="ptsuggest" class="mini" title="The engine archetype nearest the SVJ\'s (cylinders, fuel, power) and the gearbox of its type and number of gears">Suggest archetypes from the SVJ</button></p>' : ''}
     ${parts}
     <h3>Engine ${btns('engine', v.torque && v.torque.length)}</h3>
     ${libraryPicker('engines', 'An engine of the vanilla cars', ptEdit.engine && ptEdit.engine.source)}
@@ -2107,6 +2130,12 @@ function powertrainPanel() {
       <tr><td>Peak power kW</td><td>${fmt(bp, 0)}</td><td>${fmt(vp, 0)}</td><td><b>${fmt(cp, 0)}</b></td></tr>
       <tr><td>Idle / max rpm</td><td>${fmt(b.idle_rpm, 0)} / ${fmt(b.max_rpm, 0)}</td><td>${fmt(v.idle_rpm, 0)} / ${fmt(v.max_rpm, 0)}</td><td><b>${fmt(eng && eng.idle_rpm, 0)} / ${fmt(eng && eng.max_rpm, 0)}</b></td></tr></table>
     ${engEdit}
+    <table class="cmp"><tr><th></th><th>Base</th><th>SVJ</th><th>New</th></tr>
+      ${[['inertia', 'Inertia kg·m²', 3], ['friction', 'Friction Nm', 1], ['engine_brake', 'Engine braking Nm', 1]].map(([k, label, d]) =>
+        `<tr><td>${label}</td><td>${fmt(b[k], d)}</td><td>${k === 'inertia' ? fmt(v.inertia, d) : '–'}</td>
+          <td><input type="number" step="any" data-pteng="${k}" value="${ptEdit.engine && ptEdit.engine[k] != null ? ptEdit.engine[k] : ''}" placeholder="${b[k] != null ? b[k] : ''}" style="width:6em"></td></tr>`).join('')}
+      <tr><td title="A car from scratch: the engine block's node weights are scaled to it">Mass kg (scratch)</td><td>–</td><td>${fmt((svjDoc && svjDoc.svj.powertrain && (svjDoc.svj.powertrain.engine || {}).mass) || null, 0)}</td>
+        <td><input type="number" step="any" data-pteng="mass" value="${ptEdit.engine && ptEdit.engine.mass != null ? ptEdit.engine.mass : ''}" style="width:6em"></td></tr></table>
     ${lineChart('Torque', series((c) => c), 'rpm', 'Nm')}
     ${lineChart('Power', series(power), 'rpm', 'kW')}
     ${b.turbo ? '<p class="quiet">The base has a turbo or supercharger: its boost comes on top of the curve, as in the game.</p>' : ''}
@@ -2120,6 +2149,12 @@ function powertrainPanel() {
     ${gearEdit}
     <p class="quiet">Road speed at ${fmt(eng && eng.max_rpm, 0)} rpm (tyre radius ${fmt(r, 3)} m): ${speeds(gears, fd, eng && eng.max_rpm)}</p>
     ${b.automatic ? '<p class="quiet">The base gearbox is automatic: its shift points follow the new ratios.</p>' : ''}
+    <h3>Differentials ${btns('diffs', v.diffs && Object.keys(v.diffs).length)}</h3>
+    <table class="cmp"><tr><th></th><th>Base</th><th>SVJ</th><th>New</th><th>Preload Nm</th><th>Lock power</th><th>Lock coast</th></tr>
+      ${['front', 'rear'].map((ax) => { const d = (ptEdit.diffs || {})[ax] || {}; return `<tr><td>${ax}</td><td>${esc(((b.diffs || {})[ax] || {}).type || '–')}</td><td>${esc(((v.diffs || {})[ax] || {}).type || '–')}</td>
+        <td><select data-ptdiff="${ax}">${DIFF_TYPES.map(([t, l]) => `<option value="${t}" ${(d.type || '') === t ? 'selected' : ''}>${l}</option>`).join('')}</select></td>
+        ${['preload', 'lock_power', 'lock_coast'].map((k) => `<td><input type="number" step="any" data-ptdiffv="${ax}:${k}" value="${d[k] != null ? d[k] : ''}" style="width:4.5em" ${d.type && d.type.startsWith('lsd_clutch') ? '' : 'disabled'}></td>`).join('')}</tr>`; }).join('')}</table>
+    <div class="kv"><span title="All-wheel drive: the front axle's share of the torque">AWD front share</span><span><input type="number" step="0.05" min="0" max="1" id="ptsplit" value="${ptEdit.diffs && ptEdit.diffs.split != null ? ptEdit.diffs.split : ''}" placeholder="${v.split != null ? v.split : '0.4'}" style="width:5em"></span></div>
     <h3>Steering ${btns('steering', v.turns)}</h3>
     <div class="kv"><span>Turns lock to lock</span><span>base ${fmt(b.turns, 2)} · SVJ ${fmt(v.turns, 2)} · <b>new ${fmt(turns, 2)}</b></span></div>
     ${steerEdit}
@@ -2137,6 +2172,7 @@ function bindPowertrain(el) {
   el.querySelectorAll('[data-ptsvj]').forEach((x) => { x.onclick = () => {
     const k = x.dataset.ptsvj, e = svjEdit();
     if (k === 'gears') { ptEdit = { ...ptEdit, gears: e.gears || ptEdit.gears, final_drive: e.final_drive || ptEdit.final_drive, touched: true }; ptEditing = null; redraw(); }
+    else if (k === 'diffs') set('diffs', e.diffs || null);
     else if (k === 'steering') set('steering_turns', e.steering_turns); else set(k, e[k]);
   }; });
   el.querySelectorAll('[data-ptedit]').forEach((x) => { x.onclick = () => { ptEditing = ptEditing === x.dataset.ptedit ? null : x.dataset.ptedit; drawInspector(); }; });
@@ -2154,6 +2190,37 @@ function bindPowertrain(el) {
   };
   if ($('ptsteerok')) $('ptsteerok').onclick = () => set('steering_turns', +$('ptturns').value > 0 ? +$('ptturns').value : null);
   if ($('liblearn')) $('liblearn').onclick = learnLibrary;
+  el.querySelectorAll('[data-pteng]').forEach((x) => { x.onchange = () => {
+    const base = ptEdit.engine || (() => { try { const s = JSON.parse(ptpy.summary_json(veh ? veh.model : null, veh ? JSON.stringify(veh) : null, null)).base; return s && s.torque ? { torque: s.torque, idle_rpm: s.idle_rpm, max_rpm: s.max_rpm } : null; } catch { return null; } })();
+    if (!base) { showIssues([{ level: 'INFO', rule: 'powertrain', message: 'Choose an engine first (base, SVJ or an archetype).' }]); return; }
+    const val = x.value === '' ? null : +x.value;
+    set('engine', { ...base, [x.dataset.pteng]: val });
+  }; });
+  el.querySelectorAll('[data-ptdiff]').forEach((x) => { x.onchange = () => {
+    const d = { ...(ptEdit.diffs || {}) };
+    if (x.value) d[x.dataset.ptdiff] = { ...(d[x.dataset.ptdiff] || {}), type: x.value }; else delete d[x.dataset.ptdiff];
+    ptEdit = { ...ptEdit, diffs: Object.keys(d).length ? d : null, touched: true }; redraw();
+  }; });
+  el.querySelectorAll('[data-ptdiffv]').forEach((x) => { x.onchange = () => {
+    const [ax, k] = x.dataset.ptdiffv.split(':'), d = { ...(ptEdit.diffs || {}) };
+    d[ax] = { ...(d[ax] || {}), [k]: x.value === '' ? null : +x.value };
+    ptEdit = { ...ptEdit, diffs: d, touched: true }; redraw();
+  }; });
+  if ($('ptsplit')) $('ptsplit').onchange = () => {
+    const d = { ...(ptEdit.diffs || {}) };
+    if ($('ptsplit').value === '') delete d.split; else d.split = Math.min(1, Math.max(0, +$('ptsplit').value));
+    ptEdit = { ...ptEdit, diffs: Object.keys(d).length ? d : null, touched: true }; redraw();
+  };
+  if ($('ptsuggest')) $('ptsuggest').onclick = () => {
+    const s = suggestFromSvj();
+    if (!s || !s.engine) return;
+    const p = s.engine.pick, src = { model: p.model, part: p.part, title: s.engine.name, device: p.device || null, type: null };
+    const svjEng = ptEdit.engine && !ptEdit.engine.source ? ptEdit.engine : null;   // the SVJ's curve stays, the archetype gives the rest
+    ptEdit = { ...ptEdit, engine: svjEng ? { ...svjEng, source: src } : { torque: p.torque, idle_rpm: p.idle_rpm, max_rpm: p.max_rpm, source: src },
+      gearbox_source: s.gearbox ? { model: s.gearbox.pick.model, part: s.gearbox.pick.part, title: s.gearbox.name, device: s.gearbox.pick.device, type: s.gearbox.pick.type } : ptEdit.gearbox_source,
+      touched: true };
+    redraw();
+  };
   el.querySelectorAll('[data-libpick]').forEach((x) => { x.onchange = () => {
     if (x.value === '') return;
     const a = library.archetypes[x.dataset.libpick][+x.value], p = a.pick;
@@ -2307,7 +2374,9 @@ async function buildScratch() {
     vehpy.add_files(JSON.stringify(texts), JSON.stringify(ranks));
     const car = { id: scratchForm.id || 'scratch_car', name: scratchForm.name || 'Scratch car', brand: scratchForm.brand || 'BeamForge',
       sketch: { parts: skel.parts, opts: skel.opts }, wheels: sketchWheels(), layout: scratchForm.layout,
-      engine: { source: eng.source, torque: eng.torque, idle_rpm: eng.idle_rpm, max_rpm: eng.max_rpm },
+      engine: { source: eng.source, torque: eng.torque, idle_rpm: eng.idle_rpm, max_rpm: eng.max_rpm, inertia: eng.inertia, friction: eng.friction,
+        engine_brake: eng.engine_brake, mass: eng.mass },
+      diffs: ptEdit.diffs || {},
       gearbox: { source: gb, ratios: ptEdit.gears }, final_drive: ptEdit.final_drive || 4.0,
       rim: { front: src(rim, 'F'), rear: src(rim, 'R') }, tyre: tyre ? { front: src(tyre, 'F'), rear: src(tyre, 'R') } : {},
       steering: { lock_deg: scratchForm.lock, turns: ptEdit.steering_turns || 3 } };

@@ -119,6 +119,19 @@ class TestScratch(unittest.TestCase):
         self.assertGreater(hy[0][2]["factor"], 0)                             # tie rods behind the axle: positive moves the rack left
         self.assertEqual(sorted(body["rails"]), ["bf_steeringrack"])
 
+    def test_engine_values_and_differentials(self):
+        car = dict(self.car, layout="AWD", diffs={"rear": {"type": "lsd_clutch", "preload": 60, "lock_power": 0.3, "lock_coast": 0.1}, "split": 0.35})
+        car["engine"] = dict(car["engine"], inertia=0.12, friction=14, engine_brake=45, mass=120)
+        body = json.loads(json.loads(scratch.build(json.dumps(car)))["files"]["vehicles/bf_test_scratch/bf_test_scratch.jbeam"])["bf_test_scratch_body"]
+        me = body["mainEngine"]
+        self.assertEqual((me["inertia"], me["friction"], me["engineBrakeTorque"]), (0.12, 14.0, 45.0))
+        rows = {r[1]: r for r in body["powertrain"][1:]}
+        self.assertEqual({k: rows["differential_R"][4][k] for k in ("diffType", "lsdPreload", "lsdLockCoef", "lsdRevLockCoef")},
+                         {"diffType": "lsd", "lsdPreload": 60, "lsdLockCoef": 0.3, "lsdRevLockCoef": 0.1})
+        self.assertEqual((rows["differential_F"][4]["diffType"], rows["differential_C"][4]["diffTorqueSplit"]), ("open", 0.35))
+        engine_kg = sum(r[4]["nodeWeight"] for r in body["nodes"][5:] if r[0].startswith("e"))
+        self.assertAlmostEqual(engine_kg, 120, delta=0.1)                    # the block's weights scaled to the engine's mass
+
     def test_refused(self):
         bad = dict(self.car, engine={})
         with self.assertRaises(ValueError):
