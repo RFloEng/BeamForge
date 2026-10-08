@@ -12,7 +12,9 @@ What is generated
              tyre; a base.pc choosing the tyre for the rim's tyre slot. The wheels show the rims' and tyres' meshes
   powertrain the engine block's nodes, beams and data (mainEngine, sounds, vehicleController) and the gearbox's chain
              and data from archetype parts, moved to the engine's place and mounted to the nearest frame nodes; the
-             torque curve, ratios and final drive as set; a driveline for FWD, RWD or AWD; a fuel tank
+             torque curve, ratios and final drive as set; a driveline for FWD, RWD or AWD; a fuel tank. An electric
+             motor (an archetype with a "device") drives the differentials directly, its reduction as their gear ratio
+             (as the EV sports car's electric motors do), with a battery and the vehicle controller's electric shift logic
   steering   a rack between the tie rods' inner ends: a rail with two slider nodes held to the frame and two hydros
              crosswise, as the vanilla cars do; it turns the way the tie rods ask (ahead of the axle or behind it)
              to the lock angle asked for
@@ -29,6 +31,8 @@ from . import beamng, jbeam, rigidity, skeleton, svj as svjmod, values
 
 RACK_KG, SLIDER_KG = 3.0, 2.0
 MOUNTS = 3               # beams from each engine or gearbox node to the frame
+EV_REDUCTION = 8.0       # an electric motor's single reduction when none is given (the EV sports car's: 7.6 and race)
+BATTERY_KWH = 60.0
 SLIDER_IN = 0.1          # m: the rack's sliders this far inside its ends
 DRIVETRAIN = ("FWD", "RWD", "AWD")
 STRIP = ("breakTriggerBeam", "deformGroups", "axleBeams")   # names of beams of the donor car that are not here
@@ -412,10 +416,12 @@ def build(car_json):
     # powertrain
     eng = spec.get("engine") or {}
     epart, evars = _part(eng.get("source"))
-    if not epart or not isinstance(epart.get("mainEngine"), dict):
+    edev = (eng.get("source") or {}).get("device")
+    electric = bool(edev) and isinstance((epart or {}).get(edev), dict)
+    if not epart or not (electric or isinstance(epart.get("mainEngine"), dict)):
         raise ValueError("choose an engine (Powertrain, from the vanilla cars)")
-    gpart, gvars = _part((spec.get("gearbox") or {}).get("source"))
-    if not gpart:
+    gpart, gvars = _part((spec.get("gearbox") or {}).get("source")) if not electric else (None, {})
+    if not gpart and not electric:
         raise ValueError("choose a gearbox (Powertrain, from the vanilla cars)")
     eids_donor = [r.get("id") for r in _table_rows(epart.get("nodes"))[1]]
     dpos = [[_resolve(r.get(k), evars) for k in ("posX", "posY", "posZ")] for r in _table_rows(epart.get("nodes"))[1]]
@@ -429,44 +435,56 @@ def build(car_json):
     delta = [target[i] - dc[i] for i in range(3)]
     eids = _copy_nodes(car, epart, evars, delta, "engine")
     n_eb = _copy_beams(car, epart, evars, eids)
-    gids = _copy_nodes(car, gpart, gvars, delta, "gearbox")
-    n_gb = _copy_beams(car, gpart, gvars, gids + eids)
-    _mount(car, eids, frame, f"engine ({eng['source']['part']})")
+    gids = _copy_nodes(car, gpart, gvars, delta, "gearbox") if gpart else []
+    n_gb = _copy_beams(car, gpart, gvars, gids + eids) if gpart else 0
+    _mount(car, eids, frame, f"{'motor' if electric else 'engine'} ({eng['source']['part']})")
     if gids:
         _mount(car, gids, frame, f"gearbox ({spec['gearbox']['source']['part']})")
 
-    main_engine = _resolve(copy.deepcopy(epart["mainEngine"]), evars)
+    main_engine = _resolve(copy.deepcopy(epart[edev] if electric else epart["mainEngine"]), evars)
     main_engine.update({"torque": [["rpm", "torque"]] + [[float(r), float(t)] for r, t in (eng.get("torque") or [])] if eng.get("torque") else main_engine.get("torque"),
-                        "energyStorage": ["mainTank"], "thermalsEnabled": False})
-    if eng.get("idle_rpm"):
+                        "energyStorage": "mainBattery" if electric else ["mainTank"], "thermalsEnabled": False})
+    if electric:
+        main_engine["uiName"] = "Motor"
+        for k in ("electricsThrottleName", "electricsThrottleFactorName"):   # the EV sports car's split front / rear throttles
+            main_engine.pop(k, None)
+    if eng.get("idle_rpm") and not electric:
         main_engine["idleRPM"] = float(eng["idle_rpm"])
-    for k, key in (("inertia", "inertia"), ("friction", "friction"), ("engine_brake", "engineBrakeTorque")):
+    for k, key in (("inertia", "inertia"), ("friction", "friction")) + ((("engine_brake", "engineBrakeTorque"),) if not electric else ()):
         if isinstance(eng.get(k), (int, float)):
             main_engine[key] = float(eng[k])
     if isinstance(eng.get("mass"), (int, float)) and eids:     # the engine's mass: its block's node weights scaled to it
         k = eng["mass"] / sum(car.kg[n] for n in eids)
         for n in eids:
             car.kg[n] = round(car.kg[n] * k, 3)
-    if eng.get("max_rpm"):
+    if eng.get("max_rpm") and electric:
+        main_engine["maxRPM"] = float(eng["max_rpm"])
+    elif eng.get("max_rpm"):
         main_engine.update(maxRPM=float(eng["max_rpm"]), revLimiterRPM=float(eng["max_rpm"]), hasRevLimiter=True)
     main_engine["torqueReactionNodes:"] = [n for n in (main_engine.get("torqueReactionNodes:") or []) if n in car.nodes] or eids[:3]
     for k in ("waterDamage", "radiator", "engineBlock", "particulates"):
         main_engine.pop(k, None)
     fuel = main_engine.get("requiredEnergyType") or "gasoline"
 
-    grows = [r for r in (gpart.get("powertrain") or [])[1:] if isinstance(r, list)]
+    grows = [r for r in ((gpart or {}).get("powertrain") or [])[1:] if isinstance(r, list)]
     gdev = (spec.get("gearbox") or {}).get("source", {}).get("device") or "gearbox"
-    gearbox = _resolve(copy.deepcopy(gpart.get(gdev) or {}), gvars)
+    gearbox = _resolve(copy.deepcopy((gpart or {}).get(gdev) or {}), gvars)
     ratios = (spec.get("gearbox") or {}).get("ratios")
-    if ratios:
+    if ratios and not electric:
         old = gearbox.get("gearRatios") or [-3.5, 0]
         k = next((i for i, x in enumerate(old[:3]) if x == 0), 1)
         gearbox["gearRatios"] = list(old[:k + 1]) + [float(x) for x in ratios]
     if "gearboxNode:" in gearbox:
         gearbox["gearboxNode:"] = [n for n in gearbox["gearboxNode:"] if n in car.nodes] or gids[:1] or eids[:1]
-    fd = float(spec.get("final_drive") or 4.0)
-    pt = [["type", "name", "inputName", "inputIndex"], ["combustionEngine", "mainEngine", "dummy", 0]]
-    out_dev = "gearbox"
+    fd = float(spec.get("final_drive") or (EV_REDUCTION if electric else 4.0))
+    if electric:                                            # the motor drives the differentials: no gearbox
+        pt = [["type", "name", "inputName", "inputIndex"], ["electricMotor", "mainMotor", "dummy", 0]]
+        out_dev = "mainMotor"
+        if fd < 5:
+            car.notes.append(f"final drive {fd}: an electric motor's single reduction is usually 7 to 10")
+    else:
+        pt = [["type", "name", "inputName", "inputIndex"], ["combustionEngine", "mainEngine", "dummy", 0]]
+        out_dev = "gearbox"
     for r in grows:                                         # the gearbox part's own chain (clutch or converter, gearbox)
         rr = _resolve(copy.deepcopy(r), gvars)
         if rr[1] == gdev:
@@ -511,8 +529,12 @@ def build(car_json):
 
     vc = {}
     for part, vars_ in ((epart, evars), (gpart, gvars)):
-        if isinstance(part.get("vehicleController"), dict):
+        if isinstance((part or {}).get("vehicleController"), dict):
             vc.update(_resolve(copy.deepcopy(part["vehicleController"]), vars_))
+    if electric:                                            # one motor, by its name here (the EV sports car names front and rear)
+        vc.update({"shiftLogicName": "electricMotor", "motorNames": ["mainMotor"]})
+        vc.setdefault("topSpeedLimitReverse", 15)
+        vc.setdefault("onePedalRegenCoef", 0.85)
     steering = _rack(car, res, wheels, spec.get("steering") or {}, frame)
 
     # the main part
@@ -520,13 +542,24 @@ def build(car_json):
          "refNodes": _ref_nodes(car, frame, yf),
          "cameraExternal": {"distance": 5.0, "distanceMin": 2, "offset": {"x": 0, "y": 0, "z": 0.45}, "fov": 65},
          "controller": [["fileName"], ["vehicleController", {}]],
-         "powertrain": pt, "mainEngine": main_engine, "gearbox": gearbox, **sections,
-         "energyStorage": [["type", "name"], ["fuelTank", "mainTank"]],
-         "mainTank": {"energyType": fuel, "fuelCapacity": float(spec.get("fuel_l") or 50), "startingFuelCapacity": float(spec.get("fuel_l") or 50)},
-         "vehicleController": vc, "slots": slots}
-    for k in ("soundConfig", "soundConfigExhaust"):
-        if isinstance(epart.get(k), dict):
-            p[k] = _resolve(copy.deepcopy(epart[k]), evars)
+         "powertrain": pt, **sections, "vehicleController": vc, "slots": slots}
+    if electric:
+        kwh = float(spec.get("battery_kwh") or BATTERY_KWH)
+        p.update({"mainMotor": main_engine, "energyStorage": [["type", "name"], ["electricBattery", "mainBattery"]],
+                  "mainBattery": {"energyType": "electricEnergy", "batteryCapacity": kwh, "startingCapacity": kwh}})
+        snd = main_engine.get("soundConfig")                # the motor's sound: a section of its part, by name
+        if isinstance(snd, str) and isinstance(epart.get(snd), dict):
+            p[snd] = _resolve(copy.deepcopy(epart[snd]), evars)
+        else:
+            main_engine.pop("soundConfig", None)
+        car.notes.append(f"electric: {eng['source']['part']} driving the differentials (reduction {fd}), a {kwh:.0f} kWh battery")
+    else:
+        p.update({"mainEngine": main_engine, "gearbox": gearbox,
+                  "energyStorage": [["type", "name"], ["fuelTank", "mainTank"]],
+                  "mainTank": {"energyType": fuel, "fuelCapacity": float(spec.get("fuel_l") or 50), "startingFuelCapacity": float(spec.get("fuel_l") or 50)}})
+        for k in ("soundConfig", "soundConfigExhaust"):
+            if isinstance(epart.get(k), dict):
+                p[k] = _resolve(copy.deepcopy(epart[k]), evars)
     if steering:
         p["hydros"], p["rails"], p["slidenodes"] = steering
     cda = (spec.get("aero") or {}).get("cda")

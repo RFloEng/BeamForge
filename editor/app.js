@@ -2684,19 +2684,21 @@ function scratchPanel() {
   const rims = (library && library.archetypes.rims) || [];
   const ok = (c, t) => `<span class="${c ? 'good' : 'bad'}">${c ? '✓' : '✗'}</span> ${t}`;
   const frame = skel.res && skel.res.parts.some((p) => p.kind === 'frame' && p.nodes.length >= 4);
-  const ready = frame && wn.length >= 3 && eng && gb && rim && library && rims.length;
+  const ev = !!(eng && eng.device);
+  const ready = frame && wn.length >= 3 && eng && (gb || ev) && rim && library && rims.length;
   return `<h2>Make a car from scratch</h2>
     <p class="quiet">The sketch is the car: its frame, arms and uprights. The engine and gearbox, rims and tyres come from
       the vanilla cars' parts in your install. Unverified in the game: test it and tell what it does.</p>
     <div class="kv"><span>Frame</span><span>${ok(frame, 'a frame part with four nodes or more')}</span>
       <span>Wheels</span><span>${ok(wn.length >= 3, wn.length ? wn.join(', ') + ' <span class="q">(a point in each upright_fl… part: its centre)</span>' : 'put a point in each upright_fl, upright_fr… part: the wheel centre')}</span>
       <span>Engine</span><span>${ok(eng, eng ? esc(eng.title) : 'choose one in Powertrain, from the vanilla cars')} <button class="mini" data-goto="powertrain">Powertrain</button></span>
-      <span>Gearbox</span><span>${ok(gb, gb ? esc(gb.title) : 'choose one in Powertrain')}</span>
+      <span>Gearbox</span><span>${ev ? '<span class="good">✓</span> none: the electric motor drives the differentials (final drive = its reduction)' : ok(gb, gb ? esc(gb.title) : 'choose one in Powertrain')}</span>
       <span>Library</span><span>${ok(library, library ? `${library.vehicles} vehicles` : 'learn from the install in Powertrain')}</span></div>
     <div class="kv"><span>Wheels</span><span>${ok(rim, rim ? ['front', 'rear'].map((a) => { const c = wheelChoice(a); return `${a} ${esc(c.rim.name)}${c.tyre ? ', ' + esc(c.tyre.name) : ''}`; }).join(' · ') : 'choose rims and tyres')} <button class="mini" data-goto="wheels">Wheels</button></span>
       <span>Body</span><span>${svjDoc && svjDoc.meshes.some((m) => m.file) ? `<span class="good">✓</span> the SVJ's chassis mesh, on the frame` : '<span class="q">none (optional: an SVJ with its meshes gives the body)</span>'}</span></div>
     <div class="kv"><span>Layout</span><span><select id="sclayout">${['FWD', 'RWD', 'AWD'].map((l) => `<option ${scratchForm.layout === l ? 'selected' : ''}>${l}</option>`).join('')}</select></span>
       <span>Lock (deg)</span><span><input type="number" id="sclock" value="${scratchForm.lock}" min="15" max="60" step="1"></span>
+      ${ev ? `<span>Battery kWh</span><span><input type="number" id="scbattery" value="${scratchForm.battery || 60}" min="5" max="200" step="1"></span>` : ''}
       <span>Vehicle id</span><span><input id="scid" value="${esc(scratchForm.id || (skel.name || 'scratch').toLowerCase().replace(/[^a-z0-9_]+/g, '_'))}"></span>
       <span>Name</span><span><input id="scname" value="${esc(scratchForm.name || skel.name || 'Scratch car')}"></span>
       <span>Brand</span><span><input id="scbrand" value="${esc(scratchForm.brand || 'BeamForge')}"></span></div>
@@ -2708,9 +2710,10 @@ function bindScratch(el) {
   const keep = () => {
     for (const [id, k] of [['scid', 'id'], ['scname', 'name'], ['scbrand', 'brand']]) if ($(id)) scratchForm[k] = $(id).value.trim();
     if ($('sclock')) scratchForm.lock = +$('sclock').value || 33;
+    if ($('scbattery')) scratchForm.battery = +$('scbattery').value || 60;
     if ($('sclayout')) scratchForm.layout = $('sclayout').value;
   };
-  for (const id of ['scid', 'scname', 'scbrand', 'sclock', 'sclayout']) if ($(id)) $(id).onchange = keep;
+  for (const id of ['scid', 'scname', 'scbrand', 'sclock', 'sclayout', 'scbattery']) if ($(id)) $(id).onchange = keep;
   if ($('scbuild')) $('scbuild').onclick = () => { keep(); buildScratch(); };
 }
 
@@ -2723,7 +2726,7 @@ async function buildScratch() {
     // the donor parts' files, read again from the install (the library keeps only their numbers)
     const pick = (kind, s) => (A[kind] || []).find((a) => a.pick.model === s.model && a.pick.part === s.part);
     const files = new Set([W.front.rim.pick.file, W.rear.rim.pick.file, W.front.tyre && W.front.tyre.pick.file, W.rear.tyre && W.rear.tyre.pick.file,
-      (pick('engines', eng.source) || {}).pick?.file, (pick('gearboxes', gb) || {}).pick?.file].filter(Boolean));
+      (pick('engines', eng.source) || {}).pick?.file, gb && !eng.source.device ? (pick('gearboxes', gb) || {}).pick?.file : null].filter(Boolean));
     if (!W.front.rim.pick.file) throw new Error('the library is from an older BeamForge: learn from the install again (Powertrain)');
     say('Reading the donor parts…');
     const { texts, ranks } = await readResolved((p) => files.has(p));
@@ -2736,7 +2739,8 @@ async function buildScratch() {
       diffs: ptEdit.diffs || {},
       aero: aeroEdit && aeroEdit.cd && aeroEdit.area ? { cda: +(aeroEdit.cd * aeroEdit.area).toFixed(4) } : {},
       components: compItems,
-      gearbox: { source: gb, ratios: ptEdit.gears }, final_drive: ptEdit.final_drive || 4.0,
+      gearbox: eng.source.device ? {} : { source: gb, ratios: ptEdit.gears }, final_drive: ptEdit.final_drive || null,
+      battery_kwh: eng.source.device ? scratchForm.battery || 60 : null,
       rim: { front: src(W.front.rim.pick, 'F'), rear: src(W.rear.rim.pick, 'R') },
       tyre: Object.fromEntries(['front', 'rear'].filter((a) => W[a].tyre).map((a) => [a, src(W[a].tyre.pick, a === 'front' ? 'F' : 'R', W[a].f.overrides)])),
       steering: { lock_deg: scratchForm.lock, turns: ptEdit.steering_turns || 3 } };

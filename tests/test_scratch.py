@@ -32,6 +32,16 @@ DONORS = {
                                 "clutch": {"clutchFreePlay": 0.75},
                                 "nodes": [["id", "posX", "posY", "posZ"], {"nodeWeight": 6}, ["gbx1", -0.3, -1.4, 0.4]],
                                 "beams": [["id1:", "id2:"], ["gbx1", "eng1r"], ["gbx1", "eng2r"], ["gbx1", "eng3r"]]}}),
+    "vehicles/toy/toy_motor.jbeam": json.dumps({                       # as the EV sports car's: the motor alone in its part
+        "toy_motor_R": {"slotType": "toy_engine", "powertrain": [["type", "name", "inputName", "inputIndex"], ["electricMotor", "rearMotor", "dummy", 0]],
+                        "rearMotor": {"torque": [["rpm", "torque"], [0, 300], [6000, 300], [16000, 90]], "maxRPM": 16000, "inertia": 0.08,
+                                      "electricalEfficiency": 0.95, "energyStorage": "mainBattery", "torqueReactionNodes:": ["m1", "m2", "m3"],
+                                      "electricsThrottleFactorName": "throttleFactorRear", "engineBlock": {"[engineGroup]:": ["rear_motor_block"]},
+                                      "soundConfig": "soundConfigRear"},
+                        "soundConfigRear": {"sampleName": "ElectricMotor"},
+                        "vehicleController": {"shiftLogicName": "electricMotor", "motorNames": ["rearMotor", "frontMotor"]},
+                        "nodes": [["id", "posX", "posY", "posZ"], {"nodeWeight": 15}, ["m1", 0.15, 1.2, 0.3], ["m2", -0.15, 1.2, 0.3], ["m3", 0.0, 1.4, 0.3], ["m4", 0.0, 1.3, 0.5]],
+                        "beams": [["id1:", "id2:"], ["m1", "m2"], ["m2", "m3"], ["m3", "m1"], ["m1", "m4"], ["m2", "m4"], ["m3", "m4"]]}}),
     "vehicles/common/wheels/toy_wheels.jbeam": json.dumps({
         "steel_13x5_F": {"slotType": "wheel_F_4", "slots": [["type", "default", "description"], ["tire_F_13x5", "tire_F_176_68_13_standard", "Front Tires"]],
                          "nodes": [["id", "posX", "posY", "posZ"], {"nodeWeight": 4.5}, ["fwhl1r", -0.33, 0, 0], ["fwhl1rr", -0.55, 0, 0], ["fwhl1l", 0.33, 0, 0], ["fwhl1ll", 0.55, 0, 0]],
@@ -118,6 +128,26 @@ class TestScratch(unittest.TestCase):
         self.assertEqual(hy[0][2]["factor"], -hy[1][2]["factor"])            # the two hydros cross
         self.assertGreater(hy[0][2]["factor"], 0)                             # tie rods behind the axle: positive moves the rack left
         self.assertEqual(sorted(body["rails"]), ["bf_steeringrack"])
+
+    def test_electric(self):
+        car = dict(self.car, engine={"source": {"model": "toy", "part": "toy_motor_R", "device": "rearMotor"}, "max_rpm": 15000},
+                   gearbox={}, final_drive=None, battery_kwh=75)
+        out = json.loads(scratch.build(json.dumps(car)))
+        body = json.loads(out["files"]["vehicles/bf_test_scratch/bf_test_scratch.jbeam"])["bf_test_scratch_body"]
+        pt = [(r[0], r[1], r[2]) for r in body["powertrain"][1:]]
+        self.assertEqual(pt[0], ("electricMotor", "mainMotor", "dummy"))
+        self.assertIn(("shaft", "driveshaft_R", "mainMotor"), pt)                 # no gearbox: the motor drives the differential
+        self.assertNotIn("gearbox", body)
+        self.assertNotIn("mainEngine", body)
+        mm = body["mainMotor"]
+        self.assertEqual((mm["maxRPM"], mm["energyStorage"], "engineBlock" in mm, "electricsThrottleFactorName" in mm), (15000.0, "mainBattery", False, False))
+        self.assertEqual(body["soundConfigRear"], {"sampleName": "ElectricMotor"})
+        self.assertEqual(body["mainBattery"]["batteryCapacity"], 75.0)
+        self.assertEqual((body["vehicleController"]["shiftLogicName"], body["vehicleController"]["motorNames"]), ("electricMotor", ["mainMotor"]))
+        diff = next(r for r in body["powertrain"][1:] if r[1] == "differential_R")
+        self.assertEqual(diff[4]["gearRatio"], scratch.EV_REDUCTION)
+        bng.add_files(json.dumps(out["files"]))
+        self.assertEqual(json.loads(bng.configure("bf_test_scratch", "base"))["missing"], [])
 
     def test_engine_values_and_differentials(self):
         car = dict(self.car, layout="AWD", diffs={"rear": {"type": "lsd_clutch", "preload": 60, "lock_power": 0.3, "lock_coast": 0.1}, "split": 0.35})

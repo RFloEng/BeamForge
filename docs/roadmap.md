@@ -53,7 +53,10 @@ Done, to be checked in the game:
 Next:
 - Test the scratch car in the game, and fix what it does (the first one is in the mods folder as "v1 Scratch test (BF)").
 - Test a mounted sketch in the game (a brace or a new mechanism on a vanilla car).
-- Downforce devices once BeamNG's triangle aero can be calibrated in the game; electric drivetrains for scratch cars.
+- Downforce devices once BeamNG's triangle aero can be calibrated in the game.
+
+Also done: **electric cars from scratch**. A vanilla electric motor (the EV sports car's) drives the differentials directly, its
+reduction as their gear ratio (8 by default), with a battery (kWh) and the controller's electric shift logic.
 
 ## Not planned
 
