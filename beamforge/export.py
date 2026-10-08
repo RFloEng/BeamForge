@@ -699,7 +699,7 @@ def _add_beams(part, added):
     return len(added)
 
 
-def build(model, new_id, name, configured_json, choices_json, brand=None, svj_json=None, added_json=None):
+def build(model, new_id, name, configured_json, choices_json, brand=None, svj_json=None, added_json=None, mount_json=None):
     """The text files of the new vehicle: {"files": {path: text}, "renamed": {old: new}, "notes": [...],
     "counts": {...}}. configured: beamng.configure() of the edited vehicle (with its moves); choices:
     {part: "reuse" | "copy" | "fit"} (missing parts take plan()'s proposal). svj_json (optional):
@@ -707,7 +707,8 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     svj_meshes; replace: leave out the base vehicle's body meshes; no "attach": no meshes) and the
     values to take ({row key: True}, values.table keys; study: the SVJ suspension study). added_json
     (optional): beams added by hand, [{"a", "b", "beamSpring", "beamDamp", "beamDeform", "beamStrength"}]
-    (rigidity.added_beam), written in the vehicle's main part."""
+    (rigidity.added_beam), written in the vehicle's main part. mount_json (optional): {"sketch": {"parts", "opts"},
+    "ties": [sketch node ids]}, a sketch mounted on the vehicle (mount.plan), its nodes and beams in the main part."""
     problems = check_id(new_id, model)
     if problems:
         raise ValueError("; ".join(problems))
@@ -731,6 +732,15 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
             taken_pt.setdefault(part, {}).update(ch)
     if lf and not taken_weights:
         taken_weights = values.weight_changes(model, v, length_factors=lf, floors=floors)
+    mounted = None
+    if mount_json:                                          # a sketch on the vehicle: its weight at the shared nodes
+        from beamforge import mount
+        mj = json.loads(mount_json)
+        mounted = mount.plan(model, v, mj["sketch"], ties=mj.get("ties") or ())
+        for part, ws in mounted["weight_add"].items():
+            for row, add in ws.items():
+                cur = taken_weights.get(part, {}).get(row)
+                taken_weights.setdefault(part, {})[row] = round(cur + add, 3) if cur is not None else mounted["weights"][part][row]
     mass_note = None
     if opt and opt.get("take", {}).get("mass") and taken_weights:
         target = values.svj_mass(opt["svj"])[0]
@@ -818,6 +828,10 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
         notes.append(f"{len(json.loads(added_json)) - len(added)} beams added by hand left out: their nodes are not in this configuration")
     if mass_note:
         notes.append(mass_note)
+    if mounted:
+        notes += [f"sketch: {w}" for w in mounted["warnings"]]
+        notes.append(f"sketch mounted: {len(mounted['nodes'])} new nodes, {len(mounted['shared'])} shared with the vehicle, "
+                     f"{len(mounted['ties'])} tied, {len(mounted['beams'])} beams" + (f" ({mounted['softened']} softened at the shared nodes)" if mounted["softened"] else ""))
     for r in bench:
         soft = max(r["base"][k] / r["fitted"][k] for k in r["base"])
         if soft > 1.05:
@@ -851,6 +865,9 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
             counts["values"] += 1
         if added and n == v["main"]:
             counts["added_beams"] += _add_beams(part, added)
+        if mounted and n == v["main"]:
+            mount.write(part, mounted)
+            counts["sketch_nodes"], counts["sketch_beams"] = len(mounted["nodes"]), len(mounted["beams"])
         if opt and opt.get("replace") and svjm and n in active:
             counts["base_meshes_dropped"] += _drop_body_meshes(n, part)
         for m in svjm:

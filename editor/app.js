@@ -34,7 +34,7 @@ import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, reme
 const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py',
   'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py', 'beamforge/dae.py', 'beamforge/values.py',
   'beamforge/rigidity.py', 'beamforge/kinematics.py', 'beamforge/roles.py', 'beamforge/convert.py',
-  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py', 'beamforge/scratch.py', 'beamforge/tyres.py', 'beamforge/aero.py', 'beamforge/components.py'];
+  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py', 'beamforge/scratch.py', 'beamforge/tyres.py', 'beamforge/aero.py', 'beamforge/components.py', 'beamforge/mount.py'];
 const REPO = new URL('../', import.meta.url);
 
 const $ = (id) => document.getElementById(id);
@@ -44,7 +44,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 // last line of a Python traceback, without the exception class
 const pyError = (e) => String(e.message || e).trim().split('\n').pop().replace(/^\w+Error: /, '');
 
-let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy, strpy, ptpy, donpy, scpy, typy, aepy, copy_, rigpy;
+let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy, strpy, ptpy, donpy, scpy, typy, aepy, copy_, rigpy, mtpy;
 const timing = {};         // ms per step, shown in the footer by drawTiming
 
 // ---------- Python engine ----------
@@ -74,6 +74,7 @@ async function boot() {
   typy = py.pyimport('beamforge.tyres');
   aepy = py.pyimport('beamforge.aero');
   rigpy = py.pyimport('beamforge.rigidity');
+  mtpy = py.pyimport('beamforge.mount');
   copy_ = py.pyimport('beamforge.components');
   timing.files = performance.now() - t1;
   $('loading').remove();
@@ -1548,7 +1549,7 @@ async function runExport() {
       svjOpt.axles = vehEdit.fitReport.axles;        // the wheels' camber and toe, set by preloading the upright's beams
     }
     const out = JSON.parse(exppy.build(veh.model, id, name, JSON.stringify(veh), JSON.stringify(exportForm.choices), brand || null,
-      svjOpt ? JSON.stringify(svjOpt) : null, (vehEdit.beams || []).length ? JSON.stringify(vehEdit.beams) : null));
+      svjOpt ? JSON.stringify(svjOpt) : null, (vehEdit.beams || []).length ? JSON.stringify(vehEdit.beams) : null, mountJson()));
     const all = new Set();
     for (const s of allSources()) for (const p of Object.keys(s.blobs || {})) if (p.startsWith(`vehicles/${veh.model}/`)) all.add(p);
     const copies = JSON.parse(exppy.assets(veh.model, id, JSON.stringify([...all])));
@@ -2516,8 +2517,8 @@ function assemblyPanel() {
       <span>Fitted to it</span><span>${fitN ? fitN + ' nodes' : 'no'}</span>
       <span>Values taken</span><span>${taken}</span>
       <span>Sketch</span><span>${skel ? esc(skel.name) : 'none'} <button class="mini" data-goto="sketch">Sketch</button></span></div>
-    ${skel && skel.res ? `<p class="quiet">The sketch is not mounted on the base yet (next step). Its structure as jbeam parts:
-      <button id="asmskjbeam" class="mini">Download jbeam</button></p>` : ''}
+    ${skel && skel.res ? `<p class="quiet">The sketch's structure as jbeam parts: <button id="asmskjbeam" class="mini">Download jbeam</button></p>` : ''}
+    ${mountPanel()}
     ${scratchPanel()}
     ${veh ? exportPanel() : '<p class="quiet">Open a base vehicle in Base to make a new vehicle from it (or make one from scratch above).</p>'}`;
 }
@@ -2525,6 +2526,44 @@ function assemblyPanel() {
 function bindAssembly(el) {
   if ($('asmskjbeam')) $('asmskjbeam').onclick = skeletonJbeam;
   bindScratch(el);
+  bindMount(el);
+}
+
+// ---------- the sketch mounted on the base vehicle (beamforge/mount.py) ----------
+// exportForm.mount: { on, ties: [sketch node ids] }. A sketch node on a base node shares it; a tied one gets beams to the
+// nearest body nodes; the rest are new nodes. Written into the main part of the new vehicle on export.
+const mountForm = () => (exportForm.mount ||= { on: false, ties: [] });
+function mountJson() {
+  const f = mountForm();
+  return veh && skel && skel.parts.length && f.on ? JSON.stringify({ sketch: { parts: skel.parts, opts: skel.opts }, ties: f.ties }) : null;
+}
+
+function mountPanel() {
+  if (!veh || !skel || !skel.res) return '';
+  const f = mountForm();
+  let body = '';
+  if (f.on) {
+    let p;
+    try { p = JSON.parse(mtpy.plan_json(veh.model, JSON.stringify(veh), JSON.stringify({ parts: skel.parts, opts: skel.opts }), JSON.stringify(f.ties))); }
+    catch (err) { return `<h3>Sketch on the base</h3><p class="bad">${esc(pyError(err))}</p>`; }
+    const sug = Object.entries(p.tie_suggestions || {});
+    body = `<div class="kv"><span>Shared nodes</span><span>${p.shared.length ? p.shared.map(([s, b]) => `${esc(s)} = ${esc(b)}`).join(', ') : 'none'}</span>
+        <span>New nodes · beams</span><span>${p.nodes.length} · ${p.beam_count}${p.softened ? ` <span class="q">(${p.softened} softened at shared nodes)</span>` : ''}${p.skipped ? ` <span class="q">(${p.skipped} the base already has)</span>` : ''}</span>
+        <span>Ties</span><span>${p.ties.length ? p.ties.map(([s, to]) => `${esc(s)} → ${to.map(esc).join(', ')} <button class="mini" data-untie="${esc(s)}">untie</button>`).join('<br>') : 'none'}</span></div>
+      ${sug.length ? `<p class="bad">Not joined to the vehicle (it would fall off): ${sug.map(([part, n]) => `${esc(part)} <button class="mini" data-tie="${esc(n)}">tie ${esc(n)}</button>`).join(' ')}</p>` : ''}
+      ${p.near.length ? `<p class="quiet">Near a vehicle node but not on it: ${p.near.map(([s, b, mm]) => `${esc(s)} (${fmt(mm, 0)} mm from ${esc(b)}) <button class="mini" data-tie="${esc(s)}">tie</button>`).join(' ')}</p>` : ''}
+      ${p.warnings.filter((w) => !/fall off|within/.test(w)).map((w) => `<p class="bad">${esc(w)}</p>`).join('')}`;
+  }
+  return `<h3>Sketch on the base</h3>
+    <label class="inl"><input type="checkbox" id="mounton" ${f.on ? 'checked' : ''}> Mount the sketch on ${esc(veh.model)} in the new vehicle</label>
+    <p class="quiet">A sketch node on a node of the vehicle shares it; tie a node to beam it to the nearest body nodes. Values stay in the vanilla cars' range.</p>
+    ${body}`;
+}
+
+function bindMount(el) {
+  if ($('mounton')) $('mounton').onchange = () => { mountForm().on = $('mounton').checked; redraw(); };
+  el.querySelectorAll('[data-tie]').forEach((b) => { b.onclick = () => { const f = mountForm(); if (!f.ties.includes(b.dataset.tie)) f.ties.push(b.dataset.tie); redraw(); }; });
+  el.querySelectorAll('[data-untie]').forEach((b) => { b.onclick = () => { const f = mountForm(); f.ties = f.ties.filter((t) => t !== b.dataset.untie); redraw(); }; });
 }
 
 // ---------- a car from scratch (beamforge/scratch.py): the sketch, the Powertrain's engine and gearbox, rims and tyres

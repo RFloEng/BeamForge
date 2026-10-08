@@ -46,10 +46,13 @@ Done, to be checked in the game:
 - **Beams by hand on a base vehicle** (Base, *Beams*): pick two nodes; the values aim at the vanilla median for the
   beam and keep both nodes under the vanilla 90th percentile (counting the beams added before), typed values are held
   at that room, deform and strength follow the beams already on the nodes. Written at the end of the main part.
+- **A sketch mounted on a base vehicle** (Assembly, *Sketch on the base*; `beamforge/mount.py`): a sketch node on a
+  vehicle node shares it (the sketch's weight there added to it, its beams softened if the node would leave the vanilla
+  range); a tied node gets beams to the three nearest body nodes; parts not joined are reported with the node to tie.
 
 Next:
 - Test the scratch car in the game, and fix what it does (the first one is in the mods folder as "v1 Scratch test (BF)").
-- Mounting a sketch on a base vehicle (shared nodes, archetype-style mounts): new mechanisms on vanilla cars.
+- Test a mounted sketch in the game (a brace or a new mechanism on a vanilla car).
 - Downforce devices once BeamNG's triangle aero can be calibrated in the game; electric drivetrains for scratch cars.
 
 ## Not planned
