@@ -174,7 +174,7 @@ def tyres(model, parts):
             short = TYRE_NAME_SHORT.search(name)
             letter = TYRE_NAME_LETTER.search(name) if not short else None
             a, b, rim, rest = (float(short.group(1)), None, int(short.group(2)), short.group(3)) if short else                 (None, None, int(letter.group(1)), letter.group(2)) if letter else (None, None, None, "")
-        inch = a is not None and a <= 45 and b is not None   # 30_11_15: 29 in tall, 10 in wide on a 15 in rim
+        inch = a is not None and a <= 45 and b is not None   # 30_11_15: 30 in tall, 11 in wide on a 15 in rim
         if short and a >= 400:                                # 560_13: the old 5.60-13 code, a width of 5.6 in
             a = round(a / 100 * 25.4)
         words = [w.lower() for w in rest.split("_") if w]
