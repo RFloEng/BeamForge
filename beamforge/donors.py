@@ -201,7 +201,13 @@ def rims(model, parts):
             continue
         vars_ = _vars(p)
         size = RIM_NAME.search(name)
-        out.append({"model": model, "part": name, "title": (p.get("information") or {}).get("name") or name,
+        tslot = None
+        t = p.get("slots") or p.get("slots2")
+        if isinstance(t, list) and t and isinstance(t[0], list):
+            head = [str(h) for h in t[0]]
+            tslot = next((dict(zip(head, r)).get("type") or dict(zip(head, r)).get("name") for r in t[1:]
+                          if isinstance(r, list) and str(dict(zip(head, r)).get("type") or dict(zip(head, r)).get("name") or "").startswith("tire")), None)
+        out.append({"model": model, "part": name, "title": (p.get("information") or {}).get("name") or name, "tyre_slot": tslot,
                     "diameter_in": int(size.group(1)) if size else None, "width_in": float(size.group(2)) if size else None,
                     "hubRadius": _num(m.get("hubRadius"), vars_), "hubWidth": _num(m.get("hubWidth"), vars_),
                     "slot": p.get("slotType")})
@@ -209,17 +215,18 @@ def rims(model, parts):
 
 
 def catalogue(models=None):
-    """Every engine, electric motor, gearbox, tyre and rim of the held vehicles (and of vehicles/common, once)."""
+    """Every engine, electric motor, gearbox, tyre and rim of the held vehicles (and of vehicles/common, once); each
+    entry with the file it is in ("file"), to read it again when a car is made from it."""
     out = {"engines": [], "gearboxes": [], "tyres": [], "rims": []}
     seen = set()
     for model in (models or _models()) + ["common"]:
         parts = _own_parts(model) if model != "common" else {k: v for k, v in beamng._parts_held("common").items() if v["model"] == "common"}
         parts = {k: v for k, v in parts.items() if (v["model"], k) not in seen}
         seen.update((v["model"], k) for k, v in parts.items())
-        out["engines"] += engines(model, parts)
-        out["gearboxes"] += gearboxes(model, parts)
-        out["tyres"] += tyres(model, parts)
-        out["rims"] += rims(model, parts)
+        for kind, f in (("engines", engines), ("gearboxes", gearboxes), ("tyres", tyres), ("rims", rims)):
+            for e in f(model, parts):
+                e["file"] = parts[e["part"]]["file"]
+                out[kind].append(e)
     return out
 
 

@@ -154,3 +154,4 @@ select[data-skrot] { width: 4.2em; }
 .xyz { display: flex; gap: 4px; align-items: center; margin: 4px 0; }
 .xyz input { width: 5.2em; }
 table.cmp tr.on td { background: var(--accent-soft); }
+.good { color: var(--good); }

@@ -34,7 +34,7 @@ import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, reme
 const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py',
   'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py', 'beamforge/dae.py', 'beamforge/values.py',
   'beamforge/rigidity.py', 'beamforge/kinematics.py', 'beamforge/roles.py', 'beamforge/convert.py',
-  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py'];
+  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py', 'beamforge/scratch.py'];
 const REPO = new URL('../', import.meta.url);
 
 const $ = (id) => document.getElementById(id);
@@ -44,7 +44,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 // last line of a Python traceback, without the exception class
 const pyError = (e) => String(e.message || e).trim().split('\n').pop().replace(/^\w+Error: /, '');
 
-let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy, strpy, ptpy, donpy;
+let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy, strpy, ptpy, donpy, scpy;
 const timing = {};         // ms per step, shown in the footer by drawTiming
 
 // ---------- Python engine ----------
@@ -70,6 +70,7 @@ async function boot() {
   strpy = py.pyimport('beamforge.structure');
   ptpy = py.pyimport('beamforge.powertrain');
   donpy = py.pyimport('beamforge.donors');
+  scpy = py.pyimport('beamforge.scratch');
   timing.files = performance.now() - t1;
   $('loading').remove();
   await restoreProject();
@@ -2222,11 +2223,108 @@ function assemblyPanel() {
       <span>Sketch</span><span>${skel ? esc(skel.name) : 'none'} <button class="mini" data-goto="sketch">Sketch</button></span></div>
     ${skel && skel.res ? `<p class="quiet">The sketch is not mounted on the base yet (next step). Its structure as jbeam parts:
       <button id="asmskjbeam" class="mini">Download jbeam</button></p>` : ''}
-    ${veh ? exportPanel() : '<p class="quiet">Open a base vehicle in Base to make a new vehicle from it.</p>'}`;
+    ${scratchPanel()}
+    ${veh ? exportPanel() : '<p class="quiet">Open a base vehicle in Base to make a new vehicle from it (or make one from scratch above).</p>'}`;
 }
 
 function bindAssembly(el) {
   if ($('asmskjbeam')) $('asmskjbeam').onclick = skeletonJbeam;
+  bindScratch(el);
+}
+
+// ---------- a car from scratch (beamforge/scratch.py): the sketch, the Powertrain's engine and gearbox, rims and tyres
+// of the vanilla cars. UNVERIFIED IN-GAME (the first version): the vehicle spawns where BeamNG puts new vehicles.
+let scratchForm = { id: '', name: '', brand: '', layout: 'RWD', lock: 33, rim: '', tyre: '', note: '' };
+
+// the sketch's wheels: each upright part's point is its wheel centre (SVJ frame, m); corner from the part's name
+function sketchWheels() {
+  const out = {};
+  if (!skel) return out;
+  for (const p of skel.parts) {
+    const m = p.name.match(/^(upright|hub|knuckle)_(fl|fr|rl|rr)$/i);
+    if (m && (p.points || []).length) out[m[2].toUpperCase()] = { center: p.points[0], hub: p.name };
+  }
+  return out;
+}
+
+// the rear (or front) twin of a part named for an axle: steelrim_01a_13x5_F <-> _R, tire_F_176_68_13 <-> tire_R_
+const axlePart = (name, AX) => name.replace(/_[FR](?=_|$)/, `_${AX}`).replace(/^tire_[FR]_/, `tire_${AX}_`);
+
+function scratchPanel() {
+  if (!skel) return '';
+  const wheels = sketchWheels(), wn = Object.keys(wheels).sort();
+  const eng = ptEdit.engine && ptEdit.engine.source, gb = ptEdit.gearbox_source;
+  const rims = (library && library.archetypes.rims) || [], tyres = (library && library.archetypes.tyres) || [];
+  const rim = scratchForm.rim === '' ? null : rims[+scratchForm.rim];
+  const fit = rim ? tyres.map((t, i) => [t, i]).filter(([t]) => t.pick.rim_in === rim.pick.diameter_in) : [];
+  const ok = (c, t) => `<span class="${c ? 'good' : 'bad'}">${c ? '✓' : '✗'}</span> ${t}`;
+  const frame = skel.res && skel.res.parts.some((p) => p.kind === 'frame' && p.nodes.length >= 4);
+  const ready = frame && wn.length >= 3 && eng && gb && rim && library && rims.length;
+  return `<h2>Make a car from scratch</h2>
+    <p class="quiet">The sketch is the car: its frame, arms and uprights. The engine and gearbox, rims and tyres come from
+      the vanilla cars' parts in your install. Unverified in the game: test it and tell what it does.</p>
+    <div class="kv"><span>Frame</span><span>${ok(frame, 'a frame part with four nodes or more')}</span>
+      <span>Wheels</span><span>${ok(wn.length >= 3, wn.length ? wn.join(', ') + ' <span class="q">(a point in each upright_fl… part: its centre)</span>' : 'put a point in each upright_fl, upright_fr… part: the wheel centre')}</span>
+      <span>Engine</span><span>${ok(eng, eng ? esc(eng.title) : 'choose one in Powertrain, from the vanilla cars')} <button class="mini" data-goto="powertrain">Powertrain</button></span>
+      <span>Gearbox</span><span>${ok(gb, gb ? esc(gb.title) : 'choose one in Powertrain')}</span>
+      <span>Library</span><span>${ok(library, library ? `${library.vehicles} vehicles` : 'learn from the install in Powertrain')}</span></div>
+    ${library ? `<div class="kv"><span>Rims</span><span><select id="scrim"><option value="">choose…</option>${rims.map((a, i) => `<option value="${i}" ${String(i) === scratchForm.rim ? 'selected' : ''}>${esc(a.name)} · ${a.count}</option>`).join('')}</select></span>
+      <span>Tyres</span><span><select id="sctyre" ${rim ? '' : 'disabled'}><option value="">the rim's own</option>${fit.map(([t, i]) => `<option value="${i}" ${String(i) === scratchForm.tyre ? 'selected' : ''}>${esc(t.name)} · ${t.count}</option>`).join('')}</select></span></div>` : ''}
+    <div class="kv"><span>Layout</span><span><select id="sclayout">${['FWD', 'RWD', 'AWD'].map((l) => `<option ${scratchForm.layout === l ? 'selected' : ''}>${l}</option>`).join('')}</select></span>
+      <span>Lock (deg)</span><span><input type="number" id="sclock" value="${scratchForm.lock}" min="15" max="60" step="1"></span>
+      <span>Vehicle id</span><span><input id="scid" value="${esc(scratchForm.id || (skel.name || 'scratch').toLowerCase().replace(/[^a-z0-9_]+/g, '_'))}"></span>
+      <span>Name</span><span><input id="scname" value="${esc(scratchForm.name || skel.name || 'Scratch car')}"></span>
+      <span>Brand</span><span><input id="scbrand" value="${esc(scratchForm.brand || 'BeamForge')}"></span></div>
+    <p><button id="scbuild" class="primary" ${ready ? '' : 'disabled'}>Make the car (mod zip)…</button></p>
+    ${scratchForm.note ? `<p class="quiet">${scratchForm.note}</p>` : ''}`;
+}
+
+function bindScratch(el) {
+  const keep = () => {
+    for (const [id, k] of [['scid', 'id'], ['scname', 'name'], ['scbrand', 'brand']]) if ($(id)) scratchForm[k] = $(id).value.trim();
+    if ($('sclock')) scratchForm.lock = +$('sclock').value || 33;
+    if ($('sclayout')) scratchForm.layout = $('sclayout').value;
+  };
+  for (const id of ['scid', 'scname', 'scbrand', 'sclock', 'sclayout']) if ($(id)) $(id).onchange = keep;
+  if ($('scrim')) $('scrim').onchange = () => { keep(); scratchForm.rim = $('scrim').value; scratchForm.tyre = ''; drawInspector(); };
+  if ($('sctyre')) $('sctyre').onchange = () => { keep(); scratchForm.tyre = $('sctyre').value; };
+  if ($('scbuild')) $('scbuild').onclick = () => { keep(); buildScratch(); };
+}
+
+async function buildScratch() {
+  const say = (t) => { scratchForm.note = t; drawInspector(); };
+  try {
+    const A = library.archetypes, rim = A.rims[+scratchForm.rim].pick, tyre = scratchForm.tyre !== '' ? A.tyres[+scratchForm.tyre].pick : null;
+    const eng = ptEdit.engine, gb = ptEdit.gearbox_source;
+    const src = (p, AX) => ({ model: p.model, part: axlePart(p.part, AX) });
+    // the donor parts' files, read again from the install (the library keeps only their numbers)
+    const pick = (kind, s) => (A[kind] || []).find((a) => a.pick.model === s.model && a.pick.part === s.part);
+    const files = new Set([rim.file, tyre && tyre.file, (pick('engines', eng.source) || {}).pick?.file, (pick('gearboxes', gb) || {}).pick?.file].filter(Boolean));
+    if (!rim.file) throw new Error('the library is from an older BeamForge: learn from the install again (Powertrain)');
+    say('Reading the donor parts…');
+    const { texts, ranks } = await readResolved((p) => files.has(p));
+    vehBusy = '';
+    vehpy.add_files(JSON.stringify(texts), JSON.stringify(ranks));
+    const car = { id: scratchForm.id || 'scratch_car', name: scratchForm.name || 'Scratch car', brand: scratchForm.brand || 'BeamForge',
+      sketch: { parts: skel.parts, opts: skel.opts }, wheels: sketchWheels(), layout: scratchForm.layout,
+      engine: { source: eng.source, torque: eng.torque, idle_rpm: eng.idle_rpm, max_rpm: eng.max_rpm },
+      gearbox: { source: gb, ratios: ptEdit.gears }, final_drive: ptEdit.final_drive || 4.0,
+      rim: { front: src(rim, 'F'), rear: src(rim, 'R') }, tyre: tyre ? { front: src(tyre, 'F'), rear: src(tyre, 'R') } : {},
+      steering: { lock_deg: scratchForm.lock, turns: ptEdit.steering_turns || 3 } };
+    say('Making the car…');
+    await new Promise((r) => setTimeout(r, 20));
+    const out = JSON.parse(scpy.build(JSON.stringify(car)));
+    const zw = new ZipWriter(new BlobWriter('application/zip'));
+    for (const [p, text] of Object.entries(out.files)) await zw.add(p, new TextReader(text));
+    const blob = await zw.close();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${car.id}.zip`;
+    a.click();
+    const c = out.counts;
+    say(`${esc(car.id)}.zip: ${c.nodes} nodes, ${c.beams} beams, ${c.wheels} wheels, ${fmt(c.mass, 0)} kg of nodes; stability ${Object.entries(c.bands).filter(([, n]) => n).map(([b, n]) => `${n} ${b}`).join(', ')}.
+      Put it in your mods folder; the car is "${esc(car.name)}". ${out.notes.map(esc).join(' · ')}`);
+  } catch (err) { vehBusy = ''; say(`<span class="bad">${esc(pyError(err))}</span>`); }
 }
 
 // ---------- project: the work saved, to continue later or pass on ----------
@@ -2247,7 +2345,7 @@ function projectData() {
       hidden: [...hiddenParts], locked: [...lockedParts] } : pendingBase,
     svj: svjDoc ? { name: svjName || 'project.svj.json', doc: svjDoc.svj } : null,
     sketch: skel ? { name: skel.name, parts: skel.parts, opts: skel.opts, active: skel.active } : null,
-    take: takeValues, export: exportForm, ties: savedTies(), powertrain: ptEdit,
+    take: takeValues, export: exportForm, ties: savedTies(), powertrain: ptEdit, scratch: { ...scratchForm, note: '' },
   };
 }
 
@@ -2284,6 +2382,7 @@ async function applyProject(p) {
       await finishImport(p.svj.name);
     }
     if (p.powertrain) ptEdit = { ...PT_EMPTY, ...p.powertrain };
+    if (p.scratch) scratchForm = { ...scratchForm, ...p.scratch };
     if (p.sketch) {
       let parts = p.sketch.parts;
       if (!parts && p.sketch.text) parts = JSON.parse(skpy.import_json(p.sketch.text, JSON.stringify(p.sketch.opts || {}))).parts;   // a project saved before sketches had their own parts

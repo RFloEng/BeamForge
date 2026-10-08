@@ -356,13 +356,16 @@ def wheels(parts, active, geo, vars_):
     moved by wheelOffset along the axis.
     """
     nodes = geo["nodes"]
-    table = []
-    for n in active:
+    rows, props = [], {}
+    for n in active:                                   # each part's rows under its own header, the properties carried on
         pw = parts[n]["part"].get("pressureWheels")
         if isinstance(pw, list) and pw and isinstance(pw[0], list):
-            table += pw if not table else pw[1:]
+            rows += jbeam.expand_table([pw[0], dict(props)] + pw[1:])
+            for r in pw[1:]:
+                if isinstance(r, dict):
+                    props.update(r)
     out = []
-    for r in jbeam.expand_table(table):
+    for r in rows:
         a, b = r.get("node1"), r.get("node2")
         if a not in nodes or b not in nodes:
             continue
