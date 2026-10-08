@@ -32,6 +32,45 @@ LENGTH = False                 # beams follow their length change (same material
 STEP = 1e-3                    # relative changes below this are not written
 MIN_SOFT = 0.2                 # the check softens a beam to no less than this share of its value
 
+# Where vanilla cars run, at the 2000 Hz step: 5 240 nodes of ten cars (hatchback, saloon2, saloon, coupe, compact, hatchback2,
+# saloon4, musclecar, bigsaloon, pickup), measured 2026-10-08. Per node: sum k / m * dt^2 and sum c / m * dt; per
+# beam: k * dt^2 * (1/ma + 1/mb) and c * dt * (1/ma + 1/mb) (the beam's own two-mass mode). Values beyond the 99th
+# percentile are where cars start to ring or explode; new beams aim at the median and keep nodes under the 90th.
+VANILLA = {"node_k": {"p50": 2.08, "p90": 3.68, "p99": 4.90, "max": 7.49},
+           "node_c": {"p50": 0.39, "p90": 0.88, "p99": 1.62, "max": 3.43},
+           "beam_k": {"p50": 0.30, "p90": 0.60, "p99": 0.92, "max": 1.81},
+           "beam_c": {"p50": 0.05, "p90": 0.12, "p99": 0.35, "max": 1.59}}
+DT = 1 / 2000
+
+
+def beam_values(ma, mb, k_at=(0.0, 0.0), c_at=(0.0, 0.0), aim="p50", cap="p90", dt=DT, want=None):
+    """Stable values for a new beam between nodes of ma and mb kg that already carry k_at (sum of beamSpring, N/m)
+    and c_at (sum of beamDamp, N s/m): {"beamSpring", "beamDamp", "k_room", "c_room", "limited"}. The beam's own
+    mode aims at the vanilla `aim` (VANILLA["beam_k"]), and is lowered if either node would pass the vanilla `cap`
+    for nodes; damping follows at the vanilla ratio of damping to stiffness. k_room / c_room: the most either node
+    can still take (N/m, N s/m), what a hand-set value may go up to. want: the stiffness asked for (a real tube's
+    E A / L, a hand-typed value), taken when it is under the aim."""
+    inv = 1.0 / ma + 1.0 / mb
+    k = VANILLA["beam_k"][aim] / (dt * dt * inv)
+    if want is not None:
+        k = min(k, want)
+    room_k = min(VANILLA["node_k"][cap] * m / (dt * dt) - s for m, s in ((ma, k_at[0]), (mb, k_at[1])))
+    room_c = min(VANILLA["node_c"][cap] * m / dt - s for m, s in ((ma, c_at[0]), (mb, c_at[1])))
+    limited = k > room_k
+    k = max(0.0, min(k, room_k))
+    c = min(k * dt * VANILLA["beam_c"]["p50"] / VANILLA["beam_k"]["p50"], max(0.0, room_c))
+    return {"beamSpring": round(k, -3), "beamDamp": round(c, 1), "k_room": round(max(0.0, room_k), -3),
+            "c_room": round(max(0.0, room_c), 1), "limited": limited}
+
+
+def node_index(m, k_sum, c_sum, dt=DT):
+    """(stiffness index, damping index, band) of a node: band "ok" up to the vanilla median, "high" to the 90th
+    percentile, "risky" to the 99th, "unstable" beyond."""
+    ki, ci = k_sum / m * dt * dt, c_sum / m * dt
+    worst = max(ki / VANILLA["node_k"]["p50"], ci / VANILLA["node_c"]["p50"])
+    band = "ok" if worst <= 1 else "high" if max(ki / VANILLA["node_k"]["p90"], ci / VANILLA["node_c"]["p90"]) <= 1         else "risky" if max(ki / VANILLA["node_k"]["p99"], ci / VANILLA["node_c"]["p99"]) <= 1 else "unstable"
+    return ki, ci, band
+
 
 def _clamp(x):
     return max(CLAMP[0], min(CLAMP[1], x))

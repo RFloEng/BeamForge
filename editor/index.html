@@ -24,6 +24,8 @@
   <div class="files">
     <button id="svjin" title="Pick the folder holding a Standard Vehicle JSON: its .svj.json (or a .zip bundle) and its meshes are found below it">Import SVJ</button>
     <button id="svjinfiles" title="Pick an .svj.json with its mesh files, or a .zip bundle, as files">Files…</button>
+    <button id="stepin" title="A STEP skeleton: an assembly of wireframe parts (points and lines), each part a rigid body; built into nodes and beams">Import STEP</button>
+    <input type="file" id="stepfile" accept=".step,.stp,.STEP,.STP" hidden>
     <input type="file" id="svjfile" accept=".json,.zip,.glb,.gltf,.bin" multiple hidden>
     <!-- the folder holding the SVJ's meshes, where the browser has no folder picker (findSvjMeshes) -->
     <input type="file" id="svjdir" webkitdirectory multiple hidden>
@@ -48,6 +50,7 @@
       <label id="meshtoggle" hidden><input type="checkbox" id="meshes" checked> SVJ meshes</label>
       <label id="hptoggle" hidden><input type="checkbox" id="hps" checked> SVJ hardpoints</label>
       <label id="susptoggle" hidden><input type="checkbox" id="showsusp" checked> SVJ suspension</label>
+      <label id="skeltoggle" hidden><input type="checkbox" id="showskel" checked> Skeleton</label>
       <button id="cmpbtn" class="mini" title="Overlap the base vehicle's meshes and the SVJ's: opacity, style, before the fit">Compare</button>
     </div>
     <div id="compare" hidden></div>   <!-- drawCompare: opacity and style of the base and SVJ meshes -->

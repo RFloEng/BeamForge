@@ -32,7 +32,7 @@ import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, reme
 const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py',
   'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py', 'beamforge/dae.py', 'beamforge/values.py',
   'beamforge/rigidity.py', 'beamforge/kinematics.py', 'beamforge/roles.py', 'beamforge/convert.py',
-  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py'];
+  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py'];
 const REPO = new URL('../', import.meta.url);
 
 const $ = (id) => document.getElementById(id);
@@ -42,7 +42,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 // last line of a Python traceback, without the exception class
 const pyError = (e) => String(e.message || e).trim().split('\n').pop().replace(/^\w+Error: /, '');
 
-let py, vehpy, svjpy, fitpy, suspy, exppy, valpy;
+let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy;
 const timing = {};         // ms per step, shown in the footer by drawTiming
 
 // ---------- Python engine ----------
@@ -64,6 +64,7 @@ async function boot() {
   suspy = py.pyimport('beamforge.suspension');
   exppy = py.pyimport('beamforge.export');
   valpy = py.pyimport('beamforge.values');
+  skpy = py.pyimport('beamforge.skeleton');
   timing.files = performance.now() - t1;
   $('loading').remove();
   redraw();
@@ -88,8 +89,10 @@ scene.add(new THREE.GridHelper(10, 50, 0xb8c0c8, 0xdde2e7));
 // vehG: the base vehicle's nodes and beams (drawVehicle); meshG: SVJ glTF meshes (loadSvjMeshes);
 // hpG: SVJ hardpoints (drawHardpoints)
 // suspG: the SVJ suspension linkage at the travel slider (drawSuspension)
+// skelG: a STEP skeleton built into nodes and beams (drawSkeleton)
 const vehG = new THREE.Group(), meshG = new THREE.Group(), hpG = new THREE.Group(), bodyG = new THREE.Group(), suspG = new THREE.Group();
-scene.add(vehG, meshG, hpG, bodyG, suspG);
+const skelG = new THREE.Group();
+scene.add(vehG, meshG, hpG, bodyG, suspG, skelG);
 
 // BeamNG axes (X left, Y rear, Z up) -> three.js (Y up)
 const v3 = (p) => new THREE.Vector3(p[0], p[2], p[1]);
@@ -119,7 +122,7 @@ function fitCamera() {
   renderer.render(scene, camera);
 })();
 
-function drawScene() { drawVehicle(); placeSvj(); drawHardpoints(); drawSuspension(); }
+function drawScene() { drawVehicle(); placeSvj(); drawHardpoints(); drawSuspension(); drawSkeleton(); }
 function redraw() { drawScene(); drawVehList(); drawInspector(); drawBudget(); showIssues(issues()); drawTiming(); }
 
 // ---------- base vehicle: any BeamNG vehicle from the user's own install or mods ----------
@@ -1479,8 +1482,9 @@ async function runExport() {
 // ---------- panels ----------
 function drawInspector() {
   const el = $('inspector');
-  el.innerHTML = vehInspector() + svjInspector();
+  el.innerHTML = vehInspector() + svjInspector() + skeletonPanel();
   bindVehInspector(el);
+  bindSkeleton(el);
   bindExport();
   bindFitPanel();
   bindSuspPanel();
@@ -1519,12 +1523,154 @@ function drawTiming() {
   if (timing.pyodide) parts.push(`Python engine ${fmt(timing.pyodide / 1000, 1)} s`);
   if (timing.files) parts.push(`BeamForge code ${fmt(timing.files / 1000, 1)} s`);
   if (timing.configure) parts.push(`last configure ${fmt(timing.configure, 0)} ms`);
+  if (timing.skeleton && skel) parts.push(`skeleton ${fmt(timing.skeleton, 0)} ms`);
   if (veh && meshNote) parts.push(meshNote);
   $('timing').textContent = parts.join(' · ');
 }
 
+// ---------- STEP skeleton (beamforge/skeleton.py): an assembly of wireframe parts, each a rigid body ----------
+// The line ends are nodes; each part gets the beams that make it rigid (its lines, then braces, helper nodes where it is
+// flat or straight); parts with a node at the same place share it (1 shared node: ball joint, 2: hinge, 3+: welded).
+// The CAD frame is turned into the SVJ frame (X forward, Y right, Z down, origin on the ground under the front axle) by
+// 90 degree turns and an offset, then placed on the base vehicle like an SVJ. Beam values are stable by construction
+// (rigidity.beam_values: vanilla cars' median per beam, no node past their 90th percentile).
+//   skel   { name, text, opts: { rot: [x, y, z] degrees, offset: [x, y, z] m, unit (m per file unit) or null, tol (m),
+//            kinds: {part: "frame" | "link"}, tubes: {part: "tube 40x2 steel_1018"}, min_kg }, res, error }
+// A frame part's lines are welded tubes (FBeam's rule, beamforge/tubes.py): stiffness E A / L capped for stability,
+// strength from the section, nodes carrying the tubes' mass, bending beams at the welded corners. A link is a rigid body.
+let skel = null;
+const SKEL_KIND = { line: 0xe0782a, bend: 0x2da44e, brace: 0x2f81f7, helper: 0x9aa4ae };
+const SKEL_BAND = { ok: 0x2da44e, high: 0xd4a72c, risky: 0xe0782a, unstable: 0xcf222e };
+
+function buildSkeleton() {
+  if (!skel) return;
+  const m = (veh && veh.measure) || {};
+  const opts = { ...skel.opts, yf: m.front_axle_y || 0, ground: m.ground_z || 0 };
+  const t0 = performance.now();
+  try {
+    skel.res = JSON.parse(skpy.build_json(skel.text, JSON.stringify(opts)));
+    skel.error = null;
+  } catch (e) {
+    skel.res = null;
+    skel.error = pyError(e);
+  }
+  timing.skeleton = performance.now() - t0;
+}
+
+function drawSkeleton() {
+  skelG.clear();
+  $('skeltoggle').hidden = !(skel && skel.res);
+  if (!skel || !skel.res) return;
+  const N = skel.res.nodes;
+  for (const kind of Object.keys(SKEL_KIND)) {
+    const pts = [];
+    for (const b of skel.res.beams) if (b.kind === kind) pts.push(v3(N[b.a].bng), v3(N[b.b].bng));
+    if (!pts.length) continue;
+    const geo = new THREE.BufferGeometry().setFromPoints(pts);
+    skelG.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: SKEL_KIND[kind], transparent: kind !== 'line', opacity: kind === 'line' ? 1 : 0.7 })));
+  }
+  const geo = new THREE.SphereGeometry(0.012, 10, 6);
+  for (const [id, n] of Object.entries(N)) {
+    const color = n.reference ? 0x8250df : n.helper ? 0x9aa4ae : SKEL_BAND[n.band] || 0x57606a;
+    const s = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color }));
+    s.position.copy(v3(n.bng));
+    s.userData = { skelNode: id };
+    skelG.add(s);
+  }
+  skelG.visible = $('showskel').checked;
+}
+
+function skeletonPanel() {
+  if (!skel) return `<h2>Skeleton</h2><p class="quiet">Import STEP to build a structure from a CAD assembly of points and lines:
+    each part is a rigid body, the line ends are its nodes, parts with an end at the same place share it.</p>`;
+  const o = skel.opts, r = skel.res;
+  const turns = (ax) => `<select data-skrot="${ax}">${[0, 90, 180, 270].map((d) => `<option value="${d}" ${o.rot[ax] === d ? 'selected' : ''}>${d}°</option>`).join('')}</select>`;
+  const off = (ax) => `<input type="number" step="0.001" data-skoff="${ax}" value="${o.offset[ax]}">`;
+  const units = [['', 'as the file'], ['0.001', 'mm'], ['0.01', 'cm'], ['1', 'm'], ['0.0254', 'inch']];
+  let body = '';
+  if (skel.error) body = `<p class="bad">${esc(skel.error)}</p>`;
+  else if (r) {
+    const rep = r.report;
+    const skipped = Object.entries(r.skipped || {});
+    body = `<div class="kv"><span>Unit</span><span>${esc(r.unit_name)}</span>
+        <span>Parts / lines</span><span>${rep.parts} / ${rep.lines}</span>
+        <span>Nodes</span><span>${rep.nodes} <span class="q">${rep.helper_nodes} helper, ${rep.ends_merged} ends merged, ${rep.splits} lines split</span></span>
+        <span>Beams</span><span>${rep.beams} <span class="q">${rep.bending} bending (welded corners), ${rep.braces} braces for rigidity</span></span>
+        <span>Mass</span><span>${fmt(rep.node_mass, 1)} kg <span class="q">tubes ${fmt(rep.tube_mass, 1)} kg</span></span>
+        <span>Rigid bodies</span><span>${rep.bodies}</span>
+        <span>Joints</span><span>${rep.joints.ball} ball, ${rep.joints.hinge} hinge, ${rep.joints.weld} weld</span>
+        <span>Free motions</span><span>${rep.free_motions} <span class="q">${rep.mechanism === null ? '' : `6 of the whole, ${rep.mechanism} of the mechanism`}</span></span>
+        <span>Stability</span><span>${Object.entries(rep.bands || {}).filter(([, n]) => n).map(([b, n]) => `${n} ${b}`).join(', ')}</span></div>
+      ${rep.not_rigid.length ? `<p class="bad">Not rigid: ${esc(rep.not_rigid.map((p) => p.join('+')).join(', '))}</p>` : ''}
+      ${skipped.length ? `<p class="quiet">Not read (yet): ${esc(skipped.map(([k, n]) => `${n} ${k}`).join(', '))}</p>` : ''}
+      ${(r.notes || []).map((n) => `<p class="quiet">${esc(n)}</p>`).join('')}
+      <details open><summary>Parts</summary><table class="cmp"><tr><th>Part</th><th>Kind</th><th>Tube</th><th>kg</th></tr>
+        ${r.parts.map((p) => `<tr><td title="${esc(p.role || 'structure')}, ${p.nodes.length} nodes, ${p.lines} lines">${esc(p.name)}</td>
+          <td><select data-skkind="${esc(p.name)}">${['frame', 'link'].map((k) => `<option ${p.kind === k ? 'selected' : ''}>${k}</option>`).join('')}</select></td>
+          <td><input data-sktube="${esc(p.name)}" value="${esc(p.tube)}" size="18" title="tube|sqtube DxT material (mm): steel_1018, steel_4130n, al_6061_t6"></td>
+          <td>${fmt(p.mass, 2)}${p.buckling ? ` <span class="q" title="members that buckle before they yield">${p.buckling} buckle</span>` : ''}</td></tr>`).join('')}</table></details>
+      <details><summary>Joints</summary><div class="kv">${r.joints.map((j) => `<span>${esc(j.parts[0].join('+'))} – ${esc(j.parts[1].join('+'))}</span><span>${esc(j.type)} (${esc(j.nodes.join(', '))})</span>`).join('') || '<span>none</span><span></span>'}</div></details>
+      <p class="quiet">Lines: orange the CAD's (tubes), green bending beams at welded corners, blue braces, grey to helper nodes. Nodes: green, amber, orange, red by their stiffness and damping against vanilla cars' (median, 90th, 99th percentile).</p>
+      <p><button id="skjbeam">Download jbeam</button></p>`;
+  }
+  return `<h2>Skeleton <span class="q">${esc(skel.name)}</span></h2>
+    <p class="quiet">CAD frame to the SVJ frame (X forward, Y right, Z down, origin on the ground under the front axle): turns about X, then Y, then Z, and an offset in metres.</p>
+    <div class="kv"><span>Turn X / Y / Z</span><span>${turns(0)} ${turns(1)} ${turns(2)}</span>
+      <span>Offset X / Y / Z (m)</span><span>${off(0)} ${off(1)} ${off(2)}</span>
+      <span>Unit</span><span><select id="skunit">${units.map(([v, l]) => `<option value="${v}" ${String(o.unit || '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></span>
+      <span>Merge tolerance (mm)</span><span><input type="number" step="0.5" min="0.1" id="sktol" value="${o.tol * 1000}"></span>
+      <span title="A node weighs its share of the tubes, but no less than this: heavier nodes allow stiffer beams">Minimum node mass (kg)</span><span><input type="number" step="0.1" min="0.1" id="skminkg" value="${o.min_kg}"></span></div>
+    ${body}
+    <p><button id="skclose" class="mini">Close skeleton</button></p>`;
+}
+
+function bindSkeleton(el) {
+  if (!skel) return;
+  const rebuild = () => { buildSkeleton(); drawSkeleton(); drawInspector(); drawTiming(); };
+  el.querySelectorAll('[data-skrot]').forEach((x) => { x.onchange = () => { skel.opts.rot[+x.dataset.skrot] = +x.value; rebuild(); }; });
+  el.querySelectorAll('[data-skoff]').forEach((x) => { x.onchange = () => { skel.opts.offset[+x.dataset.skoff] = +x.value || 0; rebuild(); }; });
+  if ($('skunit')) $('skunit').onchange = () => { skel.opts.unit = $('skunit').value ? +$('skunit').value : null; rebuild(); };
+  if ($('sktol')) $('sktol').onchange = () => { skel.opts.tol = Math.max(0.0001, (+$('sktol').value || 2) / 1000); rebuild(); };
+  if ($('skminkg')) $('skminkg').onchange = () => { skel.opts.min_kg = Math.max(0.1, +$('skminkg').value || 1); rebuild(); };
+  el.querySelectorAll('[data-skkind]').forEach((x) => { x.onchange = () => { skel.opts.kinds[x.dataset.skkind] = x.value; delete skel.opts.tubes[x.dataset.skkind]; rebuild(); }; });
+  el.querySelectorAll('[data-sktube]').forEach((x) => { x.onchange = () => { skel.opts.tubes[x.dataset.sktube] = x.value.trim(); rebuild(); }; });
+  if ($('skclose')) $('skclose').onclick = () => { skel = null; drawSkeleton(); drawInspector(); };
+  if ($('skjbeam')) $('skjbeam').onclick = () => {
+    const m = (veh && veh.measure) || {};
+    const opts = { ...skel.opts, yf: m.front_axle_y || 0, ground: m.ground_z || 0 };
+    const text = skpy.jbeam_json(skel.text, JSON.stringify(opts), 'skeleton');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    a.download = skel.name.replace(/\.(step|stp)$/i, '') + '.jbeam';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+}
+
+$('stepin').onclick = () => $('stepfile').click();
+$('stepfile').onchange = async (e) => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  skel = { name: f.name, text: await f.text(), opts: { rot: [0, 0, 0], offset: [0, 0, 0], unit: null, tol: 0.002, kinds: {}, tubes: {}, min_kg: 1 }, res: null, error: null };
+  buildSkeleton();
+  drawSkeleton();
+  drawInspector();
+  drawTiming();
+  if (!veh) {                                   // nothing else in the view: aim at the skeleton
+    const box = new THREE.Box3().setFromObject(skelG);
+    if (!box.isEmpty()) {
+      const c = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3()).length() || 1;
+      controls.target.copy(c);
+      camera.position.set(c.x + 0.8 * size, c.y + 0.5 * size, c.z - 0.75 * size);
+    }
+  }
+};
+$('showskel').onchange = () => { skelG.visible = $('showskel').checked; };
+
 // debug hook for automated UI tests. Not used by the editor itself.
 window.beamforge = {
+  get skeleton() { return skel; },
   get veh() { return veh; },
   get svj() { return svjDoc; },
   get hardpoints() { return svjHp; },

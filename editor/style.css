@@ -135,3 +135,5 @@ button.mini:disabled { opacity: 0.4; cursor: default; }
 #compare .cmprow { display: flex; gap: 8px; align-items: center; }
 #compare .cmprow b { width: 34px; }
 #compare input[type=range] { width: 110px; }
+input[data-skoff] { width: 4.2em; }
+select[data-skrot] { width: 4.2em; }
