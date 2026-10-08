@@ -603,6 +603,12 @@ function libraryPanel() {
       Use <i>With file dialog</i> for them (every session), or move the user folder elsewhere in the BeamNG launcher so it can be remembered.</p>` : ''}`;
 }
 
+// the list shows what can be driven: cars and trucks (and anything without a type); props, trailers and machinery
+// on request, the choice remembered in this browser
+const VEH_ALL_KEY = 'beamforge.vehicles.all';
+let vehAll = (() => { try { return !!localStorage.getItem(VEH_ALL_KEY); } catch { return false; } })();
+const drivable = (v) => !v.type || /^(car|truck)$/i.test(String(v.type).trim());
+
 function drawVehList() {
   const el = $('leftveh');
   if (ws !== 'base') { el.innerHTML = projectPanel(); bindProject(el); return; }
@@ -610,9 +616,11 @@ function drawVehList() {
   let html = libraryPanel();
   if (cat) {
     const f = vehFilter.toLowerCase();
-    const list = cat.filter((v) => !f || `${v.name} ${v.brand} ${v.model} ${v.type} ${v.source}`.toLowerCase().includes(f));
-    html += `<h2>Vehicles <span class="q">(${cat.length})</span></h2>
+    const others = cat.filter((v) => !drivable(v)).length;
+    const list = cat.filter((v) => (vehAll || drivable(v)) && (!f || `${v.name} ${v.brand} ${v.model} ${v.type} ${v.source}`.toLowerCase().includes(f)));
+    html += `<h2>Vehicles <span class="q">(${vehAll ? cat.length : cat.length - others})</span></h2>
       <div class="inl"><input id="vehfilter" placeholder="Filter" value="${esc(vehFilter)}"></div>
+      ${others ? `<label class="q"><input type="checkbox" id="vehall" ${vehAll ? 'checked' : ''}> show props, trailers and machinery (${others})</label>` : ''}
       <ul>${list.map((v) => `<li data-m="${esc(v.model)}" class="${veh && veh.model === v.model ? 'sel' : ''}">
         <span>${esc(v.brand ? v.brand + ' ' : '')}${esc(v.name)}${v.source && v.source !== 'vanilla' ? ` <span class="tag">${esc(v.source)}</span>` : ''}</span>
         <span class="q">${esc(v.type || '')} · ${v.configs.length}</span></li>`).join('')}</ul>`;
@@ -625,6 +633,7 @@ function drawVehList() {
   if ($('bngreopen')) $('bngreopen').onclick = reopenFolders;
   if ($('bngforget')) $('bngforget').onclick = forgetFolders;
   if (!cat) return;
+  if ($('vehall')) $('vehall').onchange = (e) => { vehAll = e.target.checked; try { localStorage.setItem(VEH_ALL_KEY, vehAll ? '1' : ''); } catch { /* */ } drawVehList(); };
   $('vehfilter').oninput = (e) => { vehFilter = e.target.value; drawVehList(); $('vehfilter').focus(); $('vehfilter').setSelectionRange(vehFilter.length, vehFilter.length); };
   el.querySelectorAll('li[data-m]').forEach((li) => li.onclick = () => openVehicle(li.dataset.m));
 }

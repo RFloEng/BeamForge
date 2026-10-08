@@ -56,7 +56,8 @@ Then open <http://localhost:8000/editor/>. The first load takes a few seconds wh
   will have to pick it again each session.
 
 The game's own rule decides which file wins: the user folder over mods, and mods over the install. The vehicle list
-fills in, cars first. Use the filter box to find one.
+fills in, cars first. Use the filter box to find one. By default the list shows cars and trucks only. Tick **show
+props, trailers and machinery** to list the rest too; the editor remembers the choice.
 
 ---
 
