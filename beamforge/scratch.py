@@ -497,6 +497,18 @@ def build(car_json):
                 pt.append(halfshaft(c, f"differential_{ax}", i))
                 pt.append(spindle(c))
 
+    # the components (fuel, driver, battery, ballast...): each one's mass on the frame nodes nearest its place
+    comps = spec.get("components") or []
+    if comps:
+        from . import components as compmod
+        added = 0.0
+        for c in comps:
+            if isinstance(c.get("mass"), (int, float)) and c.get("position") and c["mass"] > 0:
+                for n, kg in compmod.spread(car.nodes, frame, float(c["mass"]), svjmod.from_sae(c["position"], yf, zg)).items():
+                    car.kg[n] = round(car.kg[n] + kg, 3)
+                added += c["mass"]
+        car.notes.append(f"components: {len(comps)}, {added:.0f} kg on the frame nodes nearest each")
+
     vc = {}
     for part, vars_ in ((epart, evars), (gpart, gvars)):
         if isinstance(part.get("vehicleController"), dict):

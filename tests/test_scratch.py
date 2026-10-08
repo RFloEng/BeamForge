@@ -155,6 +155,14 @@ class TestScratch(unittest.TestCase):
         body = json.loads(out["files"]["vehicles/bf_test_scratch/bf_test_scratch.jbeam"])["bf_test_scratch_body"]
         self.assertEqual((body["triangles"][1]["triangleType"], body["triangles"][1]["liftCoef"]), ("NONCOLLIDABLE", 0))
 
+    def test_components_weigh_on_the_frame(self):
+        plain = json.loads(scratch.build(json.dumps(self.car)))["counts"]["mass"]
+        car = dict(self.car, components=[{"id": "driver", "kind": "driver", "mass": 75, "position": [-1.2, -0.3, -0.4]},
+                                          {"id": "ballast", "kind": "ballast", "mass": 40, "position": [-2.6, 0, -0.2]}])
+        out = json.loads(scratch.build(json.dumps(car)))
+        self.assertAlmostEqual(out["counts"]["mass"] - plain, 115, delta=0.5)
+        self.assertEqual(sum(out["counts"]["bands"][b] for b in ("high", "extreme", "beyond")), 0)   # heavier nodes: still stable
+
     def test_refused(self):
         bad = dict(self.car, engine={})
         with self.assertRaises(ValueError):

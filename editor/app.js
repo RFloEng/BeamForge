@@ -34,7 +34,7 @@ import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, reme
 const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py',
   'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py', 'beamforge/dae.py', 'beamforge/values.py',
   'beamforge/rigidity.py', 'beamforge/kinematics.py', 'beamforge/roles.py', 'beamforge/convert.py',
-  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py', 'beamforge/scratch.py', 'beamforge/tyres.py', 'beamforge/aero.py'];
+  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py', 'beamforge/scratch.py', 'beamforge/tyres.py', 'beamforge/aero.py', 'beamforge/components.py'];
 const REPO = new URL('../', import.meta.url);
 
 const $ = (id) => document.getElementById(id);
@@ -44,7 +44,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 // last line of a Python traceback, without the exception class
 const pyError = (e) => String(e.message || e).trim().split('\n').pop().replace(/^\w+Error: /, '');
 
-let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy, strpy, ptpy, donpy, scpy, typy, aepy;
+let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy, strpy, ptpy, donpy, scpy, typy, aepy, copy_;
 const timing = {};         // ms per step, shown in the footer by drawTiming
 
 // ---------- Python engine ----------
@@ -73,6 +73,7 @@ async function boot() {
   scpy = py.pyimport('beamforge.scratch');
   typy = py.pyimport('beamforge.tyres');
   aepy = py.pyimport('beamforge.aero');
+  copy_ = py.pyimport('beamforge.components');
   timing.files = performance.now() - t1;
   $('loading').remove();
   await restoreProject();
@@ -100,8 +101,8 @@ scene.add(new THREE.GridHelper(10, 50, 0xb8c0c8, 0xdde2e7));
 // suspG: the SVJ suspension linkage at the travel slider (drawSuspension)
 // skelG: a STEP skeleton built into nodes and beams (drawSkeleton)
 const vehG = new THREE.Group(), meshG = new THREE.Group(), hpG = new THREE.Group(), bodyG = new THREE.Group(), suspG = new THREE.Group();
-const skelG = new THREE.Group();
-scene.add(vehG, meshG, hpG, bodyG, suspG, skelG);
+const skelG = new THREE.Group(), compG = new THREE.Group();   // compG: the components' masses (drawComponents)
+scene.add(vehG, meshG, hpG, bodyG, suspG, skelG, compG);
 
 // BeamNG axes (X left, Y rear, Z up) -> three.js (Y up)
 const v3 = (p) => new THREE.Vector3(p[0], p[2], p[1]);
@@ -131,7 +132,7 @@ function fitCamera() {
   renderer.render(scene, camera);
 })();
 
-function drawScene() { drawVehicle(); placeSvj(); drawHardpoints(); drawSuspension(); drawSkeleton(); }
+function drawScene() { drawVehicle(); placeSvj(); drawHardpoints(); drawSuspension(); drawSkeleton(); drawComponents(); }
 function redraw() { drawScene(); drawSpaces(); drawVehList(); drawInspector(); drawBudget(); showIssues(issues()); drawTiming(); autosave(); }
 
 // ---------- base vehicle: any BeamNG vehicle from the user's own install or mods ----------
@@ -1521,6 +1522,7 @@ function drawInspector() {
     powertrain: () => powertrainPanel(),
     wheels: () => wheelsPanel(),
     aero: () => aeroPanel(),
+    components: () => componentsPanel(),
     assembly: () => assemblyPanel(),
   }[ws]();
   el.innerHTML = html;
@@ -1532,6 +1534,7 @@ function drawInspector() {
   if (ws === 'powertrain') bindPowertrain(el);
   if (ws === 'wheels') bindWheels(el);
   if (ws === 'aero') bindAero(el);
+  if (ws === 'components') bindComponents(el);
   if (ws === 'assembly') { bindExport(); bindAssembly(el); }
   el.querySelectorAll('[data-goto]').forEach((b) => { b.onclick = () => setWorkspace(b.dataset.goto); });
 }
@@ -1982,6 +1985,7 @@ const WORKSPACES = [
   ['sketch', 'Sketch', 'Mechanisms and structures from points and lines (a STEP assembly): rigid parts, joints, tubes'],
   ['suspension', 'Suspension', "The SVJ's corners over wheel travel"],
   ['wheels', 'Wheels', "Rims and tyres from the vanilla cars' archetypes, your values, the SVJ's Pacejka tyre as a benchmark"],
+  ['components', 'Components', 'The masses the car carries (engine, fuel, driver, battery, ballast): its mass and centre of gravity'],
   ['aero', 'Aero', 'Drag and downforce: the base, the SVJ or your own numbers, the forces per axle at speed'],
   ['powertrain', 'Powertrain', 'Engine, gearbox, final drive and steering: the base\'s, the SVJ\'s or your own; the transmission parts'],
   ['checks', 'Checks', 'Stability and structure of the vehicle and the sketch'],
@@ -1994,7 +1998,7 @@ if (!WORKSPACES.some(([k]) => k === ws)) ws = 'base';
 function drawSpaces() {
   const has = { base: !!veh, svj: !!svjDoc, sketch: !!skel, suspension: !!svjSusp,
     powertrain: !!(ptEdit.engine || ptEdit.gears || ptEdit.final_drive || ptEdit.steering_turns),
-    wheels: !!(wheelsForm.front.rim !== '' || wheelsForm.rear.rim !== ''), aero: !!aeroEdit };
+    wheels: !!(wheelsForm.front.rim !== '' || wheelsForm.rear.rim !== ''), aero: !!aeroEdit, components: compItems.length > 0 };
   const el = document.querySelector('.spaces');
   el.innerHTML = WORKSPACES.map(([k, label, tip]) =>
     `<button class="${k === ws ? 'on' : ''}" data-ws="${k}" title="${esc(tip)}">${esc(label)}${has[k] ? ' <span class="dot"></span>' : ''}</button>`).join('');
@@ -2243,6 +2247,92 @@ function bindPowertrain(el) {
     if (x.dataset.libpick === 'engines') set('engine', { torque: p.torque, idle_rpm: p.idle_rpm || (p.torque[0] || [800])[0], max_rpm: p.max_rpm || p.torque[p.torque.length - 1][0], source });
     else { ptEdit = { ...ptEdit, gears: p.ratios, gearbox_source: source, touched: true }; ptEditing = null; redraw(); }
   }; });
+}
+
+// ---------- Components: the masses the car carries, its mass and CG (beamforge/components.py) ----------
+// compItems: [{ id, kind, mass (kg), position [x, y, z] (SVJ frame, m) }]. A car from scratch gets each one's mass on the
+// frame nodes nearest its place; a base car's mass and CG are its own (and the SVJ's values, taken in SVJ).
+let compItems = [];
+const COMP_KINDS = ['payload', 'driver', 'fluid', 'electrical', 'powertrain', 'structural', 'ballast', 'other'];
+const PRESETS = { driver: { id: 'driver', kind: 'driver', mass: 75, position: [-1.25, -0.35, -0.45] },
+  fuel: { id: 'fuel', kind: 'fluid', mass: 37, position: [-2.2, 0, -0.35] },
+  battery: { id: 'battery', kind: 'electrical', mass: 15, position: [0.35, 0.5, -0.6] },
+  ballast: { id: 'ballast', kind: 'ballast', mass: 20, position: [-1.2, 0, -0.15] } };
+
+function compEstimate() {
+  if (!skel) return null;
+  const front = Object.values(sketchWheels()).filter((w) => w.center[0] > -0.5);
+  const fc = front.length ? [0, 1, 2].map((i) => front.reduce((s, w) => s + w.center[i], 0) / front.length) : [0, 0, -0.3];
+  const eng = ptEdit.engine && ptEdit.engine.mass ? { mass: ptEdit.engine.mass, position: [fc[0] - (scratchForm.layout === 'FWD' ? 0.05 : 0.35), 0, fc[2] - 0.05] } : null;
+  try {
+    return JSON.parse(copy_.estimate_json(JSON.stringify({ parts: skel.parts, opts: skel.opts, engine: eng, wheels: sketchWheels(), components: compItems })));
+  } catch (err) { return { error: pyError(err) }; }
+}
+
+function drawComponents() {
+  compG.clear();
+  if (ws !== 'components') return;
+  const mat = new THREE.MeshBasicMaterial({ color: 0xe0782a, transparent: true, opacity: 0.55, depthTest: false });
+  for (const c of compItems) {
+    if (!c.position || !(c.mass > 0)) continue;
+    const s = new THREE.Mesh(new THREE.SphereGeometry(0.03 * Math.cbrt(c.mass), 14, 10), mat);
+    s.position.copy(v3(saeToBng(c.position)));
+    s.renderOrder = 9;
+    compG.add(s);
+  }
+  const e = compEstimate();
+  if (e && e.cg) {
+    const s = new THREE.Mesh(new THREE.SphereGeometry(0.05, 16, 12), new THREE.MeshBasicMaterial({ color: 0xcf222e, depthTest: false }));
+    s.position.copy(v3(saeToBng(e.cg)));
+    s.renderOrder = 10;
+    compG.add(s);
+  }
+}
+
+function componentsPanel() {
+  const target = svjDoc ? JSON.parse(copy_.svj_json(JSON.stringify(svjDoc.svj))) : null;
+  const e = compEstimate();
+  const base = veh && !skel ? JSON.parse(copy_.base_json(veh.model, JSON.stringify(veh))) : null;
+  const pos = (c, i) => `<input type="number" step="1" data-cpos="${i}:${['x', 'y', 'z'].indexOf(c)}" value="${toMm(compItems[i].position[['x', 'y', 'z'].indexOf(c)])}" style="width:4.6em">`;
+  const sum = e && !e.error ? `<div class="kv"><span>Mass</span><span><b>${fmt(e.mass, 0)} kg</b>${target && target.mass ? ` <span class="q">SVJ ${fmt(target.mass, 0)} kg</span>` : ''}</span>
+      <span>CG behind the front axle</span><span>${e.cg ? fmt(-e.cg[0], 3) + ' m' : '–'}${target && target.cg ? ` <span class="q">SVJ ${fmt(-target.cg[0], 3)}</span>` : ''}</span>
+      <span>CG height</span><span>${e.cg ? fmt(-e.cg[2], 3) + ' m' : '–'}${target && target.cg ? ` <span class="q">SVJ ${fmt(-target.cg[2], 3)}</span>` : ''}</span>
+      <span>On the front axle</span><span>${e.front_share != null ? fmt(e.front_share * 100, 1) + ' %' : '–'}</span></div>
+    <details><summary>What weighs</summary><table class="cmp"><tr><th></th><th>kg</th><th>X / Z m</th></tr>
+      ${e.rows.map((r) => `<tr><td>${esc(r.what)}</td><td>${fmt(r.mass, 1)}</td><td>${fmt(r.position[0], 2)} / ${fmt(r.position[2], 2)}</td></tr>`).join('')}</table></details>
+    ${!(ptEdit.engine && ptEdit.engine.mass) ? '<p class="quiet">The engine counts once its mass is set (Powertrain, engine mass).</p>' : ''}` : e && e.error ? `<p class="bad">${esc(e.error)}</p>` : '';
+  return `<h2>Components</h2>
+    ${skel ? sum : base ? `<div class="kv"><span>Base vehicle</span><span>${fmt(base.mass, 0)} kg, CG ${fmt(base.cg_behind_front_axle, 3)} m behind the front axle, ${fmt(base.cg_height, 3)} m high</span></div>
+      <p class="quiet">A base car keeps its own masses; the SVJ's mass and CG are taken in SVJ. The components below are for a car made from scratch.</p>` : '<p class="quiet">Make a sketch (a car from scratch) to weigh it.</p>'}
+    <table class="cmp"><tr><th>Component</th><th>Kind</th><th>kg</th><th>X mm</th><th>Y</th><th>Z</th><th></th></tr>
+      ${compItems.map((c, i) => `<tr><td><input data-cid="${i}" value="${esc(c.id)}" size="9"></td>
+        <td><select data-ckind="${i}">${COMP_KINDS.map((k) => `<option ${c.kind === k ? 'selected' : ''}>${k}</option>`).join('')}</select></td>
+        <td><input type="number" step="0.5" data-cmass="${i}" value="${c.mass}" style="width:4.6em"></td><td>${pos('x', i)}</td><td>${pos('y', i)}</td><td>${pos('z', i)}</td>
+        <td><button class="mini" data-cdel="${i}">×</button></td></tr>`).join('')}</table>
+    <div class="inl">${Object.keys(PRESETS).map((k) => `<button class="mini" data-cadd="${k}">+ ${k}</button>`).join('')}
+      ${target && target.components.length ? '<button class="mini" id="csvj">from the SVJ</button>' : ''}
+      ${e && !e.error && target && target.mass ? '<button class="mini" id="cballast" title="One ballast mass, and where, that brings the car to the SVJ\'s mass (and CG, where it gives one)">ballast to the SVJ</button>' : ''}</div>
+    <p class="quiet">Positions in the SVJ frame, mm: X forward of the front axle (behind it is negative), Y right, Z down from the ground
+      (above it is negative). In the view: the components orange, the car's CG red.</p>`;
+}
+
+function bindComponents(el) {
+  const ch = () => redraw();
+  el.querySelectorAll('[data-cid]').forEach((x) => { x.onchange = () => { compItems[+x.dataset.cid].id = x.value.trim() || 'component'; ch(); }; });
+  el.querySelectorAll('[data-ckind]').forEach((x) => { x.onchange = () => { compItems[+x.dataset.ckind].kind = x.value; ch(); }; });
+  el.querySelectorAll('[data-cmass]').forEach((x) => { x.onchange = () => { compItems[+x.dataset.cmass].mass = Math.max(0, +x.value || 0); ch(); }; });
+  el.querySelectorAll('[data-cpos]').forEach((x) => { x.onchange = () => { const [i, k] = x.dataset.cpos.split(':').map(Number); compItems[i].position[k] = (+x.value || 0) / 1000; ch(); }; });
+  el.querySelectorAll('[data-cdel]').forEach((x) => { x.onclick = () => { compItems.splice(+x.dataset.cdel, 1); ch(); }; });
+  el.querySelectorAll('[data-cadd]').forEach((x) => { x.onclick = () => { compItems.push(JSON.parse(JSON.stringify(PRESETS[x.dataset.cadd]))); ch(); }; });
+  if ($('csvj')) $('csvj').onclick = () => { compItems = compItems.concat(JSON.parse(copy_.svj_json(JSON.stringify(svjDoc.svj))).components); ch(); };
+  if ($('cballast')) $('cballast').onclick = () => {
+    compItems = compItems.filter((c) => c.id !== 'ballast_svj');
+    const e = compEstimate(), t = JSON.parse(copy_.svj_json(JSON.stringify(svjDoc.svj)));
+    const b = JSON.parse(copy_.ballast_json(e.mass, JSON.stringify(e.cg), t.mass, t.cg ? JSON.stringify(t.cg) : null));
+    if (!b) { showIssues([{ level: 'INFO', rule: 'components', message: `The car is already ${fmt(e.mass, 0)} kg, at or above the SVJ's ${fmt(t.mass, 0)} kg: ballast cannot take mass away.` }]); return; }
+    compItems.push({ id: 'ballast_svj', kind: 'ballast', mass: b.mass, position: b.position });
+    ch();
+  };
 }
 
 // ---------- Aero: drag and downforce (beamforge/aero.py) ----------
@@ -2535,6 +2625,7 @@ async function buildScratch() {
         engine_brake: eng.engine_brake, mass: eng.mass },
       diffs: ptEdit.diffs || {},
       aero: aeroEdit && aeroEdit.cd && aeroEdit.area ? { cda: +(aeroEdit.cd * aeroEdit.area).toFixed(4) } : {},
+      components: compItems,
       gearbox: { source: gb, ratios: ptEdit.gears }, final_drive: ptEdit.final_drive || 4.0,
       rim: { front: src(W.front.rim.pick, 'F'), rear: src(W.rear.rim.pick, 'R') },
       tyre: Object.fromEntries(['front', 'rear'].filter((a) => W[a].tyre).map((a) => [a, src(W[a].tyre.pick, a === 'front' ? 'F' : 'R', W[a].f.overrides)])),
@@ -2573,7 +2664,7 @@ function projectData() {
       hidden: [...hiddenParts], locked: [...lockedParts] } : pendingBase,
     svj: svjDoc ? { name: svjName || 'project.svj.json', doc: svjDoc.svj } : null,
     sketch: skel ? { name: skel.name, parts: skel.parts, opts: skel.opts, active: skel.active } : null,
-    take: takeValues, export: exportForm, ties: savedTies(), powertrain: ptEdit, scratch: { ...scratchForm, note: '' }, wheels: wheelsForm, aero: aeroEdit, aero_touched: aeroTouched,
+    take: takeValues, export: exportForm, ties: savedTies(), powertrain: ptEdit, scratch: { ...scratchForm, note: '' }, wheels: wheelsForm, aero: aeroEdit, aero_touched: aeroTouched, components: compItems,
   };
 }
 
@@ -2613,6 +2704,7 @@ async function applyProject(p) {
     if (p.scratch) scratchForm = { ...scratchForm, ...p.scratch };
     if (p.wheels) wheelsForm = { ...wheelsForm, ...p.wheels };
     if ('aero' in p) { aeroEdit = p.aero; aeroTouched = !!p.aero_touched; }
+    if (Array.isArray(p.components)) compItems = p.components;
     if (p.sketch) {
       let parts = p.sketch.parts;
       if (!parts && p.sketch.text) parts = JSON.parse(skpy.import_json(p.sketch.text, JSON.stringify(p.sketch.opts || {}))).parts;   // a project saved before sketches had their own parts
@@ -2692,6 +2784,7 @@ window.beamforge = {
   get powertrain() { return ptEdit; },
   get library() { return library; },
   get wheels() { return wheelsForm; },
+  get components() { return compItems; },
   get sketchTool() { return skTool; },
   // where a sketch node is on screen (client px), to click it in a test
   skelScreen(id) {
