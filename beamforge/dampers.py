@@ -3,7 +3,8 @@
 Pure Python, standard library only (runs in Pyodide). UNVERIFIED IN-GAME.
 
 An SVJ gives the spring as a wheel rate (spring.rate, force at the wheel per metre of wheel travel; SVJ §9.3) and the
-damper as curves at the damper with damper.motion_ratio (damper velocity / wheel velocity; §9.4). Files converted from
+damper as curves at the damper with damper.motion_ratio (damper velocity / wheel velocity; §9.4), or at the wheel when
+damper.reference is "wheel" (v0.99.4). Files converted from
 Assetto Corsa have no real spring or damper: AC works at the wheel, so the converter puts both on a vertical axis through
 the wheel centre at a motion ratio of 1 (at_wheel()). Built that way in BeamNG the unit would stand on the wheel, which
 no real car does. So the unit is placed where it really is (a damper part of the sketch: drawn by the user, or
@@ -77,6 +78,8 @@ def wheel_values(svj):
             continue
         sp, dm = c.get("spring") or {}, c.get("damper") or {}
         dmr = dm.get("motion_ratio") if isinstance(dm.get("motion_ratio"), (int, float)) and dm["motion_ratio"] > 0 else 1.0
+        if dm.get("reference") == "wheel":                 # v0.99.4: the curves are force at the wheel against wheel speed
+            dmr = 1.0
         v = {"wheel_rate": float(sp["rate"]) if isinstance(sp.get("rate"), (int, float)) else None, "at_wheel": at_wheel(c),
              "split": None}
         for key, curve in (("bump", dm.get("bump_curve")), ("rebound", dm.get("rebound_curve"))):

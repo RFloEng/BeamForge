@@ -86,7 +86,7 @@ def strut_points(hp):
     wc = hp.get("wheel_center")
     if not (lbj and top and tre and tri and wc and all(arm)):
         return None
-    bottom = hp.get("strut_outboard") or hp.get("damper_outboard") or lbj
+    bottom = hp.get("strut_lower") or hp.get("strut_outboard") or hp.get("damper_outboard") or lbj   # strut_lower: v0.99.4
     if math.dist(bottom, lbj) < 0.02:
         bottom = lbj
     pts = {"wc": wc, "h1": lbj, "h3": tre, "t": top, "p0": arm[0], "p1": arm[1], "tie": tri,

@@ -764,6 +764,10 @@ def svj_corner(corner, key, override=None):
         once = axle and bool(re.search(r"panhard|watt", name))
         if kind == "strut":
             sb = hps.get("strut_lower") or db
+            if sb and math.dist(B(sb), pts["ST"]) < 0.01:      # a strut of no length (before v0.99.4 the spec
+                notes.append("the strut's lower point is its top (a zero-length strut, as the spec had it before "   # gave
+                             "v0.99.4): its lower end is estimated on the axis through the lower ball joint")         # strut_top
+                sb = None                                                                                             # for both)
             if sb:
                 pts["SB"] = B(sb)
                 if hps.get("strut_lower"):
@@ -773,7 +777,7 @@ def svj_corner(corner, key, override=None):
             elif "lower_ball_joint" in hps:
                 lbj, st = B(hps["lower_ball_joint"]), pts["ST"]
                 pts["SB"] = [lbj[i] + (st[i] - lbj[i]) * 0.4 for i in range(3)]
-                notes.append("no strut lower point: the strut axis is taken through the lower ball joint")
+                notes.append("no strut lower point (strut_lower, v0.99.4): its lower end is estimated on the axis through the lower ball joint")
             else:
                 notes.append(f"{_nice(name)}: no strut lower point, left out")
                 continue

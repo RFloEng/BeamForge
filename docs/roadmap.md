@@ -67,3 +67,7 @@ reduction as their gear ratio (8 by default), with a battery (kWh) and the contr
 ## Not planned
 
 Rule checking. BeamForge is a general BeamNG and SVJ tool. Spec-series rules live in their own projects (for example FBeam).
+
+STEP as a visual source. BeamForge's STEP files are structure: each part is a rigid body, and its line ends become nodes and
+beams (the Sketch). The SVJ standard's proposal to use STEP files for an SVJ's visuals shares only the file format, so it is
+frozen here and kept apart from the Sketch.

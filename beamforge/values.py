@@ -120,7 +120,7 @@ def svj_values(svj, study=None, base_mr=None):
         smr = bm.get("spring") if (bm.get("spring") or 0) > 0.05 else mr      # the beam's ratio in the base
         v = {"wheel_rate": rate, "spring_mr": round(smr, 3), "spring_mr_from": "base" if smr is not mr else "svj",
              "coil_rate": round(rate / (smr * smr)) if rate else None}
-        dmr = damper.get("motion_ratio") or 1.0
+        dmr = 1.0 if damper.get("reference") == "wheel" else (damper.get("motion_ratio") or 1.0)   # v0.99.4: at the wheel
         bdm = bm.get("damper") if (bm.get("damper") or 0) > 0.05 else dmr
         k = (dmr / bdm) ** 2                              # slope at the damper -> the base's damper beam
         v["damper_mr"] = round(bdm, 3)

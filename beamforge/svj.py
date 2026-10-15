@@ -1,6 +1,6 @@
 """SVJ (Standard Vehicle JSON) reading for BeamForge: bundles, meshes, hardpoints, comparison.
 
-SVJ: https://github.com/RFloEng/SVJ-standard-vehicle-json (spec v0.99.2).
+SVJ: https://github.com/RFloEng/SVJ-standard-vehicle-json (spec v0.99.4).
 Pure Python, standard library only (runs in Pyodide).
 
 Frames
@@ -26,7 +26,7 @@ from pathlib import Path
 
 from beamforge import gltf
 
-SVJ_VERSION = "0.99.2"
+SVJ_VERSION = "0.99.4"
 DEFAULT_GLTF_AXES = {"up": "Y", "forward": "-Z"}      # SVJ §22.4, Blender export convention
 
 
