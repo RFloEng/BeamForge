@@ -69,6 +69,25 @@ class TestExport(unittest.TestCase):
         self.assertEqual(out["counts"]["added_beams"], 1)
         self.assertTrue(any("left out" in n for n in out["notes"]))
 
+    def test_scale_structure(self):
+        # an SVJ lighter than the base: kept at the base's floor, or reached with the body's beams softened alike
+        svj = {"chassis": {"mass_total": 60.0}}
+        def body(opt):
+            out = json.loads(export.build("toycar", "toyfit", "Toy Fit", self.configured, "{}", None, json.dumps(opt)))
+            part = json.loads(out["files"]["vehicles/toyfit/toycar.jbeam"])["toycar"]
+            kg = {r[0]: (r[-1] or {}).get("nodeWeight", 25.0) if isinstance(r[-1], dict) else 25.0 for r in part["nodes"][1:] if isinstance(r, list)}
+            beam = next(r for r in part["beams"][1:] if isinstance(r, list) and r[:2] == ["b1", "b2"])
+            return kg, (beam[-1] if isinstance(beam[-1], dict) else {}), out["notes"]
+        kg0, beam0, notes0 = body({"svj": svj, "take": {"mass": True}})
+        self.assertAlmostEqual(kg0["b1"], 25.0, delta=0.01)                   # off: the base's structure, the base's weight
+        self.assertNotIn("beamSpring", beam0)
+        kg1, beam1, notes1 = body({"svj": svj, "take": {"mass": True}, "scale_structure": True})
+        f = kg1["b1"] / 25.0
+        self.assertLess(f, 0.99)                                               # on: lighter
+        self.assertAlmostEqual(beam1["beamSpring"] / 4300000.0, f, delta=0.02)  # and the beam softer by the same factor
+        self.assertAlmostEqual(beam1["beamDeform"] / 220000.0, f, delta=0.02)   # and weaker alike
+        self.assertTrue(any("scaled with the mass" in n for n in notes1))
+
     def test_reuse_and_copy_choices(self):
         out = json.loads(export.build("toycar", "toyfit", "Toy Fit", self.configured,
                                       json.dumps({"steel_wheel_F": "reuse", "toycar": "copy"})))

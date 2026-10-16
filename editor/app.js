@@ -34,7 +34,7 @@ import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, reme
 const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py',
   'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py', 'beamforge/dae.py', 'beamforge/values.py',
   'beamforge/rigidity.py', 'beamforge/kinematics.py', 'beamforge/roles.py', 'beamforge/convert.py',
-  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py', 'beamforge/scratch.py', 'beamforge/tyres.py', 'beamforge/aero.py', 'beamforge/components.py', 'beamforge/mount.py', 'beamforge/dampers.py'];
+  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py', 'beamforge/scratch.py', 'beamforge/tyres.py', 'beamforge/aero.py', 'beamforge/components.py', 'beamforge/mount.py', 'beamforge/dampers.py', 'beamforge/pipeline.py'];
 const REPO = new URL('../', import.meta.url);
 
 const $ = (id) => document.getElementById(id);
@@ -1450,6 +1450,8 @@ function exportPanel() {
       <span>Id (folder)</span><span><input id="expid" value="${esc(id)}" spellcheck="false"></span>
       <span>Name</span><span><input id="expname" value="${esc(name)}"></span>
       <span>Brand</span><span><input id="expbrand" value="${esc(exportForm.brand)}" placeholder="${esc(v?.brand || '')}"></span></div>
+    ${svjDoc ? `<p><label title="Off: no node gets lighter than the base's structure allows, so the car may stay heavier than the SVJ. On: the nodes get lighter and the body's beams on them are softened by the same factor (stiffness, damping, deform, strength), so the physics stays as stable as the base's; the suspension's nodes keep their weight">
+      <input type="checkbox" id="expscale" ${exportForm.scale ? 'checked' : ''}> Reach the SVJ's mass: scale the structure with it</label></p>` : ''}
     <p class="quiet">${count('fit')} parts with the edits, ${count('copy')} copied as they are, ${count('reuse')} shared parts reused from the game.</p>
     <div class="inl"><button id="expall" title="Every part copied into the new vehicle with the edits, shared ones under new names: fully self-contained">Regenerate all</button>
       <button id="expreset">Proposed choices</button><button id="exprun" class="primary">Export mod (.zip)…</button></div>
@@ -1499,6 +1501,7 @@ function bindExport() {
   if (!$('exportsec')) return;
   if ($('expsvj')) $('expsvj').onchange = (e) => { exportForm.svj = e.target.checked; };
   if ($('expreplace')) $('expreplace').onchange = (e) => { exportForm.replace = e.target.checked; };
+  if ($('expscale')) $('expscale').onchange = (e) => { exportForm.scale = e.target.checked; };
   document.querySelectorAll('[data-attpart]').forEach((sel) => sel.onchange = () => {
     (exportForm.attach[sel.dataset.attpart] ||= {}).part = sel.value;
   });
@@ -1546,7 +1549,7 @@ async function runExport() {
       let rows = [];
       try { rows = JSON.parse(valpy.table(veh.model, JSON.stringify(veh), JSON.stringify(svjDoc.svj), JSON.stringify({ corners: svjSusp?.corners || {} }))); } catch (err) { rows = []; }
       const take = Object.fromEntries(rows.filter((r) => r.svj !== null && takeValues[r.key] !== false).map((r) => [r.key, true]));
-      svjOpt = { ...(svjOpt || { svj: svjDoc.svj }), take, study: { corners: svjSusp?.corners || {} } };
+      svjOpt = { ...(svjOpt || { svj: svjDoc.svj }), take, study: { corners: svjSusp?.corners || {} }, scale_structure: !!exportForm.scale };
     }
     {                                                 // engine, gears, final drive, steering: the Powertrain workspace's
       const pt = JSON.parse(ptpy.export_json(JSON.stringify(ptEdit), svjDoc ? JSON.stringify(svjDoc.svj) : null));

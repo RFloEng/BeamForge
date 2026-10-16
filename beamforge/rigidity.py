@@ -217,10 +217,23 @@ def mass_floors(model, configured, exclude=(), bl=None, fitted=None):
             for n in set(k) | set(c)}
 
 
-def changes(model, configured, weights=None, exclude=(), bl=None, fitted=None):
+def held_nodes(bl, exclude=()):
+    """The nodes that carry a beam the check in changes() never softens: a spring or damper (exclude), a pressured or
+    broken beam, a suspension or running-gear part's (values.UNSPRUNG). A node of these keeps its mass floor when the
+    structure is scaled with the mass, or its unsoftened beams would be too stiff for it."""
+    out = set()
+    for b in bl:
+        if (b["part"], b["row"]) in exclude or re.search(r"PRESSURED|BROKEN", b["type"], re.I) or values.UNSPRUNG.search(b["part"]):
+            out.update((b["a"], b["b"]))
+    return out
+
+
+def changes(model, configured, weights=None, exclude=(), bl=None, fitted=None, scale_strength=False):
     """The beams' new values: ({part: {row: {key: value}}}, stats). weights: the new node weights
     ({part: {row: kg}}, values.weight_changes); exclude: {(part, row)} left as they are; fitted: the
-    parts written with their edits (None: all), the only ones whose beams follow their length."""
+    parts written with their edits (None: all), the only ones whose beams follow their length.
+    scale_strength: a beam softened for a lighter node also gets its beamDeform and beamStrength scaled by the same
+    factor (the structure scaled with the mass: as strong for its weight as the base's)."""
     bl = bl if bl is not None else beams(model, configured)
     rows, _ = values.node_weights(model, configured)
     m1 = {}
@@ -260,6 +273,10 @@ def changes(model, configured, weights=None, exclude=(), bl=None, fitted=None):
         if gk < 1 and "beamSpring" in (nv.keys() | b["values"].keys()):
             nv["beamSpring"] = nv.get("beamSpring", b["values"].get("beamSpring", 0.0)) * gk
             softened += gk < 0.99
+            if scale_strength:
+                for k in ("beamDeform", "beamStrength"):
+                    if k in b["values"] and math.isfinite(b["values"][k]) and b["values"][k] < 1e30:
+                        nv[k] = nv.get(k, b["values"][k]) * gk
         if gc < 1 and "beamDamp" in (nv.keys() | b["values"].keys()):
             nv["beamDamp"] = nv.get("beamDamp", b["values"].get("beamDamp", 0.0)) * gc
 

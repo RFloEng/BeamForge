@@ -46,6 +46,13 @@ python serve.py
 
 Then open <http://localhost:8000/editor/> in Chrome or Edge. The page runs the Python package in the browser with Pyodide, so it must be served from the repo root. `serve.py` is `python -m http.server` that tells the browser not to cache, so an updated editor always loads in full.
 
+Without the editor, an SVJ can be made into a mod from the command line, with the same steps as the editor's export
+(part suggestions, fit, every SVJ value, the SVJ's meshes). The tool reads your own install:
+
+```bash
+python tools/svj_to_beamng.py path/to/car.svj.json --base <model> --id bf_mycar --name "My car (BF)" --vehicles <BeamNG>/content/vehicles
+```
+
 Tests (standard library only):
 
 ```bash
@@ -77,6 +84,8 @@ beamforge/scratch.py   a whole vehicle made from scratch (unverified in-game)
 beamforge/tyres.py     the Magic Formula against BeamNG's tyre load coefficient, and a fit
 beamforge/aero.py      drag and downforce, forces per axle, a drag plate
 beamforge/components.py  masses, mass and CG, ballast
+beamforge/pipeline.py  an SVJ onto a base vehicle in one call: the editor's export path
+tools/svj_to_beamng.py the same from the command line, on your own install
 editor/                the browser editor (three.js + Pyodide); library.js finds the BeamNG folders
 docs/manual.md         how to use the editor: workspaces, recipes, testing in the game
 docs/beamng-vehicles.md  how BeamNG builds and modifies vehicles

@@ -705,7 +705,9 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     {part: "reuse" | "copy" | "fit"} (missing parts take plan()'s proposal). svj_json (optional):
     {"svj", "files", "place", "attach", "replace", "take", "study"}: the SVJ meshes to add (see
     svj_meshes; replace: leave out the base vehicle's body meshes; no "attach": no meshes) and the
-    values to take ({row key: True}, values.table keys; study: the SVJ suspension study). added_json
+    values to take ({row key: True}, values.table keys; study: the SVJ suspension study); "scale_structure": True lets
+    the nodes get lighter than their floor for the SVJ's mass, the body beams on them softened by the same factor
+    (stiffness, damping, deform, strength: rigidity.changes), the suspension's nodes kept at their floor. added_json
     (optional): beams added by hand, [{"a", "b", "beamSpring", "beamDamp", "beamDeform", "beamStrength"}]
     (rigidity.added_beam), written in the vehicle's main part. mount_json (optional): {"sketch": {"parts", "opts"},
     "ties": [sketch node ids]}, a sketch mounted on the vehicle (mount.plan), its nodes and beams in the main part."""
@@ -724,6 +726,10 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     fitted = {n for n, c in choices.items() if c == "fit"}
     lf = rigidity.length_factors(model, v, springs, bl, fitted)
     floors = rigidity.mass_floors(model, v, springs, bl, fitted)
+    scale = bool(opt and opt.get("scale_structure"))
+    if scale:                                               # the structure scaled with the mass: only the nodes whose beams
+        held = rigidity.held_nodes(bl, springs)             # are never softened (suspension, springs) keep their floor
+        floors = {n: f for n, f in floors.items() if n in held}
     if opt and opt.get("take"):
         taken_beams, taken_tyres, taken_vars, taken_weights = values.apply(model, v, opt["svj"], opt["take"], opt.get("study"),
                                                                            lf, floors)
@@ -746,10 +752,13 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
         target = values.svj_mass(opt["svj"])[0]
         wheel_kg = values.node_weights(model, v)[1]
         got = sum(kg for part in taken_weights.values() for kg in part.values()) + wheel_kg
-        if target and got > target + 1:
+        if target and got > target + 1 and scale:
+            mass_note = (f"mass {got:.0f} kg, not the SVJ's {target:.0f}: the structure is scaled with the mass, but the nodes "
+                         "that carry the suspension, springs and dampers keep their weight (their beams are not softened)")
+        elif target and got > target + 1:
             mass_note = (f"mass {got:.0f} kg, not the SVJ's {target:.0f}: lighter, the base's structure would be too stiff "
                          "for its nodes' weight (BeamNG's physics step); the structure is kept as the base's")
-    rig, rig_stats = rigidity.changes(model, v, taken_weights, springs, bl, fitted) if (lf or taken_weights) else ({}, None)
+    rig, rig_stats = rigidity.changes(model, v, taken_weights, springs, bl, fitted, scale) if (lf or taken_weights) else ({}, None)
     for part, rows in rig.items():
         for row, vals in rows.items():
             taken_beams.setdefault(part, {}).setdefault(row, {}).update(vals)
@@ -841,7 +850,10 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     counts["corners_stiffened"] = sum(1 for r in bench if r["factor"] > 1.0)
     if rig_stats:
         counts["rigidity_beams"] = rig_stats["beams"]
-        if rig_stats["softened"]:
+        if rig_stats["softened"] and scale:
+            notes.append(f"structure scaled with the mass: {rig_stats['softened']} body beams softened (stiffness, damping, deform and "
+                         "strength) so each lighter node keeps the base's stiffness for its weight")
+        elif rig_stats["softened"]:
             notes.append(f"{rig_stats['softened']} beams softened so no node is stiffer for its weight than in the base (much shorter beams)")
         if rig_stats["kept_variables"]:
             notes.append(f"{rig_stats['kept_variables']} beam values written as tuning variables kept as they are (not rescaled)")

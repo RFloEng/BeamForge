@@ -23,6 +23,7 @@ Contents
 5. [Recipe: a vanilla car turned into an SVJ car](#5-recipe-a-vanilla-car-turned-into-an-svj-car)
 6. [Recipe: a car from scratch](#6-recipe-a-car-from-scratch)
 7. [Recipe: a new mechanism on a vanilla car](#7-recipe-a-new-mechanism-on-a-vanilla-car)
+   - [From the command line](#7b-from-the-command-line)
 8. [Testing in the game](#8-testing-in-the-game)
 9. [Stability: what the bands mean](#9-stability-what-the-bands-mean)
 10. [Coordinates](#10-coordinates)
@@ -394,6 +395,32 @@ Use this to add a brace, a new linkage, or any non-standard mechanism to an exis
 For a single extra beam, use **Base vehicle → Beams** instead.
 
 ---
+
+## 7b. From the command line
+
+The editor's export path also runs without the editor, on your own install:
+
+```bash
+python tools/svj_to_beamng.py path/to/car.svj.json --base <model> --id bf_mycar --name "My car (BF)" --vehicles <BeamNG>/content/vehicles
+```
+
+It does the same as the editor's export:
+- suggests the base's parts nearest the SVJ
+- fits all three stages
+- takes every value the SVJ has
+- puts the SVJ's meshes in place of the base's body
+- copies the base's assets
+
+It then reads the zip back the way the game does, and prints missing parts, wheelbase, tracks, mass and the stiffest nodes.
+
+| Option | Use |
+| --- | --- |
+| `--vehicles` | the game's `content/vehicles` folder (or set `BEAMNG_VEHICLES`) |
+| `--config` | the base configuration (default: its default) |
+| `--stages wheelbase,pickups` | only some fit stages; `--stages ""` for no fit |
+| `--no-meshes` / `--keep-body` | keep the base's look / add the SVJ's meshes beside its body |
+| `--out` | where the zip goes (default `out/`) |
+| `--install <mods folder>` | also copy the zip there; close the game first |
 
 ## 8. Testing in the game
 
