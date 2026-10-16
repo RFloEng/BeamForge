@@ -30,8 +30,8 @@ ON_ARM = 0.7              # a suggested damper's lower end: this share of the wa
 TILT_IN = 0.15            # its top leans inboard by this share of its length
 SLIDE_AT = 0.6            # a strut's guide node: this share of the way from its lower end to its top
 MIN_MR = 0.15             # a unit that moves less than this with the wheel is placed wrong
-FREQ = {"front": 1.5, "rear": 1.7}       # Hz: ride frequencies when the SVJ gives no spring
-ZETA_BUMP, ZETA_REBOUND = 0.25, 0.45     # of critical damping, when it gives no damper
+FREQ = {"front": 1.9, "rear": 2.2}       # Hz: ride frequencies when the SVJ gives no spring
+ZETA_BUMP, ZETA_REBOUND = 0.3, 0.6     # of critical damping, when it gives no damper
 FAST, SPLIT = 0.5, 0.1    # fast slope / slow, and the velocity (m/s) where it changes, by default
 CORNERS = ("FL", "FR", "RL", "RR")
 

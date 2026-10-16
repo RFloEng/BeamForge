@@ -197,22 +197,23 @@ def _safe(name):
 
 # the panels of a body mesh that follow their own part (a door opens, a hood flies off): the kind, the
 # mesh node names it takes, and the base parts of that kind
-PANELS = [("trunk", re.compile(r"trunk|boot(?!h)|tailgate|hatch(?!back)|rear_?lid|decklid|rear_?hood|baule|bagagliaio|door_?b(ack)?\b", re.I),
+PANELS = [("trunk", re.compile(r"trunk|boot(?!h)|tailgate|hatch(?!back)|rear_?lid|decklid|rear_?hood|baule|bagagliaio|door_?i?_?b(ack)?\b", re.I),
            re.compile(r"_trunk(_|$)|_tailgate(_|$)|_hatch(_|$)", re.I)),
-          ("door", re.compile(r"^doors?$|^door_|door_?[lr]\b|door_?(left|right)|door_?[fr][lr]|portiera", re.I),
+          ("door", re.compile(r"^doors?$|^door_|door_?i?_?[lr]\b|door_?(left|right)|door_?[fr][lr]|portiera", re.I),
            re.compile(r"_door(_|$)", re.I)),
           ("hood", re.compile(r"hood|bonnet|cofano", re.I), re.compile(r"_hood(_|$)|_bonnet", re.I)),
-          ("bumper_F", re.compile(r"(front|^f)_?bumper|bumper_?(front|f\b|fa)|paraurti[ _]?ant", re.I),
+          ("bumper_F", re.compile(r"(front|^f)_?bumper|bumper_?i?_?(front|f\b|fa)|paraurti[ _]?ant", re.I),
            re.compile(r"_bumper_F(_|$)", re.I)),
-          ("bumper_R", re.compile(r"rear\w*_?bumper|^r_?bumper|bumper_?(rear|r\b|ra|b\b)|paraurti[ _]?post", re.I),
+          ("bumper_R", re.compile(r"rear\w*_?bumper|^r_?bumper|bumper_?i?_?(rear|r\b|ra|b\b)|paraurti[ _]?post", re.I),
            re.compile(r"_bumper_R(_|$)", re.I)),
           ("mirror", re.compile(r"mirror(?!_?glass)|specchietto", re.I), re.compile(r"_mirrors?(_|$)", re.I)),
-          ("spoiler", re.compile(r"^(e_)?(rear_?)?(wing|spoiler)\b", re.I), re.compile(r"_spoiler(_|$)", re.I))]
+          ("spoiler", re.compile(r"^(e_)?(rear_?)?(wing|spoiler)i?\b", re.I), re.compile(r"_spoiler(_|$)", re.I))]
 # panels named by the SVJ convention (SVJ::body::<id>, docs/naming_convention.md): read before the names above
 SVJ_PANEL = re.compile(r"^SVJ::body::(door_(fl|fr|rl|rr|l|r)|hood|bonnet|trunk|tailgate|hatch|bumper_(f|r|front|rear))$", re.I)
 SVJ_KIND = {"door": "door", "hood": "hood", "bonnet": "hood", "trunk": "trunk", "tailgate": "trunk", "hatch": "trunk",
             "bumper_f": "bumper_F", "bumper_front": "bumper_F", "bumper_r": "bumper_R", "bumper_rear": "bumper_R"}
 PANEL_MIN = 0.4     # m: the bounding-box diagonal of the smallest thing taken as a panel
+SWAPPABLE = ("bumper_R", "spoiler")
 PANEL_MIN_OF = {"mirror": 0.1}      # (a mirror is small)
 PANEL_ANY = re.compile("|".join(f"(?:{p.pattern})" for _, p, _ in PANELS), re.I)
 # where panels are looked for: everywhere but the running gear and helpers (some cars keep their doors
@@ -256,8 +257,20 @@ def _panels(v, svj, files, place, chassis):
                for p in pts]
         if math.dist([min(p[i] for p in pts) for i in range(3)], [max(p[i] for p in pts) for i in range(3)]) < PANEL_MIN_OF.get(kind, PANEL_MIN):
             continue                                       # a switch or a label named "doors", not a panel
-        cands = [f for f in v.get("flexbodies", []) if base_re.search(f["part"]) and "_body" not in f["part"]
-                 and f.get("groups") and all(g in members for g in f["groups"])]
+        def cands_of(rx):
+            return [f for f in v.get("flexbodies", []) if rx.search(f["part"]) and "_body" not in f["part"]
+                    and f.get("groups") and all(g in members for g in f["groups"])]
+        cands = cands_of(base_re)
+        if kind in SWAPPABLE:                              # a rear lip named a wing, a wing named a bumper: by where it is
+            c0 = centre(pts)
+            near = {}
+            for k2 in SWAPPABLE:
+                cs = cands_of(next(b for k, _, b in PANELS if k == k2))
+                if cs:
+                    near[k2] = min(math.dist(c0, centre([p for g in f["groups"] for p in members[g]])) for f in cs)
+            if near:
+                kind = min(near, key=near.get)
+                cands = cands_of(next(b for k, _, b in PANELS if k == kind))
         if not cands:
             continue
         # one node for both doors (or both of anything): a row per side, each side's triangles only

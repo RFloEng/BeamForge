@@ -186,10 +186,12 @@ def _lock_uprights(car, wheels, frame):
             continue
         a = max(off, key=lambda n: abs(car.nodes[n][0]) + abs(car.nodes[n][2]))
         p = car.nodes[a]
-        cand = [f for f in frame if math.dist(car.nodes[f], p) >= 0.2 and f in car.nodes]
+        cand = [f for f in frame if f in car.nodes and math.dist(car.nodes[f], p) >= 0.4 and car.nodes[f][0] * p[0] > 0]
+        if not cand:                                        # a short link would turn the upright on the travel: any but the shortest
+            cand = [f for f in frame if f in car.nodes and math.dist(car.nodes[f], p) >= 0.2]
         if not cand:
             continue
-        f = min(cand, key=lambda n: math.dist(car.nodes[n], p) + 2 * (abs(car.nodes[n][1] - p[1]) + abs(car.nodes[n][2] - p[2])))
+        f = min(cand, key=lambda n: 2 * abs(car.nodes[n][2] - p[2]) + abs(car.nodes[n][1] - p[1]))
         car.beam(a, f, aim="p90")
         car.notes.append(f"{c}: no link holds the upright against turning about its joints: a toe link added from {a} to {f}")
 
