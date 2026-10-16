@@ -504,6 +504,60 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
         changes.append(f"{len(on_rail)} slide nodes put back on their rails, turning the rail where its end had gone its "
                        f"own way (largest gap {worst[1] * 1000:.0f} mm, at {worst[0]})")
 
+    # a solid, compact part (a fuel tank, an engine, a seat) moves as one piece: the body stage bends its nodes
+    # differently, and a tank's nodes (colliding with each other) then cross and burst it at spawn
+    stiff = []
+    wheel_nodes = {n for w in wheels for n in (w.get("node1"), w.get("node2"))}
+    slide_nodes = {n for x in slides for n in x[:3]}
+    by_part = {}
+    for n in out:
+        if n in nodes and parts.get(n):
+            by_part.setdefault(parts[n], []).append(n)
+    for name, group in sorted(by_part.items()):
+        if not 4 <= len(group) <= 40 or not SOLID.search(name) or SUSPENSION.search(name) or any(n in protected or n in wheel_nodes or n in slide_nodes for n in group):
+            continue
+        if max(max(nodes[n][i] for n in group) - min(nodes[n][i] for n in group) for i in range(3)) > 1.2:
+            continue
+        move = rigid_fit([nodes[n] for n in group], [out[n] for n in group])
+        worst = max(math.dist(out[n], move(nodes[n])) for n in group)
+        if worst > 0.005:
+            for n in group:
+                out[n] = list(move(nodes[n]))
+            stiff.append(f"{name} ({worst * 1000:.0f} mm)")
+    # ...a fuel tank not closer to another part's nodes than the base had it (pushed into the differential's carrier)
+    pushed = []
+    held = set(protected) | wheel_nodes
+    for name in sorted(by_part):
+        group = by_part[name]
+        if not re.search(r"tank", name, re.I) or not 4 <= len(group) <= 40:
+            continue
+        others = [o for o in out if o in nodes and parts.get(o) != name and o not in held]
+        gs = set(group)
+        want = {}
+        for n in group:
+            for o in others:
+                d0 = math.dist(nodes[n], nodes[o])
+                if d0 < 0.3:
+                    want[(n, o)] = min(d0, 0.15) * 0.9
+        moved = 0.0
+        for _ in range(30):
+            worst = max(((w - math.dist(out[n], out[o]), n, o) for (n, o), w in want.items()), default=(0, None, None))
+            if worst[0] <= 0.002:
+                break
+            gap, n, o = worst
+            d = [out[n][i] - out[o][i] for i in range(3)]
+            L = math.sqrt(sum(x * x for x in d)) or 1.0
+            step = [d[i] / L * (gap + 0.002) for i in range(3)]
+            for m in group:
+                out[m] = [out[m][i] + step[i] for i in range(3)]
+            moved += math.sqrt(sum(x * x for x in step))
+        if moved > 0.002:
+            pushed.append(f"{name} ({moved * 1000:.0f} mm)")
+    if pushed:
+        changes.append("tank pushed off the parts the fit moved into it: " + ", ".join(pushed))
+    if stiff:
+        changes.append("solid parts (tank, engine, seats) kept their shape, as the body stage had bent them: " + ", ".join(stiff))
+
     # the wheels spawn with their axle as the base's (square); their camber and toe are a target the
     # export preloads the upright's beams to (square_axles)
     axles_out = square_axles(out, nodes, wheels)
@@ -588,6 +642,8 @@ def fit_json(geometry_json, wheels_json, svj_json, files_json, stages_json, over
 
 # ---------------------------------------------------------------- stage 3: pickup points
 
+# parts that are solid blocks, not skin: they keep their shape when the body stage bends the nodes around them
+SOLID = re.compile(r"tank|battery|engine|intake|transaxle|transmission|gearbox|differential|carrier|seat|shifter|radiator", re.I)
 SUSPENSION = re.compile(r"suspension|strut|coilover|shock|damper|spring|steer|hub|arm|link|subframe|knuckle|upright", re.I)
 
 

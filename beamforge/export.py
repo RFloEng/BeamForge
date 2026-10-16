@@ -197,20 +197,23 @@ def _safe(name):
 
 # the panels of a body mesh that follow their own part (a door opens, a hood flies off): the kind, the
 # mesh node names it takes, and the base parts of that kind
-PANELS = [("trunk", re.compile(r"trunk|boot(?!h)|tailgate|hatch(?!back)|rear_?lid|decklid|rear_?hood|baule|bagagliaio", re.I),
+PANELS = [("trunk", re.compile(r"trunk|boot(?!h)|tailgate|hatch(?!back)|rear_?lid|decklid|rear_?hood|baule|bagagliaio|door_?b(ack)?\b", re.I),
            re.compile(r"_trunk(_|$)|_tailgate(_|$)|_hatch(_|$)", re.I)),
           ("door", re.compile(r"^doors?$|^door_|door_?[lr]\b|door_?(left|right)|door_?[fr][lr]|portiera", re.I),
            re.compile(r"_door(_|$)", re.I)),
           ("hood", re.compile(r"hood|bonnet|cofano", re.I), re.compile(r"_hood(_|$)|_bonnet", re.I)),
           ("bumper_F", re.compile(r"(front|^f)_?bumper|bumper_?(front|f\b|fa)|paraurti[ _]?ant", re.I),
            re.compile(r"_bumper_F(_|$)", re.I)),
-          ("bumper_R", re.compile(r"rear\w*_?bumper|^r_?bumper|bumper_?(rear|r\b|ra)|paraurti[ _]?post", re.I),
-           re.compile(r"_bumper_R(_|$)", re.I))]
+          ("bumper_R", re.compile(r"rear\w*_?bumper|^r_?bumper|bumper_?(rear|r\b|ra|b\b)|paraurti[ _]?post", re.I),
+           re.compile(r"_bumper_R(_|$)", re.I)),
+          ("mirror", re.compile(r"mirror(?!_?glass)|specchietto", re.I), re.compile(r"_mirrors?(_|$)", re.I)),
+          ("spoiler", re.compile(r"^(e_)?(rear_?)?(wing|spoiler)\b", re.I), re.compile(r"_spoiler(_|$)", re.I))]
 # panels named by the SVJ convention (SVJ::body::<id>, docs/naming_convention.md): read before the names above
 SVJ_PANEL = re.compile(r"^SVJ::body::(door_(fl|fr|rl|rr|l|r)|hood|bonnet|trunk|tailgate|hatch|bumper_(f|r|front|rear))$", re.I)
 SVJ_KIND = {"door": "door", "hood": "hood", "bonnet": "hood", "trunk": "trunk", "tailgate": "trunk", "hatch": "trunk",
             "bumper_f": "bumper_F", "bumper_front": "bumper_F", "bumper_r": "bumper_R", "bumper_rear": "bumper_R"}
 PANEL_MIN = 0.4     # m: the bounding-box diagonal of the smallest thing taken as a panel
+PANEL_MIN_OF = {"mirror": 0.1}      # (a mirror is small)
 PANEL_ANY = re.compile("|".join(f"(?:{p.pattern})" for _, p, _ in PANELS), re.I)
 # where panels are looked for: everywhere but the running gear and helpers (some cars keep their doors
 # under the high-detail cockpit, which the body itself leaves out)
@@ -251,7 +254,7 @@ def _panels(v, svj, files, place, chassis):
             continue
         pts = [svjmod.from_sae([x + o for x, o in zip(svjmod.gltf_to_sae(p, axes), off)], place["yf"], place["ground"])
                for p in pts]
-        if math.dist([min(p[i] for p in pts) for i in range(3)], [max(p[i] for p in pts) for i in range(3)]) < PANEL_MIN:
+        if math.dist([min(p[i] for p in pts) for i in range(3)], [max(p[i] for p in pts) for i in range(3)]) < PANEL_MIN_OF.get(kind, PANEL_MIN):
             continue                                       # a switch or a label named "doors", not a panel
         cands = [f for f in v.get("flexbodies", []) if base_re.search(f["part"]) and "_body" not in f["part"]
                  and f.get("groups") and all(g in members for g in f["groups"])]
@@ -418,6 +421,22 @@ def susp_pieces(v, svj, path, place, files=None):
     return out
 
 
+def _wider_group(geo, nodes, reach=0.4):
+    """A node group of three nodes or more near these nodes. A flexbody needs a reference plane: the wheel hub's own group
+    has only the axle's two nodes, so the mesh would not load (VY node not found). Prefers a group named for the hub."""
+    pts = [geo["nodes"][n] for n in nodes if n in geo["nodes"]]
+    if not pts:
+        return []
+    c = [sum(p[i] for p in pts) / len(pts) for i in range(3)]
+    near = {}
+    for n, p in geo["nodes"].items():
+        if math.dist(p, c) <= reach:
+            for g in geo["groups"].get(n, []):
+                near[g] = near.get(g, 0) + 1
+    ok = [g for g, k in near.items() if k >= 3]
+    return [max(ok, key=lambda g: (near[g] + (100 if "hub" in g.lower() else 0)))] if ok else []
+
+
 def svj_attach(configured_json, svj_json, mapping_json=None, files_json=None, place_json=None):
     """Where each SVJ mesh binding goes on the new vehicle by default: [{"path", "node", "mesh_ref",
     "part", "groups"}]. A suspension corner goes to the part and node groups of its tied hub nodes
@@ -453,6 +472,11 @@ def svj_attach(configured_json, svj_json, mapping_json=None, files_json=None, pl
                 parts_ = [geo["parts"][n] for n in nodes if n in geo["parts"]]
                 part = max(set(parts_), key=parts_.count) if parts_ else body
                 groups = groups_of(nodes) or groups
+                if groups and sum(1 for n in geo["nodes"] if groups[0] in geo["groups"].get(n, [])) < 3:
+                    groups = _wider_group(geo, nodes) or groups
+                    # a flexbody in a wheel's part is placed on the wheel (that part's frame); its group's own part is not
+                    own = [geo["parts"][n] for n, g in geo["groups"].items() if groups[0] in g and n in geo["parts"]]
+                    part = max(set(own), key=own.count) if own else part
         out.append({"path": b["path"], "node": b["node"], "mesh_ref": b["mesh_ref"], "part": part, "groups": groups})
     files = json.loads(files_json) if files_json else {}
     place = json.loads(place_json) if place_json else None

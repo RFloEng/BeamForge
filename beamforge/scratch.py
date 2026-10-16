@@ -176,6 +176,24 @@ def _steer_axis(car, res, upright):
     return cand[0], cand[-1]
 
 
+def _lock_uprights(car, wheels, frame):
+    """An upright on two ball joints can still turn about the line between them. Where no link (a tie rod, a toe link) ends
+    on its other nodes, one is added: a rod from the upright's furthest node to the nearest frame node a sensible way off."""
+    for c, w in sorted(wheels.items()):
+        up = set(w["upright_nodes"])
+        off = [n for n in up if n not in (w["steer_up"], w["steer_down"])]
+        if not off or any((x[0] in off and x[1] not in up) or (x[1] in off and x[0] not in up) for x in car.beams):
+            continue
+        a = max(off, key=lambda n: abs(car.nodes[n][0]) + abs(car.nodes[n][2]))
+        p = car.nodes[a]
+        cand = [f for f in frame if math.dist(car.nodes[f], p) >= 0.2 and f in car.nodes]
+        if not cand:
+            continue
+        f = min(cand, key=lambda n: math.dist(car.nodes[n], p) + 2 * (abs(car.nodes[n][1] - p[1]) + abs(car.nodes[n][2] - p[2])))
+        car.beam(a, f, aim="p90")
+        car.notes.append(f"{c}: no link holds the upright against turning about its joints: a toe link added from {a} to {f}")
+
+
 def _rim_axle(rim, vars_):
     """The rim part's own axle nodes, by side: {+1 (left): (inner id, outer id, inner x, outer x, kg), -1: ...}, local to
     its slot (the hub part's nodeOffset puts them on the wheel). The vanilla rims define them so (an inner and an outer node per side)."""
@@ -480,6 +498,7 @@ def build(car_json):
                           "upright": up["name"]}
     if len(wheels) < 3:
         raise ValueError("at least three wheels (FL, FR, RL, RR) with a centre each")
+    _lock_uprights(car, wheels, frame)
     layout_driven = {"FWD": ("F",), "RWD": ("R",), "AWD": ("F", "R")}
     driven = layout_driven[layout]
     brakes = spec.get("brakes") or {}

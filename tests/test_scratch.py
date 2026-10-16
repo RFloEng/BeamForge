@@ -125,6 +125,11 @@ class TestScratch(unittest.TestCase):
                          {"tire_F_13x5t": "tire_F_186_68_13_sport", "tire_R_13x5t": "tire_R_176_68_13_standard"})
         self.assertEqual(sum(out["counts"]["bands"][b] for b in ("high", "extreme", "beyond")), 0)     # stable by construction
 
+    def test_rear_upright_is_held(self):
+        out = json.loads(scratch.build(json.dumps(self.car)))
+        notes = [n for n in out["notes"] if "toe link added" in n]
+        self.assertEqual(sorted(n[:2] for n in notes), ["RL", "RR"])             # the rear has no tie rod; the front has
+
     def test_powertrain_and_steering(self):
         out = json.loads(scratch.build(json.dumps(self.car)))
         body = json.loads(out["files"]["vehicles/bf_test_scratch/bf_test_scratch.jbeam"])["bf_test_scratch_body"]
