@@ -216,7 +216,7 @@ def _solve(A, b):
     return s(A, b)
 
 
-def motion_ratios(nodes, beams, free, pushed, units, guides=()):
+def motion_ratios(nodes, beams, free, pushed, units, guides=(), out=None):
     """{unit name: MR} with the pushed nodes moved up (BeamNG z) by STEP together: each unit's shortening over the step.
     nodes: {id: [x, y, z]}; beams: [(a, b, k)] that carry (the units themselves not among them); free: the nodes that
     move (the rest are held); pushed: the axle nodes of one axle; units: {name: (a, b)}; guides: [(slider, lower, top,
@@ -274,6 +274,8 @@ def motion_ratios(nodes, beams, free, pushed, units, guides=()):
             A[i][i] += big
             f[i] += big * STEP
     x = _solve(A, f)
+    if out is not None:                           # the pushed shape, for whoever wants more than the units' ratios
+        out.update({n: [nodes[n][i] + x[3 * idx[n] + i] for i in range(3)] for n in free})
 
     def at(n):
         return [nodes[n][i] + (x[3 * idx[n] + i] if n in idx else 0.0) for i in range(3)]

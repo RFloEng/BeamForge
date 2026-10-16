@@ -31,6 +31,8 @@ from . import beamng, jbeam, rigidity, skeleton, svj as svjmod, values
 
 RACK_KG, SLIDER_KG = 3.0, 2.0
 MOUNTS = 3               # beams from each engine or gearbox node to the frame
+LINK_DAMP, LINK_DEFORM, LINK_STRENGTH = 150, 85000, 350000   # a vanilla suspension link's (archetype.BEAM_RESET): its damping, where it
+                                                                # yields and where it breaks, the least
 EV_REDUCTION = 8.0       # an electric motor's single reduction when none is given (the vanilla electric sports car's: 7.6, and a race one)
 BATTERY_KWH = 60.0
 SLIDER_IN = 0.1          # m: the rack's sliders this far inside its ends
@@ -153,8 +155,15 @@ def _structure(car, sketch, yf, zg):
     for n, v in res["nodes"].items():
         if not v["reference"]:
             car.node(n, svjmod.from_sae(v["pos"], yf, zg), kg[n], group=f"sk_{v['owner']}" if v["owner"] else "")
+    kinds = {p["name"]: p["kind"] for p in res["parts"]}
     for i, b in enumerate(res["beams"]):
-        car.beam(b["a"], b["b"], {k: bv[i][k] for k in ("beamSpring", "beamDamp", "beamDeform", "beamStrength")})
+        v = {k: bv[i][k] for k in ("beamSpring", "beamDamp", "beamDeform", "beamStrength")}
+        if kinds.get(b["part"]) == "link":                  # arms, uprights, tie rods: a vanilla suspension's damping and limits
+            v["beamDamp"] = min(v["beamDamp"], LINK_DAMP)
+            for k, floor in (("beamDeform", LINK_DEFORM), ("beamStrength", LINK_STRENGTH)):
+                if isinstance(v[k], (int, float)) and v[k] < floor:
+                    v[k] = floor
+        car.beam(b["a"], b["b"], v)
     return res
 
 
@@ -176,9 +185,58 @@ def _steer_axis(car, res, upright):
     return cand[0], cand[-1]
 
 
+HUB_DEPTH = 0.15      # m: a hub's extra node sits this far inboard of the wheel centre (the archetype's h5)
+
+
+def _hub_node(car, c, w):
+    """A hub of three nodes is a flat plate: the wheel's two axle nodes braced to it make a body with no spare beam, and a
+    single broken one lets the wheel fold. A vanilla hub is a body of more nodes: one more is added, across the wheel from the
+    upright's node off the steering axis and inboard of the wheel (as archetype.py's h5), beamed to the upright's nodes (the
+    wheel's axle nodes follow it, braced to every upright node)."""
+    up = w["upright_nodes"]
+    off = [n for n in up if n not in (w["steer_up"], w["steer_down"])]
+    if not off:
+        return
+    ctr = w["centre"]
+    p = car.nodes[off[0]]
+    side = 1.0 if ctr[0] > 0 else -1.0
+    q = [ctr[0] - side * HUB_DEPTH, 2 * ctr[1] - p[1], ctr[2]]
+    name = f"bfhub{c.lower()}"
+    car.node(name, q, 4.0, group=f"sk_{w['upright']}")
+    for u in up:
+        car.beam(name, u, aim="p90")
+    w["upright_nodes"] = list(up) + [name]
+
+
+def _toe_change(car, w, free, link=None):
+    """The wheel's toe change, degrees per 100 mm of bump, by pushing the wheel centre up 10 mm on the corner's beams (the
+    frame held), a toe link from an upright node to a fixed point (a: node, point) added. A wheel's axle is two virtual nodes
+    tied to the upright."""
+    from . import dampers
+    nodes = dict(car.nodes)
+    beams = [(x[0], x[1], float(x[2].get("beamSpring") or 0)) for x in car.beams if x[0] in nodes and x[1] in nodes
+             and float(x[2].get("beamSpring") or 0) > 0]
+    kmax = max([k for _, _, k in beams] or [1e6])
+    c = w["centre"]
+    nodes.update({"_wc": c, "_in": [c[0] - 0.1, c[1], c[2]], "_out": [c[0] + 0.1, c[1], c[2]]})
+    for v in ("_wc", "_in", "_out"):
+        beams += [(v, u, kmax) for u in w["upright_nodes"]]
+    if link:
+        nodes["_fix"] = list(link[1])
+        beams.append((link[0], "_fix", kmax / 10))
+    out = {}
+    dampers.motion_ratios(nodes, beams, list(free) + ["_wc", "_in", "_out"], ["_wc"], {}, (), out)
+    d0 = math.atan2(nodes["_out"][1] - nodes["_in"][1], nodes["_out"][0] - nodes["_in"][0])
+    d1 = math.atan2(out["_out"][1] - out["_in"][1], out["_out"][0] - out["_in"][0])
+    return math.degrees(d1 - d0) * 10                       # 10 mm pushed -> per 100 mm
+
+
 def _lock_uprights(car, wheels, frame):
     """An upright on two ball joints can still turn about the line between them. Where no link (a tie rod, a toe link) ends
-    on its other nodes, one is added: a rod from the upright's furthest node to the nearest frame node a sensible way off."""
+    on its other nodes, one is added: a rod from the upright's furthest node to a pickup on the frame, its place the one
+    that changes the wheel's toe least over the travel (bump steer): a grid of points inboard of the upright, each tried on
+    the corner's beams; the pickup is a node tied to the three nearest frame nodes."""
+    fset = set(frame)
     for c, w in sorted(wheels.items()):
         up = set(w["upright_nodes"])
         off = [n for n in up if n not in (w["steer_up"], w["steer_down"])]
@@ -186,14 +244,37 @@ def _lock_uprights(car, wheels, frame):
             continue
         a = max(off, key=lambda n: abs(car.nodes[n][0]) + abs(car.nodes[n][2]))
         p = car.nodes[a]
-        cand = [f for f in frame if f in car.nodes and math.dist(car.nodes[f], p) >= 0.4 and car.nodes[f][0] * p[0] > 0]
-        if not cand:                                        # a short link would turn the upright on the travel: any but the shortest
-            cand = [f for f in frame if f in car.nodes and math.dist(car.nodes[f], p) >= 0.2]
-        if not cand:
+        free, stack = set(), list(up)                       # the corner: what hangs on the upright, up to the frame
+        while stack:
+            n = stack.pop()
+            if n in free or n in fset or n not in car.nodes:
+                continue
+            free.add(n)
+            stack += [x[1] if x[0] == n else x[0] for x in car.beams if n in (x[0], x[1])]
+        side = 1.0 if p[0] > 0 else -1.0
+        best = None
+        for din in (0.25, 0.35, 0.45, 0.55):
+            for dy in (-0.4, -0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4):
+                for dz in (-0.15, -0.1, -0.05, 0.0, 0.05, 0.1, 0.15):
+                    q = [p[0] - side * din, p[1] + dy, p[2] + dz]
+                    if math.dist(p, q) < 0.3:
+                        continue
+                    try:
+                        t = abs(_toe_change(car, w, free, (a, q)))
+                    except (ValueError, ZeroDivisionError, KeyError):
+                        continue
+                    if best is None or t < best[0] - 1e-6:
+                        best = (t, q)
+        if best is None:
             continue
-        f = min(cand, key=lambda n: 2 * abs(car.nodes[n][2] - p[2]) + abs(car.nodes[n][1] - p[1]))
-        car.beam(a, f, aim="p90")
-        car.notes.append(f"{c}: no link holds the upright against turning about its joints: a toe link added from {a} to {f}")
+        t, q = best
+        pick = f"bftoe{c.lower()}"
+        car.node(pick, q, 4.0, group="sk_frame")
+        for f in car.nearest(q, frame, 3):
+            car.beam(pick, f, aim="p90")
+        car.beam(a, pick, aim="p90")
+        car.notes.append(f"{c}: no link holds the upright against turning about its joints: a toe link added from {a} to a new "
+                         f"frame pickup {pick} (toe change {t:.2f} deg per 100 mm of bump, the least of the places tried)")
 
 
 def _rim_axle(rim, vars_):
@@ -386,6 +467,8 @@ def _suspension(car, res, wheels, spec, frame, held_extra=()):
     # the motion ratios: each axle's wheels pushed up together, the frame and the steering rack held
     susp = {n for n, ps in rigid_of.items() if ps and n not in frame_set and n in car.nodes} - set(held_extra)
     susp |= {g[0] for g in guides}
+    for w_ in wheels.values():                              # a node added to the hub moves with it
+        susp |= {n for n in w_["upright_nodes"] if n in car.nodes and n not in frame_set}
     nodes = dict(car.nodes)
     kmax = max([float(x[2].get("beamSpring") or 0) for x in car.beams] or [1e6])
     beams = [(x[0], x[1], float(x[2].get("beamSpring") or 0)) for x in car.beams if x[0] in nodes and x[1] in nodes
@@ -501,6 +584,8 @@ def build(car_json):
     if len(wheels) < 3:
         raise ValueError("at least three wheels (FL, FR, RL, RR) with a centre each")
     _lock_uprights(car, wheels, frame)
+    for c, w in sorted(wheels.items()):
+        _hub_node(car, c, w)
     layout_driven = {"FWD": ("F",), "RWD": ("R",), "AWD": ("F", "R")}
     driven = layout_driven[layout]
     brakes = spec.get("brakes") or {}

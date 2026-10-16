@@ -39,6 +39,7 @@ FLAT = 0.05              # a part thinner than this share of its size is flat (o
 HELPER = 0.5             # helper nodes sit this share of the part's size off its plane or line
 QUALITY = (0.3, 0.05)    # a brace is taken in a first pass only if it adds this much new direction, then any that adds
 NEAREST = 10             # in a body of more than 40 nodes, braces are looked for among each node's nearest
+HUB_MIN_KG = 8.0         # kg, the least an upright's node weighs
 MIN_KG = 4.0             # a node weighs its share of the tubes, but no less than this (helper nodes: this)
 BEAM = {"beamDeform": 80000, "beamStrength": "FLT_MAX"}   # every beam writes its own values (values())
 TUBE = {"frame": "tube 50x3 steel_1018", "link": "tube 38x3 steel_1018"}   # a part's tube when nothing names one
@@ -753,6 +754,11 @@ def values(result, tubes_given=None, min_kg=MIN_KG):
         for n in (m["a"], m["b"]):
             kg[n] += lim[m["id"]]["mass"] / 2 * (1 + tubes.JOINT)
     kg = {n: round(max(min_kg, x), 3) for n, x in kg.items()}
+    for p in result["parts"]:                           # an upright carries a hub, a brake and half a wheel's loads: heavier nodes,
+        if p.get("role") == "hub":                      # so its beams can be as stiff as it needs (the wheel's camber and toe hold)
+            for n in p["nodes"]:
+                if n in kg:
+                    kg[n] = max(kg[n], HUB_MIN_KG)
     ks, cs, out = {n: 0.0 for n in kg}, {n: 0.0 for n in kg}, [None] * len(B)
 
     def put(i, v, deform, strength, real):

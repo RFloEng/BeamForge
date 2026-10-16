@@ -264,3 +264,18 @@ class TestLocalInstallExport(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPanelNames(unittest.TestCase):
+    """The body mesh's nodes taken as panels by their names (a modder's, here the rally car's) and the kind of each."""
+
+    def kind(self, name):
+        return next((k for k, p, _ in export.PANELS if p.search(name)), None)
+
+    def test_kinds(self):
+        for name, kind in (("e_door_l", "door"), ("e_doori_r", "door"), ("e_door_b", "trunk"), ("e_bonnet", "hood"),
+                           ("e_bumper_f", "bumper_F"), ("e_bumper_b", "bumper_R"), ("e_mirror_l", "mirror"),
+                           ("e_window_lf", "glass"), ("i_window_f", "glass"), ("e_wing", "spoiler")):
+            self.assertEqual(self.kind(name), kind, name)
+        for name in ("e_mirrorglass_l", "e_lightglass_lf", "e_body", "e_light_lf"):      # not panels of their own
+            self.assertIsNone(self.kind(name), name)

@@ -141,6 +141,41 @@ def _fit_nodes(part, deltas, vars_):
     return changed
 
 
+def _tank_mode(part, mode):
+    """A diagnostic: the fuel tank's fuel made non-flammable ("nofire": no chemical energy on its nodes) or the tank's nodes
+    and beams left out ("none"). Returns whether the part is a fuel tank."""
+    es = part.get("energyStorage")
+    if not (isinstance(es, list) and any(isinstance(r, list) and "fuelTank" in r for r in es)):
+        return False
+    if mode == "none":
+        for k in ("nodes", "beams"):
+            if isinstance(part.get(k), list) and part[k]:
+                part[k] = [part[k][0]]
+    elif mode == "nofire":
+        for r in part.get("nodes") or []:
+            if isinstance(r, dict) and "chemEnergy" in r:
+                for k in ("chemEnergy", "burnRate", "flashPoint", "vaporPoint", "specHeat", "selfIgnitionCoef", "smokePoint", "containerBeam"):
+                    if k in r:
+                        r[k] = False
+    return True
+
+
+def _tank_apart(part):
+    """A fuel tank's nodes collide with the vehicle's own triangles in the base (selfCollision true). Moved by the fit, they
+    can end inside the differential's or the body's, and the push breaks the tank's trigger beam as the vehicle loads: they
+    keep their collision with the world and other vehicles, not with their own. Returns whether it changed anything."""
+    es = part.get("energyStorage")
+    rows = part.get("nodes")
+    if not (isinstance(es, list) and any(isinstance(r, list) and "fuelTank" in r for r in es)):
+        return False
+    done = False
+    for r in rows if isinstance(rows, list) else []:
+        if isinstance(r, dict) and r.get("selfCollision") is True:
+            r["selfCollision"] = False
+            done = True
+    return done
+
+
 def _fit_flexbodies(part, name, shifts, vars_):
     """Move each flexbody "pos" of a part by its shift ({index of the row among the part's
     flexbodies: [dx, dy, dz]}), written as the row's own pos (in place)."""
@@ -197,6 +232,7 @@ def _safe(name):
 
 # the panels of a body mesh that follow their own part (a door opens, a hood flies off): the kind, the
 # mesh node names it takes, and the base parts of that kind
+BASE_GLASS_RE = re.compile(r"glass|window|windshield|windscreen", re.I)
 PANELS = [("trunk", re.compile(r"trunk|boot(?!h)|tailgate|hatch(?!back)|rear_?lid|decklid|rear_?hood|baule|bagagliaio|door_?i?_?b(ack)?\b", re.I),
            re.compile(r"_trunk(_|$)|_tailgate(_|$)|_hatch(_|$)", re.I)),
           ("door", re.compile(r"^doors?$|^door_|door_?i?_?[lr]\b|door_?(left|right)|door_?[fr][lr]|portiera", re.I),
@@ -207,6 +243,7 @@ PANELS = [("trunk", re.compile(r"trunk|boot(?!h)|tailgate|hatch(?!back)|rear_?li
           ("bumper_R", re.compile(r"rear\w*_?bumper|^r_?bumper|bumper_?i?_?(rear|r\b|ra|b\b)|paraurti[ _]?post", re.I),
            re.compile(r"_bumper_R(_|$)", re.I)),
           ("mirror", re.compile(r"mirror(?!_?glass)|specchietto", re.I), re.compile(r"_mirrors?(_|$)", re.I)),
+          ("glass", re.compile(r"^[ei]_(window|windscreen)|windshield|windscreen", re.I), BASE_GLASS_RE),
           ("spoiler", re.compile(r"^(e_)?(rear_?)?(wing|spoiler)i?\b", re.I), re.compile(r"_spoiler(_|$)", re.I))]
 # panels named by the SVJ convention (SVJ::body::<id>, docs/naming_convention.md): read before the names above
 SVJ_PANEL = re.compile(r"^SVJ::body::(door_(fl|fr|rl|rr|l|r)|hood|bonnet|trunk|tailgate|hatch|bumper_(f|r|front|rear))$", re.I)
@@ -214,7 +251,7 @@ SVJ_KIND = {"door": "door", "hood": "hood", "bonnet": "hood", "trunk": "trunk", 
             "bumper_f": "bumper_F", "bumper_front": "bumper_F", "bumper_r": "bumper_R", "bumper_rear": "bumper_R"}
 PANEL_MIN = 0.4     # m: the bounding-box diagonal of the smallest thing taken as a panel
 SWAPPABLE = ("bumper_R", "spoiler")
-PANEL_MIN_OF = {"mirror": 0.1}      # (a mirror is small)
+PANEL_MIN_OF = {"mirror": 0.1, "glass": 0.15}      # (a mirror is small)
 PANEL_ANY = re.compile("|".join(f"(?:{p.pattern})" for _, p, _ in PANELS), re.I)
 # where panels are looked for: everywhere but the running gear and helpers (some cars keep their doors
 # under the high-detail cockpit, which the body itself leaves out)
@@ -259,6 +296,7 @@ def _panels(v, svj, files, place, chassis):
             continue                                       # a switch or a label named "doors", not a panel
         def cands_of(rx):
             return [f for f in v.get("flexbodies", []) if rx.search(f["part"]) and "_body" not in f["part"]
+                    and not (rx is BASE_GLASS_RE and f["mesh"].lower().endswith("_int"))
                     and f.get("groups") and all(g in members for g in f["groups"])]
         cands = cands_of(base_re)
         if kind in SWAPPABLE:                              # a rear lip named a wing, a wing named a bumper: by where it is
@@ -285,6 +323,8 @@ def _panels(v, svj, files, place, chassis):
                    "mesh_ref": chassis["mesh_ref"], "part": best["part"], "groups": list(best["groups"])}
             if side:
                 row["side"] = side
+            if kind == "glass":                            # a window breaks as the base's glass does
+                row["glass_of"] = best["mesh"]
             out.append(row)
     return out
 
@@ -608,7 +648,11 @@ def svj_materials(svjm, new_id):
                 if nm:
                     stage["normalMap"] = nm
                 if g["alpha"] == "BLEND":
-                    entry.update(translucent=True, translucentBlendOp="PreMulAlpha", translucentZWrite=False)
+                    # glass: a plain alpha blend (the SVJ's textures are not premultiplied, as the game's PreMulAlpha ones are),
+                    # no shadow cast, shadows received, a reflective gloss as a window has
+                    entry.update(translucent=True, translucentBlendOp="LerpAlpha", translucentZWrite=False, castShadows=False,
+                                 translucentRecvShadows=True, dynamicCubemap=True, alphaRef=0)
+                    stage.update(roughnessFactor=min(stage["roughnessFactor"], 0.08), metallicFactor=max(stage["metallicFactor"], 0.6))
                 elif g["alpha"] == "MASK":
                     entry.update(alphaTest=True, alphaRef=int(255 * float(g.get("cutoff", 0.5))))
                 if g["double_sided"]:
@@ -907,6 +951,10 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
         if choices.get(n) == "fit" and n in active:
             counts["nodes"] += _fit_nodes(part, deltas, vars_)
             _fit_flexbodies(part, n, shifts.get(n, {}), vars_)
+        if n in active and opt and opt.get("tank_mode") in ("nofire", "none"):
+            _tank_mode(part, opt["tank_mode"])
+        if n in active and _tank_apart(part):
+            notes.append(f"{n}: the fuel tank's nodes no longer collide with the vehicle's own body (as the fit may have moved them into it)")
         _rename_refs(part, renames)
         if n in active and (n in taken_beams or n in taken_tyres or n in taken_weights or n in taken_pt):
             values.apply_to_part(n, part, taken_beams, taken_tyres, taken_weights)
@@ -922,7 +970,7 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
         for m in svjm:
             if m["part"] == n:
                 extra = {}
-                if m.get("glass_of"):                      # glass: breaks as the base's glass did
+                if m.get("glass_of") and (opt or {}).get("glass_break", True):       # glass: breaks as the base's glass did
                     extra = _deform_props((parts.get(n) or {}).get("part"), m["glass_of"])
                     if "deformMaterialBase" in extra and m.get("submeshes"):   # the see-through one breaks
                         mats_ = m.get("materials") or {}

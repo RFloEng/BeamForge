@@ -2,7 +2,7 @@
 
     python tools/svj_to_beamng.py path/to/car.svj.json --base <model> --id bf_mycar --name "My car (BF)"
         [--vehicles <BeamNG>/content/vehicles] [--config <pc name>] [--stages wheelbase,body,pickups]
-        [--no-meshes] [--keep-body] [--scale-structure] [--out out/] [--install <user folder>/mods]
+        [--no-meshes] [--keep-body] [--scale-structure] [--no-glass-break] [--out out/] [--install <user folder>/mods]
 
 Steps (beamforge/pipeline.py): the base's parts nearest the SVJ, the fit, every SVJ value, the SVJ's meshes in place of
 the base's body, the export, and the base's assets copied. The mod zip is read back the way the game reads it, and the
@@ -48,6 +48,8 @@ def main(argv=None):
     ap.add_argument("--keep-body", action="store_true", help="add the SVJ's meshes beside the base's body, not in its place")
     ap.add_argument("--scale-structure", action="store_true",
                     help="reach the SVJ's mass: lighter nodes, the body's beams softened by the same factor")
+    ap.add_argument("--no-glass-break", action="store_true", help="the SVJ's windows as plain glass that never cracks")
+    ap.add_argument("--tank", choices=("nofire", "none"), help="a diagnostic: the fuel tank non-flammable, or left out")
     ap.add_argument("--out", default="out", help="folder for the mod zip")
     ap.add_argument("--install", help="a mods folder to copy the zip into")
     a = ap.parse_args(argv)
@@ -63,7 +65,7 @@ def main(argv=None):
     stages = [s for s in a.stages.split(",") if s.strip()]
     r = pipeline.run(a.base, svj, a.id, a.name or a.id, a.brand, a.config, os.path.dirname(os.path.abspath(a.svj)), stages,
                      meshes=not a.no_meshes, replace=not a.keep_body, base_paths=base_paths,
-                     scale_structure=a.scale_structure)
+                     scale_structure=a.scale_structure, glass_break=not a.no_glass_break, tank_mode=a.tank)
     out = r["out"]
     print("parts suggested:", r["parts"] or "none")
     print("fit:", len(r["fit"]["moves"]), "nodes moved")

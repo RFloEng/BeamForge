@@ -524,6 +524,24 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
             for n in group:
                 out[n] = list(move(nodes[n]))
             stiff.append(f"{name} ({worst * 1000:.0f} mm)")
+    # a door, a mirror, a hood keeps its shape too, scaled whole to the size the fit gives it: the body stage bends its nodes
+    # unevenly (the rear doors of a wagon stretched 0.6 to 1.7 along their beams), and a warped door's beams yield and
+    # wrinkle as the vehicle loads
+    sim = []
+    for name, group in sorted(by_part.items()):
+        if not PANEL_SIM.search(name) or SUSPENSION.search(name) or len(group) < 4:
+            continue
+        if any(n in protected or n in wheel_nodes or n in slide_nodes for n in group):
+            continue
+        move = rigid_fit([nodes[n] for n in group], [out[n] for n in group], scale=True)
+        worst = max(math.dist(out[n], move(nodes[n])) for n in group)
+        if worst > 0.005:
+            for n in group:
+                out[n] = list(move(nodes[n]))
+            sim.append(f"{name} ({worst * 1000:.0f} mm)")
+    if sim:
+        changes.append("panels (doors, mirrors, hood, glass) kept their shape, scaled whole: " + ", ".join(sim))
+
     # ...a fuel tank not closer to another part's nodes than the base had it (pushed into the differential's carrier)
     pushed = []
     held = set(protected) | wheel_nodes
@@ -644,6 +662,7 @@ def fit_json(geometry_json, wheels_json, svj_json, files_json, stages_json, over
 
 # parts that are solid blocks, not skin: they keep their shape when the body stage bends the nodes around them
 SOLID = re.compile(r"tank|battery|engine|intake|transaxle|transmission|gearbox|differential|carrier|seat|shifter|radiator", re.I)
+PANEL_SIM = re.compile(r"door|mirror|tailgate|trunk|hood|spoiler|headlight|taillight|foglight|glass|windshield", re.I)
 SUSPENSION = re.compile(r"suspension|strut|coilover|shock|damper|spring|steer|hub|arm|link|subframe|knuckle|upright", re.I)
 
 
@@ -890,10 +909,10 @@ def pickup_field(nodes, targets, radius=None):
     return out
 
 
-def rigid_fit(src, dst):
+def rigid_fit(src, dst, scale=False):
     """Best rotation R and translation t with R src_i + t ~ dst_i (least squares; Horn's quaternion
     method, the largest eigenvector found by power iteration). Fewer than 3 points: translation only.
-    Returns a function p -> R p + t."""
+    Returns a function p -> R p + t (scale: p -> s R p + t, the one uniform s that fits best: a similarity)."""
     n = len(src)
     cs = [sum(p[i] for p in src) / n for i in range(3)]
     cd = [sum(p[i] for p in dst) / n for i in range(3)]
@@ -920,9 +939,15 @@ def rigid_fit(src, dst):
          [2 * (x * y + w * z), w * w - x * x + y * y - z * z, 2 * (y * z - w * x)],
          [2 * (x * z - w * y), 2 * (y * z + w * x), w * w - x * x - y * y + z * z]]
 
+    s = 1.0
+    if scale:
+        num = sum(sum(sum(R[i][j] * (a[j] - cs[j]) for j in range(3)) * (b[i] - cd[i]) for i in range(3)) for a, b in zip(src, dst))
+        den = sum(sum((a[i] - cs[i]) ** 2 for i in range(3)) for a in src)
+        s = num / den if den > 1e-12 and num > 0 else 1.0
+
     def f(p):
         d = [p[i] - cs[i] for i in range(3)]
-        return [sum(R[i][j] * d[j] for j in range(3)) + cd[i] for i in range(3)]
+        return [s * sum(R[i][j] * d[j] for j in range(3)) + cd[i] for i in range(3)]
     return f
 
 
