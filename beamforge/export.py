@@ -664,7 +664,9 @@ def svj_attach(configured_json, svj_json, mapping_json=None, files_json=None, pl
             # static pose and would hang there while the suspension moves; the base's own parts show, or
             # the archetype's (archetype.piece_rows) follow their nodes
             baked = susp_pieces(v, svj, path, place, files)
-            body["exclude"] = sorted({p["node"] for p in panels} | {b["node"] for b in baked})
+            with open(path, "rb") as fh:                   # (a file naming its parts by the SVJ convention may hold a static copy under
+                static = {n for n, _ in gltf.guessed_pieces(fh.read(), path.lower().endswith(".glb"))}   # other names)
+            body["exclude"] = sorted({p["node"] for p in panels} | {b["node"] for b in baked} | static)
             glass = _glass(v, svj, path, place, body) if not body["node"] or not _has(path, body["node"]) else []
             if glass:
                 body["exclude_prims"] = sorted({i for g in glass for i in g["prims"]})
@@ -1175,7 +1177,27 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     if opt and opt.get("diagnose"):
         files["lua/vehicle/extensions/auto/bf_check.lua"] = DIAGNOSE_LUA
         notes.append("diagnose: lua/vehicle/extensions/auto/bf_check.lua logs the broken and deformed beams after loading (beamng.log, 'bfcheck')")
+    notes += _steering_and_checks(model, new_id, v, files)
     return json.dumps({"files": files, "binary": binary, "renamed": renames, "notes": notes, "counts": counts})
+
+
+def _steering_and_checks(model, new_id, base_configured, files):
+    """The written vehicle's steering checked against its base's (a wheel that turns the other way is reversed, the rack's
+    lock brought back to the base's: steering.fix_files) and its tie rods moved to where the toe changes least over the
+    wheel's travel (steering.tune_tie_rods), then the static checks (checks.run) as notes starting "CHECK:". The files are
+    changed in place. A step that cannot run (a base without steering hydros) is noted, not fatal."""
+    from . import checks, steering
+    notes = []
+    try:
+        notes += steering.fix_files(model, base_configured, new_id, files)[0]
+        notes += steering.tune_tie_rods(model, new_id, files)[0]
+    except (KeyError, ValueError, StopIteration, IndexError) as e:
+        notes.append(f"steering check skipped: {type(e).__name__} {e}")
+    try:
+        notes += ["CHECK: " + w for w in checks.run(new_id, files, model, base_configured)]
+    except (KeyError, ValueError, StopIteration, IndexError) as e:
+        notes.append(f"static checks skipped: {type(e).__name__} {e}")
+    return notes
 
 
 def assets(model, new_id, paths_json):

@@ -34,7 +34,7 @@ import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, reme
 const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py',
   'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py', 'beamforge/dae.py', 'beamforge/values.py',
   'beamforge/rigidity.py', 'beamforge/kinematics.py', 'beamforge/roles.py', 'beamforge/convert.py',
-  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py', 'beamforge/scratch.py', 'beamforge/tyres.py', 'beamforge/aero.py', 'beamforge/components.py', 'beamforge/mount.py', 'beamforge/dampers.py', 'beamforge/susp_donor.py', 'beamforge/pipeline.py'];
+  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py', 'beamforge/scratch.py', 'beamforge/tyres.py', 'beamforge/aero.py', 'beamforge/components.py', 'beamforge/mount.py', 'beamforge/dampers.py', 'beamforge/susp_donor.py', 'beamforge/checks.py', 'beamforge/pipeline.py'];
 const REPO = new URL('../', import.meta.url);
 
 const $ = (id) => document.getElementById(id);

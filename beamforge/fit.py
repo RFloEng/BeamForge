@@ -539,6 +539,25 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
             for n in group:
                 out[n] = list(move(nodes[n]))
             sim.append(f"{name} ({worst * 1000:.0f} mm)")
+    # a mirror hangs on its door's nodes (beams and torsion bars from the door's frame): moved on its own it can end with a
+    # door node, its own node and the next door node in a line, and a torsion bar through them spins up at spawn and throws
+    # the mirror off. It is placed by its own nodes and the door nodes it is tied to together, the door as it ended
+    for name, group in sorted(by_part.items()):
+        if not re.search(r"mirror", name, re.I) or len(group) < 4 or not beams:
+            continue
+        gs = set(group)
+        anchors = {b if a in gs else a for a, b in (x[:2] for x in beams) if (a in gs) != (b in gs) and a in out and b in out}
+        anchors = {n for n in anchors if parts.get(n) and n not in protected and n not in wheel_nodes}
+        if len(anchors) < 3:
+            continue
+        src = [nodes[n] for n in group] + [nodes[n] for n in anchors] * 8
+        dst = [out[n] for n in group] + [out[n] for n in anchors] * 8
+        move = rigid_fit(src, dst, scale=True)
+        worst = max(math.dist(out[n], move(nodes[n])) for n in group)
+        if worst > 0.002:
+            for n in group:
+                out[n] = list(move(nodes[n]))
+            sim.append(f"{name} on its door ({worst * 1000:.0f} mm)")
     if sim:
         changes.append("panels (doors, mirrors, hood, glass) kept their shape, scaled whole: " + ", ".join(sim))
 

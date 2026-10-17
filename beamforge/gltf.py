@@ -307,7 +307,36 @@ def susp_pieces(data, is_glb=True):
     return _pieces(doc)
 
 
-def _pieces(doc):
+SVJ_SUSP = re.compile(r"^SVJ::suspension::", re.I)
+
+
+def _named_pieces(doc):
+    """The suspension parts named by the SVJ convention (SVJ::suspension::<part>_<corner>): [(node name, role)]. Whatever
+    hangs below such a node is the part (an upright with its caliper), whatever its children are called."""
+    nodes = doc.get("nodes", [])
+
+    def any_mesh(ni):
+        return "mesh" in nodes[ni] or any(any_mesh(c) for c in nodes[ni].get("children", []))
+    out = []
+    for ni, n in enumerate(nodes):
+        name = n.get("name") or ""
+        if SVJ_SUSP.match(name) and any_mesh(ni) and all(name != o for o, _ in out):
+            rest = SVJ_SUSP.sub("", name)
+            out.append((name, next((r for r, rx in PIECE_ROLES if rx.search(rest)), "hub")))
+    return out
+
+
+def guessed_pieces(data, is_glb=True):
+    """[(node name, role)] of the suspension parts read from ordinary node names only. A file that also names its parts by
+    the SVJ convention may carry a second, static copy of them under these names: they are left out of the body too."""
+    doc, _ = _document(data, is_glb, None)
+    return _pieces(doc, guess=True)
+
+
+def _pieces(doc, guess=False):
+    named = _named_pieces(doc)
+    if named and not guess:              # a file that names its suspension parts: those, not a guess from other names
+        return named
     nodes = doc.get("nodes", [])
     out = []
 

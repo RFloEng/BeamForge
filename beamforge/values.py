@@ -772,9 +772,12 @@ def svj_powertrain(svj):
     return {"layout": layout or None, "torque": [list(x) for x in eng.get("torque_curve") or [] if isinstance(x, list) and len(x) == 2],
             "idle_rpm": eng.get("idle_rpm"), "max_rpm": eng.get("max_rpm"), "ratios": gb.get("ratios"),
             "final_drive": diff.get("final_drive"), "gearbox_type": gb.get("type"), "driven": driven,
+            "boost": max([t["wastegate"] for t in eng.get("turbos") or [] if isinstance(t, dict) and isinstance(t.get("wastegate"), (int, float))],
+                         default=None),
             "turbo": eng["turbo"] if isinstance(eng.get("turbo"), bool) else ("turbo" in text or "supercharg" in text), "diff_type": diff.get("type"),
             "inertia": eng.get("inertia"), "reverse": rev[0] if isinstance(rev, list) and rev else None,
-            "diffs": {d.get("location"): d for d in diffs if isinstance(d, dict) and d.get("location")},
+            "diffs": {**({"center": tc["center_diff"]} if isinstance(tc.get("center_diff"), dict) else {}),
+                      **{d.get("location"): d for d in diffs if isinstance(d, dict) and d.get("location")}},
             "split": split[0] if isinstance(split, list) and split and isinstance(split[0], (int, float)) else None,
             "x_beamng": eng.get("x_beamng") if isinstance(eng.get("x_beamng"), dict) else {}}
 
@@ -908,8 +911,10 @@ def powertrain_changes(model, configured, svj, take):
         e = ch.setdefault(base["engine"], {})
         e["mainEngine.torque"] = rows
         peak = max(t for _, t in curve)
-        e["mainEngine.maxTorqueRating"] = round(peak * 1.15)            # past it the engine damages itself (piston rings: oil
-        e["mainEngine.maxOverTorqueDamage"] = round(peak * 1.15 * 1.3)  # and compression); the base's was set for its own torque
+        # a turbo adds its boost on top of the curve: the torque rating allows the SVJ's boost (bar, as a torque factor of 1 + boost) else double
+        head = (1 + sp["boost"]) * 1.15 if sp.get("turbo") and sp.get("boost") else 2.0 if sp.get("turbo") else 1.15
+        e["mainEngine.maxTorqueRating"] = round(peak * head)            # past it the engine damages itself (piston rings: oil
+        e["mainEngine.maxOverTorqueDamage"] = round(peak * head * 1.3)  # and compression); the base's was set for its own torque
         if isinstance(sp.get("inertia"), (int, float)):
             e["mainEngine.inertia"] = sp["inertia"]
         for k in ("friction", "dynamicFriction", "engineBrakeTorque"):
