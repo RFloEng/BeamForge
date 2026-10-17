@@ -165,6 +165,10 @@ def lock_angle(N, d, travel):
     return None
 
 
+ROD_FLAT = 5.0       # deg: a tie rod inclined more than this (side view) pushes its hub up or down as the wheel steers (the body sinks at lock)
+ROD_TILT = 0.05      # cost per deg^2 past it, against the bump steer's deg^2 per 10 mm
+
+
 def tune_tie_rods(model, new_id, files, base=None, min_gain=0.3):
     """Bump steer out of the built vehicle: each front wheel's rack end (the node its tie rod ends on, direction())
     is moved, in height and fore-aft place, to where the wheel's toe changes least over its travel
@@ -197,12 +201,17 @@ def tune_tie_rods(model, new_id, files, base=None, min_gain=0.3):
         if base_toe is None or abs(base_toe) < 0.03:
             continue
         e0 = N[e]
+        hub = N[dirs[w['name']]['tie_rod_end']] if w['name'] in dirs else None
 
         def cost(v):
             n2 = dict(N)
             n2[e] = [e0[0], v[0], v[1]]
             t = kinematics_bump(new_id, configured, w, n2, bl, springs)
-            return 1e3 if t is None else t * t + 2.0 * math.dist(n2[e], e0) ** 2
+            if t is None:
+                return 1e3
+            rod = math.dist(n2[e], hub) if hub else 0.0
+            incl = math.degrees(math.asin(max(-1.0, min(1.0, (hub[2] - v[1]) / rod)))) if rod > 1e-6 else 0.0
+            return t * t + 2.0 * math.dist(n2[e], e0) ** 2 + 200.0 * max(0.0, math.dist(n2[e], e0) - 0.05) ** 2 + ROD_TILT * max(0.0, abs(incl) - ROD_FLAT) ** 2
         best, _ = _nelder_mead(cost, [e0[1], e0[2]], 0.03)
         if math.dist([e0[0], best[0], best[1]], e0) > 0.15:
             continue
