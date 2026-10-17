@@ -15,6 +15,7 @@ hydros of a wheel whose sign differs from the base's.
 """
 
 import math
+import re
 
 from . import beamng, jbeam, kinematics, rigidity, values
 
@@ -163,6 +164,18 @@ def lock_angle(N, d, travel):
             return (lo + hi) / 2
         prev, ep = a, ea
     return None
+
+
+def svj_tie_rods(svj):
+    """Whether the SVJ gives the steered wheels' tie rods (inboard and outboard points of a link named for the steering): then
+    the rack end and the rod belong to the SVJ's geometry and are not moved to cut bump steer."""
+    corners = [c for c in ((svj or {}).get("suspension") or {}).values() if isinstance(c, dict) and c.get("topology")]
+    found = 0
+    for c in corners:
+        for l in c["topology"].get("links") or []:
+            if re.search(r"tie_rod|steering", str(l.get("name", "")), re.I) and l.get("inboard_points") and l.get("outboard_point"):
+                found += 1
+    return found >= 2
 
 
 ROD_FLAT = 5.0       # deg: a tie rod inclined more than this (side view) pushes its hub up or down as the wheel steers (the body sinks at lock)

@@ -1253,11 +1253,11 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     if opt and opt.get("diagnose"):
         files["lua/vehicle/extensions/auto/bf_check.lua"] = DIAGNOSE_LUA
         notes.append("diagnose: lua/vehicle/extensions/auto/bf_check.lua logs the broken and deformed beams after loading (beamng.log, 'bfcheck')")
-    notes += _steering_and_checks(model, new_id, v, files)
+    notes += _steering_and_checks(model, new_id, v, files, (opt or {}).get("svj"))
     return json.dumps({"files": files, "binary": binary, "renamed": renames, "notes": notes, "counts": counts})
 
 
-def _steering_and_checks(model, new_id, base_configured, files):
+def _steering_and_checks(model, new_id, base_configured, files, svj=None):
     """The written vehicle's steering checked against its base's (a wheel that turns the other way is reversed, the rack's
     lock brought back to the base's: steering.fix_files) and its tie rods moved to where the toe changes least over the
     wheel's travel (steering.tune_tie_rods), then the static checks (checks.run) as notes starting "CHECK:". The files are
@@ -1270,7 +1270,10 @@ def _steering_and_checks(model, new_id, base_configured, files):
         pass
     try:
         notes += steering.fix_files(model, base_configured, new_id, files, lock_rack=False)[0]
-        notes += steering.tune_tie_rods(model, new_id, files)[0]
+        if steering.svj_tie_rods(svj):
+            notes.append("tie rods kept where the SVJ puts them (rack end, rod and upright points): no bump steer tuning")
+        else:
+            notes += steering.tune_tie_rods(model, new_id, files)[0]
         notes += steering.fix_files(model, base_configured, new_id, files)[0]      # the lock last: the tie rods set it
     except (KeyError, ValueError, StopIteration, IndexError) as e:
         notes.append(f"steering check skipped: {type(e).__name__} {e}")
