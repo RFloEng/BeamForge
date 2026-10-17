@@ -32,7 +32,7 @@ def svj_mesh_files(svj, svj_dir):
 
 
 def run(base, svj, new_id, name, brand="BeamForge", config=None, svj_dir=None, stages=STAGES, take=None,
-        meshes=True, replace=True, base_paths=(), scale_structure=False, glass_break=True, tank_mode=None):
+        meshes=True, replace=True, base_paths=(), scale_structure=False, glass_break=True, tank_mode=None, diagnose=False):
     """The new vehicle from the base and the SVJ. take: the values table keys to take (None: every one the SVJ has a
     figure for); meshes: put the SVJ's meshes on it (replace: in place of the base's body); base_paths: every file of the
     base's folder, for the assets to copy; scale_structure: reach the SVJ's mass by scaling the body's beams with its
@@ -55,7 +55,7 @@ def run(base, svj, new_id, name, brand="BeamForge", config=None, svj_dir=None, s
     taken = {x["key"]: True for x in table if x["svj"] is not None and (take is None or x["key"] in take)}
     meas = cv.get("measure") or {}
     place = r.get("place") or {"yf": meas.get("front_axle_y") or 0.0, "ground": meas.get("ground_z") or 0.0}
-    opt = {"svj": svj, "take": taken, "study": {"corners": study["corners"]}, "scale_structure": bool(scale_structure), "glass_break": bool(glass_break), "tank_mode": tank_mode}
+    opt = {"svj": svj, "take": taken, "study": {"corners": study["corners"]}, "scale_structure": bool(scale_structure), "glass_break": bool(glass_break), "tank_mode": tank_mode, "diagnose": bool(diagnose)}
     if files:
         opt.update(files=files, place=place, replace=replace,
                    attach=json.loads(export.svj_attach(configured, json.dumps(svj), json.dumps(r.get("mapping") or []),

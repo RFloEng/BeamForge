@@ -50,6 +50,7 @@ def main(argv=None):
                     help="reach the SVJ's mass: lighter nodes, the body's beams softened by the same factor")
     ap.add_argument("--no-glass-break", action="store_true", help="the SVJ's windows as plain glass that never cracks")
     ap.add_argument("--tank", choices=("nofire", "none"), help="a diagnostic: the fuel tank non-flammable, or left out")
+    ap.add_argument("--diagnose", action="store_true", help="add a small game extension that logs the broken and deformed beams after loading")
     ap.add_argument("--out", default="out", help="folder for the mod zip")
     ap.add_argument("--install", help="a mods folder to copy the zip into")
     a = ap.parse_args(argv)
@@ -65,7 +66,7 @@ def main(argv=None):
     stages = [s for s in a.stages.split(",") if s.strip()]
     r = pipeline.run(a.base, svj, a.id, a.name or a.id, a.brand, a.config, os.path.dirname(os.path.abspath(a.svj)), stages,
                      meshes=not a.no_meshes, replace=not a.keep_body, base_paths=base_paths,
-                     scale_structure=a.scale_structure, glass_break=not a.no_glass_break, tank_mode=a.tank)
+                     scale_structure=a.scale_structure, glass_break=not a.no_glass_break, tank_mode=a.tank, diagnose=a.diagnose)
     out = r["out"]
     print("parts suggested:", r["parts"] or "none")
     print("fit:", len(r["fit"]["moves"]), "nodes moved")

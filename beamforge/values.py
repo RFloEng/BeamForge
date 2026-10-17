@@ -772,7 +772,7 @@ def svj_powertrain(svj):
     return {"layout": layout or None, "torque": [list(x) for x in eng.get("torque_curve") or [] if isinstance(x, list) and len(x) == 2],
             "idle_rpm": eng.get("idle_rpm"), "max_rpm": eng.get("max_rpm"), "ratios": gb.get("ratios"),
             "final_drive": diff.get("final_drive"), "gearbox_type": gb.get("type"), "driven": driven,
-            "turbo": "turbo" in text or "supercharg" in text, "diff_type": diff.get("type"),
+            "turbo": eng["turbo"] if isinstance(eng.get("turbo"), bool) else ("turbo" in text or "supercharg" in text), "diff_type": diff.get("type"),
             "inertia": eng.get("inertia"), "reverse": rev[0] if isinstance(rev, list) and rev else None,
             "diffs": {d.get("location"): d for d in diffs if isinstance(d, dict) and d.get("location")},
             "split": split[0] if isinstance(split, list) and split and isinstance(split[0], (int, float)) else None,
@@ -804,6 +804,9 @@ def suggest_parts(model, configured_json, svj_json):
                     and ("diesel" in o) == ("diesel" in cur)]
             if same and (("turbo" in cur or "supercharg" in cur) != want_turbo):
                 pick, why = min(same, key=len), "naturally aspirated, as the SVJ" if not want_turbo else "forced induction, as the SVJ"
+            elif not want_turbo and ("turbo" in cur or "supercharg" in cur) and not same:
+                pick, why = "", ("naturally aspirated, as the SVJ: the base's turbo is left out (its torque curve is the engine's own, "
+                                 "and the turbo would add its boost on top of it)")
         elif "transmission" in text and opts and sp["gearbox_type"]:
             kind = {"manual": r"\d+M", "automatic": r"\d+A", "dct": r"DCT"}.get(str(sp["gearbox_type"]).lower())
             if kind and not re.search(kind + r"(_|$)", cur):
@@ -875,7 +878,7 @@ def powertrain_changes(model, configured, svj, take):
     ch = {}
     if take.get("engine") and sp["torque"] and base.get("engine"):
         mod = base.get("exhaust_mod") or []
-        curve = sorted(sp["torque"])
+        curve = [x for x in sorted(sp["torque"]) if x[0] > 0]          # (the table starts at 0 Nm at 0 rpm; no second row there)
         rows = [["rpm", "torque"], [0, 0]]
         idle = sp["idle_rpm"] or curve[0][0]
         if curve[0][0] > idle:                            # below the first point: towards zero at standstill
@@ -883,6 +886,9 @@ def powertrain_changes(model, configured, svj, take):
         rows += [[r, round(t - _interp(mod, r), 1)] for r, t in curve]   # the exhaust's change added back
         e = ch.setdefault(base["engine"], {})
         e["mainEngine.torque"] = rows
+        peak = max(t for _, t in curve)
+        e["mainEngine.maxTorqueRating"] = round(peak * 1.15)            # past it the engine damages itself (piston rings: oil
+        e["mainEngine.maxOverTorqueDamage"] = round(peak * 1.15 * 1.3)  # and compression); the base's was set for its own torque
         if isinstance(sp.get("inertia"), (int, float)):
             e["mainEngine.inertia"] = sp["inertia"]
         for k in ("friction", "dynamicFriction", "engineBrakeTorque"):
@@ -892,6 +898,7 @@ def powertrain_changes(model, configured, svj, take):
             e["mainEngine.idleRPM"] = sp["idle_rpm"]
         if sp["max_rpm"]:
             e["mainEngine.maxRPM"] = sp["max_rpm"]
+            e["mainEngine.maxPhysicalRPM"] = round(sp["max_rpm"] * 1.07)    # the base's is 7 % over its maximum
             if base.get("ecu"):
                 ch.setdefault(base["ecu"], {})["mainEngine.revLimiterRPM"] = sp["max_rpm"]
     if take.get("gears") and sp["ratios"] and base.get("gearbox"):

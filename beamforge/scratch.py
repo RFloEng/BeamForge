@@ -539,6 +539,67 @@ _RESET_NORMAL = {"beamType": "|NORMAL", "beamPrecompression": 1, "beamSpring": 4
                  "beamDeform": 80000, "beamStrength": "FLT_MAX", "beamLimitSpring": 0, "beamLimitDamp": 0}
 
 
+SLIDE_HEAD = ["id:", "railName", "attached", "fixToRail", "tolerance", "spring", "strength", "capStrength"]
+DAMPER_KEYS = ("beamDamp", "beamDampFast", "beamDampRebound", "beamDampReboundFast")
+
+
+def _donor_parts(car, donors, placed, wheels, spec):
+    """The donors' steering (rack, hydros), slide nodes and rails as the main part's tables, torsion bars kept on the car, and the
+    springs and dampers scaled to this car's weight on each axle (the donor's frequency kept: its spring and damper beams times
+    the ratio of this car's corner weight to the donor's). Returns (steering tables or None, beam rows, rails, slide rows, report)."""
+    from .components import WHEEL_KG
+    tot = sum(car.kg[n] for n in car.nodes) + WHEEL_KG * len(wheels)
+    ycg = (sum(car.kg[n] * car.nodes[n][1] for n in car.nodes) + sum(WHEEL_KG * w["centre"][1] for w in wheels.values())) / tot
+    yf_ = sum(w["centre"][1] for c, w in wheels.items() if c[0] == "F") / max(1, sum(1 for c in wheels if c[0] == "F"))
+    yr_ = sum(w["centre"][1] for c, w in wheels.items() if c[0] == "R") / max(1, sum(1 for c in wheels if c[0] == "R"))
+    front_share = min(0.9, max(0.1, (yr_ - ycg) / (yr_ - yf_))) if abs(yr_ - yf_) > 0.5 else 0.5
+    rails, slide_rows, hydros, tors, report = {}, [], [], [], {}
+    dt = rigidity.DT
+    for AX, pl in sorted(placed.items()):
+        data = donors[AX]
+        share = front_share if AX == "F" else 1 - front_share
+        dshare = data["share"] if AX == "F" else 1 - data["share"]
+        r = (tot * share) / max(1.0, data["mass"] * dshare)
+        r = min(3.0, max(0.35, r))
+        for i in pl["springs"]:
+            car.beams[i][2]["beamSpring"] = round(float(car.beams[i][2].get("beamSpring") or 0) * r)
+        for i in pl["dampers"]:
+            v = car.beams[i][2]
+            for k in DAMPER_KEYS:
+                if isinstance(v.get(k), (int, float)):
+                    v[k] = round(v[k] * r)
+        for i in pl["springs"] + pl["dampers"]:             # the units' ends heavy enough for the new numbers at the physics step
+            a, b, v = car.beams[i]
+            for n in (a, b):
+                need = max(float(v.get("beamSpring") or 0) * dt * dt / rigidity.VANILLA["node_k"]["p90"],
+                           max(float(v.get(k) or 0) for k in DAMPER_KEYS) * dt / rigidity.VANILLA["node_c"]["p90"])
+                if n in car.kg and car.kg[n] < need:
+                    car.kg[n] = round(need * 1.02, 3)
+        rails.update(pl["rails"])
+        for rec in pl["slides"]:
+            slide_rows.append([rec.get("id"), rec.get("railName"), rec.get("attached", True), rec.get("fixToRail", True),
+                               rec.get("tolerance", 0.0), rec.get("spring"), rec.get("strength", "FLT_MAX"), rec.get("capStrength", "FLT_MAX")])
+        hydros += pl["hydros"]
+        tors += pl["torsion"]
+        report[AX] = {"donor": data["model"], "parts": data["parts"], "scale": round(r, 2), "corner_kg": round(tot * share / 2),
+                      "donor_corner_kg": round(data["mass"] * dshare / 2)}
+        car.notes.append(f"{AX}: {data['model']}'s suspension ({', '.join(data['parts'])}), springs and dampers times {r:.2f} "
+                         f"for {tot * share / 2:.0f} kg a corner (the donor's {data['mass'] * dshare / 2:.0f})")
+    car.torsion = tors
+    steering = None
+    if hydros:
+        head = [["id1:", "id2:"], {"beamPrecompression": 1.0, "beamType": "|NORMAL", "beamLongBound": 1, "beamShortBound": 1}]
+        turns = (spec.get("steering") or {}).get("turns")
+        rows = []
+        for a, b, props in hydros:
+            if turns and "steeringWheelLock" in props:
+                props = dict(props, steeringWheelLock=round(turns * 180, 1))
+            rows.append([a, b, props])
+        steering = (head + rows, rails, [SLIDE_HEAD] + slide_rows)
+        rails, slide_rows = {}, []
+    return steering, [], rails, slide_rows, report
+
+
 def _ref_nodes(car, frame, yf):
     """ref, back, left, up: four frame nodes spanning the vehicle's axes (BeamNG reads its frame from them)."""
     ref = min(frame, key=lambda n: abs(car.nodes[n][0]) + abs(car.nodes[n][1] - yf) * 0.5)
@@ -562,6 +623,19 @@ def build(car_json):
         raise ValueError("the vehicle id must be lower case letters, digits and _")
     yf, zg = 0.0, 0.0                                       # front axle at y = 0, ground at z = 0
     car = _Car()
+    donor_spec = spec.get("suspension_donor") or {}
+    donors = {}
+    if donor_spec:                                          # the suspension of a vanilla car: the sketch is the frame only
+        from . import susp_donor
+        for key, AX in (("front", "F"), ("rear", "R")):
+            d = donor_spec.get(key)
+            if d and d.get("model"):
+                donors[AX] = susp_donor.extract(d["model"], AX, d.get("config"))
+        if not donors:
+            raise ValueError("suspension_donor: a vehicle for the front, the rear or both")
+        sk = dict(spec["sketch"])
+        sk["parts"] = [p for p in sk["parts"] if skeleton.kind_of(p["name"]) not in ("link", "damper")]
+        spec = dict(spec, sketch=sk)
     res = _structure(car, spec["sketch"], yf, zg)
     frame = [n for n, v in res["nodes"].items() if not v["reference"] and not v["helper"]
              and any(p["kind"] == "frame" for p in res["parts"] if p["name"] in v["parts"])]
@@ -576,6 +650,10 @@ def build(car_json):
     # per axle with the brakes and the wheel rows, after the hub part so the rows take that axle's tyre
     wheels = {}
     for corner, w in sorted((spec.get("wheels") or {}).items()):
+        if corner[0] in donors:                             # the donor's hub is the upright: no sketch part
+            wheels[corner] = {"centre": svjmod.from_sae(w["center"], yf, zg), "upright_nodes": [], "steer_up": None,
+                              "steer_down": None, "upright": None}
+            continue
         up = _upright(res, corner, w)
         upn = [n for n in up["nodes"] if n in car.nodes]
         su, sd = _steer_axis(car, res, up["name"])
@@ -590,6 +668,7 @@ def build(car_json):
     driven = layout_driven[layout]
     brakes = spec.get("brakes") or {}
     extra_parts, pc_parts, slots = {}, {}, [["type", "default", "description"]]
+    donor_placed = {}
     for ax, AX in (("front", "F"), ("rear", "R")):
         corners = [c for c in wheels if c[0] == AX]
         if not corners:
@@ -622,11 +701,47 @@ def build(car_json):
         rows = [["name", "hubGroup", "group", "node1:", "node2:", "nodeS", "nodeArm:", "wheelDir"],
                 {"brakeTorque": float(brakes.get(ax) or (2000 if AX == "F" else 1200)), "parkingTorque": 0 if AX == "F" else 1500,
                  "enableBrakeThermals": False, "selfCollision": False, "collision": True, "enableHubcaps": False}]
+        placed = None
+        if AX in donors:                                                # a donor's corner: its hub is braced to the rim as it was
+            from . import susp_donor
+            rim_map = {}
+            for c in corners:
+                w = wheels[c]
+                inner, outer, _, _, rim_kg = axle[1 if w["centre"][0] >= 0 else -1]
+                for n in (inner, outer):
+                    car.kg.setdefault(n, rim_kg)
+                    car.ks.setdefault(n, 0.0)
+                    car.cs.setdefault(n, 0.0)
+                rim_map[c] = (outer, inner)
+            placed = susp_donor.place(car, donors[AX], {c: wheels[c] for c in corners}, frame, rim_map)
+            donor_placed[AX] = placed
         for c in corners:
             w = wheels[c]
             side = 1 if w["centre"][0] >= 0 else -1                      # BeamNG x: left +
             inner, outer, _, _, rim_kg = axle[side]
             w.update(node1=outer, node2=inner)
+            if placed:
+                wr = placed["wheel_rows"][c]
+                have = set(car.nodes) | {inner, outer}
+                inline = {}
+                for key in ("torqueCoupling", "torqueArm", "torqueArm2", "steerAxisUp", "steerAxisDown"):
+                    if wr.get(key) in have:
+                        inline[key + ":"] = wr[key]
+                arm = wr.get("nodeArm") if wr.get("nodeArm") in have else None
+                hubn = sorted((n for n in car.nodes if not str(car.props[n].get("group", "")).startswith(("sk_", "bf_"))
+                              and math.dist(car.nodes[n], w["centre"]) < 0.4), key=lambda n: math.dist(car.nodes[n], w["centre"]))
+                if "torqueCoupling:" not in inline or "torqueArm:" not in inline:   # the donor's reaction nodes are not here
+                    if len(hubn) >= 2:
+                        arm = arm or hubn[0]
+                        far = max(hubn, key=lambda n: math.dist(car.nodes[n], car.nodes[arm]))
+                        inline["torqueCoupling:"], inline["torqueArm:"] = arm, far
+                        car.notes.append(f"{c}: the donor's torque reaction nodes are not on this corner: taken on its hub ({arm}, {far})")
+                    else:
+                        raise ValueError(f"{c}: the donor's corner has no hub nodes to take the wheel's torque")
+                inline.setdefault("torqueArm2:", outer)
+                arm = arm or inline["torqueCoupling:"]
+                rows.append([c, f"wheel_{c}", f"tire_{c}", outer, inner, 9999, arm, wr.get("wheelDir", -1 if side > 0 else 1), inline])
+                continue
             for n in (inner, outer):                                    # the rim's axle nodes braced to the upright
                 car.kg.setdefault(n, rim_kg)
                 car.ks.setdefault(n, 0.0)
@@ -773,9 +888,12 @@ def build(car_json):
         vc.update({"shiftLogicName": "electricMotor", "motorNames": ["mainMotor"]})
         vc.setdefault("topSpeedLimitReverse", 15)
         vc.setdefault("onePedalRegenCoef", 0.85)
-    steering = _rack(car, res, wheels, spec.get("steering") or {}, frame)
-    rack_ends = [steering[0][3][0], steering[0][4][0]] if steering else []
-    srows, srails, sslides, susp_report = _suspension(car, res, wheels, spec, frame, rack_ends)
+    if donors:                                              # the donor's steering, springs and dampers, scaled to this car's weight
+        steering, srows, srails, sslides, susp_report = _donor_parts(car, donors, donor_placed, wheels, spec)
+    else:
+        steering = _rack(car, res, wheels, spec.get("steering") or {}, frame)
+        rack_ends = [steering[0][3][0], steering[0][4][0]] if steering else []
+        srows, srails, sslides, susp_report = _suspension(car, res, wheels, spec, frame, rack_ends)
 
     # the main part
     p = {"information": {"authors": "BeamForge", "name": spec.get("name") or vid}, "slotType": "main",
@@ -802,6 +920,8 @@ def build(car_json):
                 p[k] = _resolve(copy.deepcopy(epart[k]), evars)
     if steering:
         p["hydros"], p["rails"], p["slidenodes"] = steering
+    if getattr(car, "torsion", None):                       # a donor's torsion bars (the hub's and the arms' hinges)
+        p["torsionbars"] = [["id1:", "id2:", "id3:", "id4:"]] + car.torsion
     if srails:                                              # the struts' guides
         p["rails"] = {**(p.get("rails") or {}), **srails}
         p["slidenodes"] = (p.get("slidenodes") or [["id:", "railName", "attached", "fixToRail", "tolerance", "spring", "strength", "capStrength"]]) + sslides

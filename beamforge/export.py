@@ -141,6 +141,44 @@ def _fit_nodes(part, deltas, vars_):
     return changed
 
 
+DIAGNOSE_LUA = """-- BeamForge diagnostic (a build made with the diagnose option): a few seconds after the vehicle loads, the beams that are
+-- broken or whose length is more than 2 % off their rest length are written to the log (beamng.log, tag bfcheck).
+local M = {}
+local timer, round = 0, 0
+local checks = {3, 8, 20}
+
+local function check()
+  local cfg = tostring(v.config and v.config.partConfigFilename or "")
+  if not cfg:find("bf_", 1, true) then return end
+  local n = 0
+  for _, b in pairs(v.data.beams) do
+    local c = b.cid
+    local broken = obj:beamIsBroken(c)
+    local len, ref = obj:getBeamLength(c), obj:getBeamRefLength(c)
+    if broken or (ref > 0 and math.abs(len / ref - 1) > 0.02) then
+      n = n + 1
+      if n <= 150 then
+        log("I", "bfcheck", string.format("t%d %s %s %s->%s ref %.3f len %.3f part %s", round, broken and "BROKEN" or "deformed",
+          tostring(b.name or ""), tostring(v.data.nodes[b.id1].name), tostring(v.data.nodes[b.id2].name), ref, len, tostring(b.partOrigin)))
+      end
+    end
+  end
+  log("I", "bfcheck", string.format("t%d total %d", round, n))
+end
+
+local function updateGFX(dt)
+  timer = timer + dt
+  if checks[round + 1] and timer >= checks[round + 1] then
+    round = round + 1
+    check()
+  end
+end
+
+M.updateGFX = updateGFX
+return M
+"""
+
+
 def _tank_mode(part, mode):
     """A diagnostic: the fuel tank's fuel made non-flammable ("nofire": no chemical energy on its nodes) or the tank's nodes
     and beams left out ("none"). Returns whether the part is a fuel tank."""
@@ -1048,6 +1086,9 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     unfitted = [p["part"] for p in json.loads(plan(model, configured_json)) if p["moved_mm"] >= 0.1 and choices.get(p["part"]) != "fit"]
     if unfitted:
         notes.append("edited parts written without their edits (by your choice): " + ", ".join(unfitted))
+    if opt and opt.get("diagnose"):
+        files["lua/vehicle/extensions/auto/bf_check.lua"] = DIAGNOSE_LUA
+        notes.append("diagnose: lua/vehicle/extensions/auto/bf_check.lua logs the broken and deformed beams after loading (beamng.log, 'bfcheck')")
     return json.dumps({"files": files, "binary": binary, "renamed": renames, "notes": notes, "counts": counts})
 
 
