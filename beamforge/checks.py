@@ -18,7 +18,7 @@ from . import beamng, kinematics, rigidity, steering, values
 LINE_SIN = 0.08          # sin of the angle between a torsion bar's frame edges below which they are nearly in a line
 OVERLAP = 0.004          # m: nodes of different parts closer than this, where the base had them further apart
 BUMP_TOE = 0.15          # deg per 10 mm of bump: past it a steered wheel steers itself as the car dives
-TORQUE_ROOM = 1.15       # the torque rating is at least this times the curve's peak
+TORQUE_ROOM = 1.05       # the torque rating is at least this times the curve's peak
 
 
 def _sub(a, b):

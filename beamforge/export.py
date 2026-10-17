@@ -213,9 +213,58 @@ local function stress()                                        -- the tank beams
   log("I", "bfcheck", string.format("stress %.2f s: max tank beam %s %.0f N", timer, name, top))
 end
 
+local nameOf = {}
+local function frames()                                         -- the fastest node and the most loaded beams, in the first second
+  if timer > 1.0 then return end
+  local vmax, vn, vp = 0, "", ""
+  for _, nd in pairs(v.data.nodes) do
+    local ok, vel = pcall(function() return obj:getNodeVelocityVector(nd.cid) end)
+    if ok and vel then
+      local sp = vel:length()
+      if sp > vmax then vmax, vn, vp = sp, tostring(nd.name), tostring(nd.partOrigin) end
+    end
+  end
+  local top = {}
+  for _, b in pairs(v.data.beams) do
+    local str = tonumber(b.beamStrength)
+    if str and str > 0 and str < 1e9 then
+      local ok, f = pcall(function() return obj:getBeamStress(b.cid) end)
+      if ok and f then top[#top + 1] = {math.abs(f) / str, b} end
+    end
+  end
+  table.sort(top, function(x, y) return x[1] > y[1] end)
+  local s = ""
+  for i = 1, math.min(3, #top) do
+    local b = top[i][2]
+    s = s .. string.format(" [%s->%s %.0f%% %s]", tostring(v.data.nodes[b.id1].name), tostring(v.data.nodes[b.id2].name), top[i][1] * 100, tostring(b.partOrigin))
+  end
+  log("I", "bfcheck", string.format("frame %.2f s: fastest node %s (%s) %.1f m/s; most loaded beams:%s", timer, vn, vp, vmax, s))
+end
+
+local oilT = 0
+local function oil()                                            -- what the engine's oil starvation check sees (oilpan to oilref)
+  if timer > 12 or timer < oilT then return end
+  oilT = timer + 0.5
+  local a, b
+  for _, nd in pairs(v.data.nodes) do
+    if nd.name == "oilpan" then a = nd.cid elseif nd.name == "oilref" then b = nd.cid end
+  end
+  if not (a and b) then return end
+  local ok, fz, fxy = pcall(function() return obj:getNodeForceNonInertial(a, b) end)
+  local starved = nil
+  pcall(function() starved = damageTracker.getDamage("engine", "starvedOfOil") end)
+  if ok then
+    local w = v.data.nodes[a].nodeWeight or 1
+    log("I", "bfcheck", string.format("oil %.1f s: oilpan accZ %.2f accXY %.2f m/s2 (limit: XY/Z ratio over the pan's safe G), starved %s", timer,
+      -fz / w, fxy / w, tostring(starved)))
+  end
+end
+
 local function updateGFX(dt)
   timer = timer + dt
   stress()
+  frames()
+  oil()
   if timer < 4 and shown < 25 then firstBroken() end
   if checks[round + 1] and timer >= checks[round + 1] then
     round = round + 1
@@ -1188,9 +1237,14 @@ def _steering_and_checks(model, new_id, base_configured, files):
     changed in place. A step that cannot run (a base without steering hydros) is noted, not fatal."""
     from . import checks, steering
     notes = []
+    try:                                                    # the base as it is, not as the fit moved it: the reference
+        base_configured = json.loads(beamng.configure(model, base_configured.get("config")))
+    except (KeyError, ValueError, StopIteration, IndexError):
+        pass
     try:
-        notes += steering.fix_files(model, base_configured, new_id, files)[0]
+        notes += steering.fix_files(model, base_configured, new_id, files, lock_rack=False)[0]
         notes += steering.tune_tie_rods(model, new_id, files)[0]
+        notes += steering.fix_files(model, base_configured, new_id, files)[0]      # the lock last: the tie rods set it
     except (KeyError, ValueError, StopIteration, IndexError) as e:
         notes.append(f"steering check skipped: {type(e).__name__} {e}")
     try:

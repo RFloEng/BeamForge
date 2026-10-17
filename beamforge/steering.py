@@ -120,8 +120,49 @@ def direction(model, configured, bl=None):
         den = _dot(he, _cross(u, r))
         if abs(den) < 1e-9:
             continue
-        out[w["name"]] = {"turn": _dot(he, de) / den, "rack_end": e, "tie_rod_end": h}
+        out[w["name"]] = {"turn": _dot(he, de) / den, "rack_end": e, "tie_rod_end": h, "axis": ax, "de": de}
     return out
+
+
+def _rotate(p, a, b, ang):
+    """The point p turned by ang about the line from a to b (Rodrigues)."""
+    u = _unit(_sub(b, a))
+    v = _sub(p, a)
+    c, s = math.cos(ang), math.sin(ang)
+    k = _dot(u, v) * (1 - c)
+    cr = _cross(u, v)
+    return [a[i] + v[i] * c + cr[i] * s + u[i] * k for i in range(3)]
+
+
+def lock_angle(N, d, travel):
+    """The signed angle (rad) a steered wheel turns about its steering axis when its rack end has moved `travel` metres
+    (negative: the other way) along the direction its hydros move it, the tie rod keeping its length: solved on the real
+    geometry, so a tie rod that is nearly over centre turns the wheel further than the linear gain of direction() says.
+    The solution nearest to straight ahead; None when the rod cannot reach within 80 degrees. d: a direction() entry."""
+    dn, up = (N[n] for n in d["axis"])
+    h, e = N[d["tie_rod_end"]], N[d["rack_end"]]
+    target = [e[i] + d["de"][i] * travel for i in range(3)]
+    length = math.dist(h, e)
+
+    def err(a):
+        return math.dist(_rotate(h, dn, up, a), target) - length
+    sign = 1.0 if d["turn"] * travel >= 0 else -1.0
+    step = math.radians(0.25)
+    prev, ep = 0.0, err(0.0)
+    for k in range(1, 321):
+        a = sign * k * step
+        ea = err(a)
+        if ep == 0.0 or ep * ea <= 0:
+            lo, hi = prev, a
+            for _ in range(40):
+                mid = (lo + hi) / 2
+                if err(lo) * err(mid) <= 0:
+                    hi = mid
+                else:
+                    lo = mid
+            return (lo + hi) / 2
+        prev, ep = a, ea
+    return None
 
 
 def tune_tie_rods(model, new_id, files, base=None, min_gain=0.3):
@@ -221,10 +262,11 @@ def kinematics_bump(model, configured, wheel, nodes, bl, springs):
     return kinematics.bump_toe(model, configured, wheel, nodes, bl, springs)
 
 
-def fix_files(model, base_configured, new_id, files):
+def fix_files(model, base_configured, new_id, files, lock_rack=True):
     """Check the written vehicle's steering against its base's and reverse what turns the other way (fix). The
     vehicle's files are read back with beamng.add_files, so they must be what is written. Returns (notes, wheels
-    flipped); on a flip the files are changed in place."""
+    flipped); on a flip the files are changed in place. lock_rack=False leaves the rack's travel alone (it is set last, after the
+    tie rods have been moved: they change the lock)."""
     import json
     beamng.add_files(json.dumps(files))
     built = json.loads(beamng.configure(new_id))
@@ -233,21 +275,25 @@ def fix_files(model, base_configured, new_id, files):
     if flipped:
         beamng.add_files(json.dumps(files))
         built = json.loads(beamng.configure(new_id))
+    if not lock_rack:
+        return notes, flipped
     lnotes = lock(files, model, base_configured, base_dir, new_id, built, direction(new_id, built))
     return notes + lnotes, flipped
 
 
 def lock(files, model, base_configured, base, new_id, built_configured, built):
-    """The rack hydros' factors rescaled so every steered wheel turns as far at full lock as the base's: a hydro moves
-    its rack end by its factor times the length of the beam it works on, and a rack wider than the base's (the SVJ's
-    track, an archetype's rack ends) lengthens that beam: the Civic's lock went from 28 to 35 degrees, to where the tie
-    rod is nearly over centre. Changes the files in place; returns notes."""
+    """The rack hydros' factors rescaled so the steered wheels turn at full lock, to each side, as far as the base's do: a
+    hydro moves its rack end by its factor times the length of the beam it works on, and a rack wider than the base's (the
+    SVJ's track, an archetype's rack ends) lengthens that beam; the tie rod's angle to the steering axis also changes with
+    the pickups, so the lock grows unevenly (and to one side the rod goes over centre, the car squats). One travel for the
+    whole rack is chosen, the one whose lock on the real geometry is nearest the base's on both sides; each hydro's factor
+    is its share of that travel. Changes the files in place; returns notes."""
     import json
     notes = []
     bN, nN = base_configured["geometry"]["nodes"], built_configured["geometry"]["nodes"]
     bdr = {e: (s, f) for e, s, f in rack_drives(model, base_configured)}
     ndr = {e: (s, f) for e, s, f in rack_drives(new_id, built_configured)}
-    scale = {}
+    pairs = []                                              # (wheel name, base entry, built entry, base travel, built travel)
     for name, b in built.items():
         a = base.get(name)
         if not a or not b["turn"] or a["rack_end"] not in bdr or b["rack_end"] not in ndr:
@@ -255,12 +301,32 @@ def lock(files, model, base_configured, base, new_id, built_configured, built):
         (sb, fb), (sn, fn) = bdr[a["rack_end"]], ndr[b["rack_end"]]
         if not (a["rack_end"] in bN and sb in bN and b["rack_end"] in nN and sn in nN):
             continue
-        lock_base = abs(a["turn"] * fb) * math.dist(bN[a["rack_end"]], bN[sb])
-        k = lock_base / (abs(b["turn"]) * math.dist(nN[b["rack_end"]], nN[sn]) * abs(fn))
+        pairs.append((name, a, b, abs(fb) * math.dist(bN[a["rack_end"]], bN[sb]), abs(fn) * math.dist(nN[b["rack_end"]], nN[sn])))
+    if not pairs:
+        return notes
+    far = math.radians(80)
+
+    def ang(N, d, T, sg):
+        g = lock_angle(N, d, sg * T)
+        return g if g is not None else math.copysign(far, sg * d["turn"])
+    wanted = {(name, sg): ang(bN, a, tb, sg) for name, a, _, tb, _ in pairs for sg in (1, -1)}
+
+    def cost(T):
+        return sum((ang(nN, b, T, sg) - wanted[(name, sg)]) ** 2 for name, _, b, _, _ in pairs for sg in (1, -1))
+    tn = sum(p[4] for p in pairs) / len(pairs)
+    T = min((cost(tn * (0.4 + 0.01 * i)), tn * (0.4 + 0.01 * i)) for i in range(161))[1]
+    scale = {}
+    for name, _, b, _, travel_n in pairs:
+        k = T / travel_n
         if abs(k - 1) > 0.03 and 0.3 < k < 3:
             scale[b["rack_end"]] = k
-            notes.append(f"{name}: lock {math.degrees(abs(b['turn'] * fn) * math.dist(nN[b['rack_end']], nN[sn])):.0f} deg of the "
-                         f"wider rack brought back to the base's {math.degrees(lock_base):.0f} deg (rack drive of {b['rack_end']} x {k:.2f})")
+    if scale:
+        def deg(N, d, T, sg):
+            return abs(math.degrees(ang(N, d, T, sg)))
+        shown = "; ".join(f"{name} {deg(nN, b, tn_, 1):.0f}/{deg(nN, b, tn_, -1):.0f} -> {deg(nN, b, T, 1):.0f}/{deg(nN, b, T, -1):.0f}"
+                          f" (base {deg(bN, a, tb, 1):.0f}/{deg(bN, a, tb, -1):.0f})" for name, a, b, tb, tn_ in pairs)
+        notes.append(f"steering lock to each side (deg): {shown}; rack travel {T * 1000:.0f} mm, set on the hydros of "
+                     f"{', '.join(sorted(scale))}")
     for path, text in list(files.items()):
         if not scale or not path.endswith(".jbeam"):
             continue
@@ -271,7 +337,8 @@ def lock(files, model, base_configured, base, new_id, built_configured, built):
             if not (isinstance(t, list) and t and isinstance(t[0], list)):
                 continue
             for row in t[1:]:
-                if isinstance(row, list) and row and row[0] in scale and isinstance(row[-1], dict)                         and isinstance(row[-1].get("factor"), (int, float)):
+                if isinstance(row, list) and row and row[0] in scale and isinstance(row[-1], dict) \
+                        and isinstance(row[-1].get("factor"), (int, float)):
                     row[-1]["factor"] = round(row[-1]["factor"] * scale[row[0]], 5)
                     hit = True
         if hit:

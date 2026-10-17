@@ -202,6 +202,14 @@ Civic's lock went from 28 to 35 degrees, where the tie rod is nearly over centre
 hydro's factor so each steered wheel's full-lock angle is the base's (checked against a nonlinear static solve of the
 corner: the wheel centre's height change at lock is a few millimetres, as the base's).
 
+The lock is solved on the real geometry (`steering.lock_angle`: the tie rod keeps its length while the hub turns about its
+steering axis), not from the linear gain at the centre. With the SVJ's hardpoints (a different tie rod height and length)
+the same rack travel turned a wheel 43 degrees where the base turned 34, and the other wheel's rod had no solution up to
+75 degrees: it was over centre, and the car squatted at full lock. The lock differs from side to side (the rod is not
+symmetric about the steering axis: the base turns 34 one way and 40 the other), so fitting one side left the other at 49
+degrees. One rack travel is chosen for all hydros, the one whose lock on both sides, for both wheels, is nearest the base's
+(a rack moves both ends by the same amount); each factor is its share of that travel.
+
 ## Gear list: reverse and neutral are slots, not values
 
 A gearbox's `gearRatios` is `[reverse, neutral, 1st, ...]`. The base's reverse can be a template string
