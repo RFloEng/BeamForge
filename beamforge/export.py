@@ -145,29 +145,78 @@ DIAGNOSE_LUA = """-- BeamForge diagnostic (a build made with the diagnose option
 -- broken or whose length is more than 2 % off their rest length are written to the log (beamng.log, tag bfcheck).
 local M = {}
 local timer, round = 0, 0
-local checks = {3, 8, 20}
+local last = {}
+local checks = {1, 2, 3, 5, 8, 20}
 
 local function check()
   local cfg = tostring(v.config and v.config.partConfigFilename or "")
   if not cfg:find("bf_", 1, true) then return end
-  local n = 0
+  local n, per = 0, {}
   for _, b in pairs(v.data.beams) do
     local c = b.cid
     local broken = obj:beamIsBroken(c)
     local len, ref = obj:getBeamLength(c), obj:getBeamRefLength(c)
-    if broken or (ref > 0 and math.abs(len / ref - 1) > 0.02) then
+    local pre = tonumber(b.beamPrecompression) or 1               -- a precompressed beam is longer than its rest length by design
+    if pre <= 0 then pre = 1 end
+    local dev = ref > 0 and (len * pre / ref - 1) or 0
+    if broken or math.abs(dev) > 0.03 then
       n = n + 1
-      if n <= 150 then
-        log("I", "bfcheck", string.format("t%d %s %s %s->%s ref %.3f len %.3f part %s", round, broken and "BROKEN" or "deformed",
-          tostring(b.name or ""), tostring(v.data.nodes[b.id1].name), tostring(v.data.nodes[b.id2].name), ref, len, tostring(b.partOrigin)))
+      local part = tostring(b.partOrigin)
+      per[part] = (per[part] or 0) + 1
+      if n <= 200 then
+        log("I", "bfcheck", string.format("t%d %s %s %s->%s ref %.3f len %.3f pre %.2f part %s", round, broken and "BROKEN" or "deformed",
+          tostring(b.name or ""), tostring(v.data.nodes[b.id1].name), tostring(v.data.nodes[b.id2].name), ref, len, pre, part))
       end
     end
   end
+  local pos, drift = {}, {}                                      -- how far each part's nodes moved since the last round (the car settling)
+  for _, nd in pairs(v.data.nodes) do
+    local q = obj:getNodePosition(nd.cid)
+    local o = last[nd.cid]
+    if o then
+      local d = (q - o):length()
+      local part = tostring(nd.partOrigin)
+      drift[part] = math.max(drift[part] or 0, d)
+    end
+    pos[nd.cid] = q
+  end
+  last = pos
+  local rows = {}
+  for part, d in pairs(drift) do rows[#rows + 1] = {part, d} end
+  table.sort(rows, function(x, y) return x[2] > y[2] end)
+  for i = 1, math.min(12, #rows) do log("I", "bfcheck", string.format("t%d moved %.3f m  %s", round, rows[i][2], rows[i][1])) end
+  for part, k in pairs(per) do log("I", "bfcheck", string.format("t%d part %s: %d beams", round, part, k)) end
   log("I", "bfcheck", string.format("t%d total %d", round, n))
+end
+
+local seen, shown = {}, 0
+local function firstBroken()                                      -- the first beams to break, as they break
+  for _, b in pairs(v.data.beams) do
+    if shown < 25 and not seen[b.cid] and obj:beamIsBroken(b.cid) then
+      seen[b.cid] = true
+      shown = shown + 1
+      log("I", "bfcheck", string.format("first broken #%d at %.2f s: %s %s->%s part %s", shown, timer, tostring(b.name or ""),
+        tostring(v.data.nodes[b.id1].name), tostring(v.data.nodes[b.id2].name), tostring(b.partOrigin)))
+    end
+  end
+end
+
+local function stress()                                        -- the tank beams' stress in the first frames
+  if round > 0 or timer > 0.6 then return end
+  local top, name = 0, ""
+  for _, b in pairs(v.data.beams) do
+    if tostring(b.partOrigin):find("fueltank", 1, true) then
+      local ok, f = pcall(function() return obj:getBeamStress(b.cid) end)
+      if ok and f and math.abs(f) > top then top, name = math.abs(f), tostring(v.data.nodes[b.id1].name) .. "->" .. tostring(v.data.nodes[b.id2].name) end
+    end
+  end
+  log("I", "bfcheck", string.format("stress %.2f s: max tank beam %s %.0f N", timer, name, top))
 end
 
 local function updateGFX(dt)
   timer = timer + dt
+  stress()
+  if timer < 4 and shown < 25 then firstBroken() end
   if checks[round + 1] and timer >= checks[round + 1] then
     round = round + 1
     check()
@@ -189,6 +238,12 @@ def _tank_mode(part, mode):
         for k in ("nodes", "beams"):
             if isinstance(part.get(k), list) and part[k]:
                 part[k] = [part[k][0]]
+    elif mode == "strong":                      # the tank's beams cannot break: shows what pulls on them as the vehicle loads
+        for r in part.get("beams") or []:
+            if isinstance(r, dict) and ("beamStrength" in r or "beamDeform" in r):
+                for k in ("beamStrength", "beamDeform"):
+                    if k in r:
+                        r[k] = "FLT_MAX"
     elif mode == "nofire":
         for r in part.get("nodes") or []:
             if isinstance(r, dict) and "chemEnergy" in r:
@@ -196,6 +251,9 @@ def _tank_mode(part, mode):
                     if k in r:
                         r[k] = False
     return True
+
+
+FUSE_BASE, FUSE_STRENGTH = 200, 2000                           # N: the tank's trigger beam in the base, and what it holds here
 
 
 def _tank_apart(part):
@@ -210,6 +268,32 @@ def _tank_apart(part):
     for r in rows if isinstance(rows, list) else []:
         if isinstance(r, dict) and r.get("selfCollision") is True:
             r["selfCollision"] = False
+            done = True
+    for r in part.get("beams") or []:                          # the trigger beam's 200 N limit is met by the body settling as it loads
+        if isinstance(r, dict) and r.get("beamStrength") == FUSE_BASE:
+            r["beamStrength"] = FUSE_STRENGTH
+            done = True
+    return done
+
+
+LOOSE_PANEL = re.compile(r"mirror|door|glass|tailgate|hatch|trunk|hood|bumper|spoiler|wing|fender|skirt|light|splitter", re.I)
+
+
+def _panel_apart(name, part):
+    """The fit moves a body panel (door, mirror, glass, bumper...) a little off where the base had it, and its nodes, which
+    collide with the vehicle's own triangles in the base, can then start inside a neighbour's: the push flings mirrors off and
+    shoves doors as the vehicle loads. They keep their collision with the world and other vehicles, not with their own body.
+    Returns whether it changed anything."""
+    rows = part.get("nodes")
+    if not LOOSE_PANEL.search(name) or not isinstance(rows, list):
+        return False
+    done = False
+    for r in rows:
+        if isinstance(r, dict) and r.get("selfCollision") is True:
+            r["selfCollision"] = False
+            done = True
+        elif isinstance(r, list) and r and isinstance(r[-1], dict) and r[-1].get("selfCollision") is True:
+            r[-1]["selfCollision"] = False
             done = True
     return done
 
@@ -989,10 +1073,12 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
         if choices.get(n) == "fit" and n in active:
             counts["nodes"] += _fit_nodes(part, deltas, vars_)
             _fit_flexbodies(part, n, shifts.get(n, {}), vars_)
-        if n in active and opt and opt.get("tank_mode") in ("nofire", "none"):
+        if n in active and opt and opt.get("tank_mode") in ("nofire", "none", "strong"):
             _tank_mode(part, opt["tank_mode"])
         if n in active and _tank_apart(part):
             notes.append(f"{n}: the fuel tank's nodes no longer collide with the vehicle's own body (as the fit may have moved them into it)")
+        if choices.get(n) == "fit" and n in active and _panel_apart(n, part):
+            notes.append(f"{n}: its nodes no longer collide with the vehicle's own body (the fit may have moved them into it)")
         _rename_refs(part, renames)
         if n in active and (n in taken_beams or n in taken_tyres or n in taken_weights or n in taken_pt):
             values.apply_to_part(n, part, taken_beams, taken_tyres, taken_weights)

@@ -786,6 +786,20 @@ def _peak(torque):
     return max(t for _, t in torque), round(max(r * t for r, t in torque) * 2 * math.pi / 60 / 1000, 1)
 
 
+# an SVJ centre differential type -> (a word the base's matching transfer case option has, or "" for the plain one, a label)
+CENTRE_KEYWORD = {"lsd_viscous": ("", "viscous"), "viscous": ("", "viscous"), "open": ("", "viscous"),
+                  "lsd_clutch": ("(_)(lsd|race)(_|$)", "limited-slip"), "lsd": ("lsd|race", "limited-slip"),
+                  "active": ("(_)(rally|active)(_|$)", "active")}
+
+
+def _svj_has(svj, slot):
+    """Whether the SVJ describes the electronic aid a slot is for (stability control "esc", traction control "tc", "abs")."""
+    key = re.search(r"(esc|tc|abs)", slot, re.I).group(1).lower()
+    names = {"esc": ("stability", "esc", "esp"), "tc": ("traction_control", "traction"), "abs": ("abs", "anti_lock", "antilock", "abs_enabled")}[key]
+    text = json.dumps({k: svj.get(k) for k in ("chassis", "brakes", "powertrain", "aerodynamics")}).lower()
+    return any(re.search(rf'"{n}"\s*:', text) for n in names)
+
+
 def suggest_parts(model, configured_json, svj_json):
     """Parts of the base vehicle closer to the SVJ's powertrain: [{"slot", "current", "suggested",
     "why"}], from the alternatives of the intake, gearbox, transfer case and differential slots."""
@@ -819,6 +833,13 @@ def suggest_parts(model, configured_json, svj_json):
                 same = [o for o in opts if want in o]
                 if same:
                     pick, why = min(same, key=len), f"{sp['layout']} layout: {want}"
+            elif want == "AWD" and (sp["diffs"].get("center") or {}).get("type") in CENTRE_KEYWORD:
+                kind, label = CENTRE_KEYWORD[sp["diffs"]["center"]["type"]]
+                same = [o for o in opts if "AWD" in o and (re.search(kind, o, re.I) if kind else not re.search(r"(_)(race|rally|rs|active|lsd)(_|$)", o, re.I))]
+                if same and cur not in same:
+                    pick, why = min(same, key=len), f"{label} centre differential, as the SVJ"
+        elif re.search(r"(^|_)(esc|tc|abs)(_|$)", slot, re.I) and cur and not _svj_has(svj, slot):
+            pick, why = "", "the SVJ describes no electronic aids: the base's are left out"
         elif ("differential" in slot.lower() and cur and sp["driven"] in ("rear", "front")
               and re.search(r"_F$" if sp["driven"] == "rear" else r"_R$", slot)):
             pick, why = "", f"{sp['driven']} wheels driven only: no {'front' if sp['driven'] == 'rear' else 'rear'} differential"

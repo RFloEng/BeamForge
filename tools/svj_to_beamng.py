@@ -49,7 +49,7 @@ def main(argv=None):
     ap.add_argument("--scale-structure", action="store_true",
                     help="reach the SVJ's mass: lighter nodes, the body's beams softened by the same factor")
     ap.add_argument("--no-glass-break", action="store_true", help="the SVJ's windows as plain glass that never cracks")
-    ap.add_argument("--tank", choices=("nofire", "none"), help="a diagnostic: the fuel tank non-flammable, or left out")
+    ap.add_argument("--tank", choices=("nofire", "none", "strong"), help="a diagnostic: the fuel tank non-flammable, or left out")
     ap.add_argument("--diagnose", action="store_true", help="add a small game extension that logs the broken and deformed beams after loading")
     ap.add_argument("--out", default="out", help="folder for the mod zip")
     ap.add_argument("--install", help="a mods folder to copy the zip into")
