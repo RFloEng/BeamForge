@@ -260,9 +260,34 @@ local function oil()                                            -- what the engi
   end
 end
 
+local driveT = 20
+local function drive()                                          -- from 20 s on, every half second: the steering and the ride height
+  if timer < driveT or timer > 240 then return end
+  driveT = timer + 0.5
+  local ref = v.data.refNodes and v.data.refNodes[0] and v.data.refNodes[0].ref
+  local rz = ref and obj:getNodePosition(ref).z or 0
+  local hs = {}
+  for _, w in pairs(v.data.wheels or {}) do
+    hs[#hs + 1] = string.format("%s %.0f", tostring(w.name), (obj:getNodePosition(w.node1).z - rz) * 1000)
+  end
+  table.sort(hs)
+  local steer = 0
+  pcall(function() steer = electrics.values.steering or 0 end)
+  local top, tn = 0, ""
+  for _, b in pairs(v.data.beams) do
+    local str = tonumber(b.beamStrength)
+    if str and str > 0 and str < 1e9 then
+      local ok, f = pcall(function() return obj:getBeamStress(b.cid) end)
+      if ok and f and math.abs(f) / str > top then top, tn = math.abs(f) / str, tostring(v.data.nodes[b.id1].name) .. "->" .. tostring(v.data.nodes[b.id2].name) .. " " .. tostring(b.partOrigin) end
+    end
+  end
+  log("I", "bfcheck", string.format("drive %.1f s: steering %.2f, wheel height over the body (mm) %s, most loaded beam %s %.0f%%", timer, steer, table.concat(hs, ", "), tn, top * 100))
+end
+
 local function updateGFX(dt)
   timer = timer + dt
   stress()
+  drive()
   frames()
   oil()
   if timer < 4 and shown < 25 then firstBroken() end
@@ -328,13 +353,14 @@ def _tank_apart(part):
 LOOSE_PANEL = re.compile(r"mirror|door|glass|tailgate|hatch|trunk|hood|bumper|spoiler|wing|fender|skirt|light|splitter", re.I)
 
 
-def _panel_apart(name, part):
-    """The fit moves a body panel (door, mirror, glass, bumper...) a little off where the base had it, and its nodes, which
+def _panel_apart(name, part, every=False):
+    """The fit moves a part (a body panel: door, mirror, glass, bumper...; the exhaust, the undertray, the subframe) a little off
+    where the base had it, and its nodes, which
     collide with the vehicle's own triangles in the base, can then start inside a neighbour's: the push flings mirrors off and
     shoves doors as the vehicle loads. They keep their collision with the world and other vehicles, not with their own body.
-    Returns whether it changed anything."""
+    every: a diagnostic, every part but the wheels. Returns whether it changed anything."""
     rows = part.get("nodes")
-    if not LOOSE_PANEL.search(name) or not isinstance(rows, list):
+    if not isinstance(rows, list) or not (LOOSE_PANEL.search(name) or (every and not re.search(r"wheel|tire|tyre", name))):
         return False
     done = False
     for r in rows:
@@ -1128,7 +1154,8 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
             _tank_mode(part, opt["tank_mode"])
         if n in active and _tank_apart(part):
             notes.append(f"{n}: the fuel tank's nodes no longer collide with the vehicle's own body (as the fit may have moved them into it)")
-        if choices.get(n) == "fit" and n in active and _panel_apart(n, part):
+        every = bool(opt and opt.get("no_selfcol"))
+        if (choices.get(n) == "fit" or every) and n in active and _panel_apart(n, part, True):
             notes.append(f"{n}: its nodes no longer collide with the vehicle's own body (the fit may have moved them into it)")
         _rename_refs(part, renames)
         if n in active and (n in taken_beams or n in taken_tyres or n in taken_weights or n in taken_pt):
