@@ -109,7 +109,13 @@ scene.add(new THREE.GridHelper(10, 50, 0xb8c0c8, 0xdde2e7));
 // skelG: a STEP skeleton built into nodes and beams (drawSkeleton)
 const vehG = new THREE.Group(), meshG = new THREE.Group(), hpG = new THREE.Group(), bodyG = new THREE.Group(), suspG = new THREE.Group();
 const skelG = new THREE.Group(), compG = new THREE.Group();   // compG: the components' masses (drawComponents)
-scene.add(vehG, meshG, hpG, bodyG, suspG, skelG, compG);
+// BeamNG's axes (X left, Y rear, Z up) in three.js's (x, z, y) make a left-handed set: drawn as they are, the whole car
+// shows as its mirror image (lettering reads backwards). One mirror at the root puts it right; everything below keeps
+// working in BeamNG's axes, and glTF meshes (gltfToThree) land in the same space.
+const world = new THREE.Group();
+world.scale.x = -1;
+world.add(vehG, meshG, hpG, bodyG, suspG, skelG, compG);
+scene.add(world);
 
 // BeamNG axes (X left, Y rear, Z up) -> three.js (Y up)
 const v3 = (p) => new THREE.Vector3(p[0], p[2], p[1]);
@@ -124,6 +130,7 @@ new ResizeObserver(resize).observe(view);
 
 // aim the camera at the vehicle (or the SVJ meshes, or the origin)
 function fitCamera() {
+  scene.updateMatrixWorld(true);                        // the mirror at the root counts in the box
   const target = vehG.children.length ? vehG : meshG.children.length ? meshG : null;
   const box = target ? new THREE.Box3().setFromObject(target) : new THREE.Box3();
   const c = box.isEmpty() ? new THREE.Vector3(0, 0.6, 0) : box.getCenter(new THREE.Vector3());
@@ -2061,6 +2068,7 @@ $('stepfile').onchange = async (e) => {
   ws = 'sketch';
   redraw();
   if (!veh) {                                   // nothing else in the view: aim at the sketch
+    scene.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(skelG);
     if (!box.isEmpty()) {
       const c = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3()).length() || 1;

@@ -88,11 +88,13 @@ def body_nodes(nodes, parts):
     return [n for n in nodes if not NOT_BODY.search(parts.get(n, ""))]
 
 
-def mesh_points(svj, files, yf, ground, under=None):
+def mesh_points(svj, files, yf, ground, under=None, notes=None):
     """The SVJ body mesh's vertices in BeamNG coordinates, placed at the front axle line yf and ground.
 
     files: {mesh asset id: path of the .glb / .gltf}. The body is the chassis visual binding (its node
-    and mesh); without one, every mesh. under overrides the node name.
+    and mesh); without one, every mesh. under overrides the node name. A chassis node that covers well under
+    the whole body (a converter binding only the cabin, say) is not the body: the whole mesh but the wheels and
+    such is, and a note is added to `notes` (a list) saying so.
     """
     axes = svjmod.gltf_axes(svj)
     chassis = next((b for b in svjmod.visual_bindings(svj) if b["path"] == "chassis"), None)
@@ -109,6 +111,14 @@ def mesh_points(svj, files, yf, ground, under=None):
         else:
             skip = None
         raw = gltf.positions(data, is_glb=glb, under=node, skip=skip)
+        if node:
+            whole = gltf.positions(data, is_glb=glb, under=None, skip=gltf.NOT_BODY)
+            ext = lambda q: max((max(p[i] for p in q) - min(p[i] for p in q) for i in range(3)), default=0.0)   # noqa: E731
+            if whole and ext(raw) < 0.7 * ext(whole):
+                if notes is not None:
+                    notes.append(f"the SVJ's chassis node {node} covers {ext(raw):.2f} m of a {ext(whole):.2f} m body: not the whole car, "
+                                 "so the whole mesh but its wheels, brakes, suspension and helper nodes is taken as the body")
+                raw = whole
         off = svjmod.mesh_offset(svj, data, glb)[0] or [0.0, 0.0, 0.0]     # the mesh on its wheels
         pts += [svjmod.from_sae([a + b for a, b in zip(svjmod.gltf_to_sae(p, axes), off)], yf, ground) for p in raw]
     return pts
@@ -655,7 +665,7 @@ def fit_json(geometry_json, wheels_json, svj_json, files_json, stages_json, over
     if "body" in stages and ax:
         try:
             files = json.loads(files_json)
-            mesh = mesh_points(svj, files, ax["yf"], ax["ground"]) or None
+            mesh = mesh_points(svj, files, ax["yf"], ax["ground"], notes=notes) or None
             chassis = next((b for b in svjmod.visual_bindings(svj) if b["path"] == "chassis"), None)
             for mid, path in files.items():
                 if mesh and chassis and chassis.get("implied"):

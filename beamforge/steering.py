@@ -336,11 +336,11 @@ def lock(files, model, base_configured, base, new_id, built_configured, built):
     def cost(T):
         return sum((ang(nN, b, T, sg) - wanted[(name, sg)]) ** 2 for name, _, b, _, _ in pairs for sg in (1, -1))
     tn = sum(p[4] for p in pairs) / len(pairs)
-    T = min((cost(tn * (0.4 + 0.01 * i)), tn * (0.4 + 0.01 * i)) for i in range(161))[1]
+    T = min((cost(tn * (0.4 + 0.02 * i)), tn * (0.4 + 0.02 * i)) for i in range(231))[1]       # 0.4 to 5 times the travel it has
     scale = {}
     for name, _, b, _, travel_n in pairs:
         k = T / travel_n
-        if abs(k - 1) > 0.03 and 0.3 < k < 3:
+        if abs(k - 1) > 0.03 and 0.3 < k < 5:
             scale[b["rack_end"]] = k
     if scale:
         def deg(N, d, T, sg):

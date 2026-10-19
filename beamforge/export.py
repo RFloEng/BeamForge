@@ -284,8 +284,13 @@ local function drive()                                          -- from 20 s on,
   log("I", "bfcheck", string.format("drive %.1f s: steering %.2f, wheel height over the body (mm) %s, most loaded beam %s %.0f%%", timer, steer, table.concat(hs, ", "), tn, top * 100))
 end
 
+local named = false
 local function updateGFX(dt)
   timer = timer + dt
+  if not named then
+    named = true
+    log("I", "bfcheck", "vehicle " .. tostring(v.config and v.config.partConfigFilename or "?"))
+  end
   stress()
   drive()
   frames()
@@ -1254,6 +1259,12 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
         files["lua/vehicle/extensions/auto/bf_check.lua"] = DIAGNOSE_LUA
         notes.append("diagnose: lua/vehicle/extensions/auto/bf_check.lua logs the broken and deformed beams after loading (beamng.log, 'bfcheck')")
     notes += _steering_and_checks(model, new_id, v, files, (opt or {}).get("svj"))
+    if opt and opt.get("svj"):
+        from . import checks
+        try:
+            notes += checks.compliance(new_id, files, opt["svj"], opt.get("take") or {}, opt.get("study"))
+        except (KeyError, ValueError, StopIteration, IndexError, TypeError) as e:
+            notes.append(f"SVJ comparison skipped: {type(e).__name__} {e}")
     return json.dumps({"files": files, "binary": binary, "renamed": renames, "notes": notes, "counts": counts})
 
 

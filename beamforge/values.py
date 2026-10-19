@@ -564,10 +564,7 @@ def apply(model, configured, svj, take, study=None, length_factors=None, floors=
                         ("beamDamp", "beamDampRebound", "beamDampFast", "beamDampReboundFast")}
                 floor = {k: v * f for k, v in base.items() if v}
                 if any(new.get(k, 0) < floor.get(k, 0) * 0.999 for k in ("beamDamp", "beamDampRebound") if k in new):
-                    new = {k: round(v) for k, v in floor.items()}
-                    if r["values"].get("beamDampVelocitySplit") is not None:
-                        new["beamDampVelocitySplit"] = r["values"]["beamDampVelocitySplit"]
-                    damp_floor.add(r["axle"])
+                    damp_floor.add(r["axle"])             # said, not applied: the SVJ's damping is kept as it gives it
         for k in list(new):                               # a tuning variable: set it in the configuration
             old = r["values"].get(k)
             if isinstance(old, str) and re.fullmatch(r"\$[A-Za-z_]\w*", old):

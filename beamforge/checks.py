@@ -8,7 +8,12 @@ without running the physics.
   overlaps       nodes of different parts that the base had apart and the build put on top of each other
   stiff nodes    nodes past the stiffest node of any stock vehicle at the physics step
   engine         a torque rating below what the curve and the turbo can reach (the engine damages its own oil)
+  shrunk beams   beams that became a fraction of the base's length with a stiff spring: the SVJ's points that tie them are
+                 (nearly) the same, the geometry is degenerate and the node is shaken apart at spawn
   bump steer     a steered wheel whose toe still changes with travel after the tie rods were tuned
+
+compliance() is the other way round: the SVJ's own figures against the written vehicle, every one the SVJ gives and the
+user asked to take (and the ones left out), so a value the SVJ defines that the vehicle does not reach is always said.
 """
 import json
 import math
@@ -17,6 +22,8 @@ from . import beamng, kinematics, rigidity, steering, values
 
 LINE_SIN = 0.08          # sin of the angle between a torsion bar's frame edges below which they are nearly in a line
 OVERLAP = 0.004          # m: nodes of different parts closer than this, where the base had them further apart
+SHRINK = 0.45            # a stiff beam shorter than this share of its base length (and under SHORT_M) is flagged
+SHORT_M = 0.07
 BUMP_TOE = 0.15          # deg per 10 mm of bump: past it a steered wheel steers itself as the car dives
 TORQUE_ROOM = 1.05       # the torque rating is at least this times the curve's peak
 
@@ -134,6 +141,75 @@ def bump_steer(model, configured):
     return out
 
 
+# how far a built value may be from the SVJ's before it is said: relative, or metres for the CG and the track
+TOLERANCE = {"spring": 0.03, "damp": 0.08, "tyre": 0.01, "engine": 0.03, "gears": 0.01, "final_drive": 0.01, "aero": 0.10,
+             "mass": 0.02, "cg_y": 0.03, "cg_z": 0.03, "wheelbase": 0.01, "track": 0.01}
+WHY = {"mass": "the base's structure is kept (it would be too stiff for lighter nodes; the scale structure option lightens it, but cars built that way were thrown out by the game's instability check, but cars built that way were thrown out by the game's instability check)",
+       "cg_y": "the body's node weights could not be moved further without going under what the physics step allows",
+       "cg_z": "the body's node weights could not be moved further without going under what the physics step allows"}
+
+
+def _tol(key):
+    return next((t for k, t in TOLERANCE.items() if key.startswith(k)), 0.05)
+
+
+def compliance(new_id, files, svj, taken, study=None):
+    """The SVJ's figures the written vehicle does not reach, and the ones the user left out: sentences starting "SVJ". The
+    vehicle's files are read back with beamng.add_files; taken: {values table key: bool}."""
+    beamng.add_files(json.dumps(files))
+    cj = beamng.configure(new_id)
+    out = []
+    for r in json.loads(values.table(new_id, cj, json.dumps(svj), json.dumps(study) if study else None)):
+        want, got, key = r.get("svj"), r.get("base"), r["key"]
+        if want is None or r.get("info"):
+            continue
+        unit = f" {r['unit']}" if r.get("unit") else ""
+        if not taken.get(key):
+            out.append(f"SVJ not taken: {r['label']}: the SVJ gives {want}{unit}, left as the base's ({got}{unit})")
+            continue
+        if isinstance(want, str) or isinstance(got, str):
+            miss = str(want).split() != str(got).split()
+        elif got is None:
+            miss = True
+        elif key.startswith("cg_") or key in ("wheelbase", "track"):
+            miss = abs(got - want) > _tol(key)
+        else:
+            miss = abs(got - want) > _tol(key) * abs(want)
+        if miss:
+            why = WHY.get(key)
+            out.append(f"SVJ not met: {r['label']}: the SVJ gives {want}{unit}, the vehicle has {got}{unit}" + (f" ({why})" if why else ""))
+    m = json.loads(cj).get("measure") or {}
+    ch = (svj or {}).get("chassis") or {}
+    for key, label in (("wheelbase", "wheelbase"), ("track_front", "front track"), ("track_rear", "rear track")):
+        want, got = ch.get(key), m.get(key)
+        if isinstance(want, (int, float)) and isinstance(got, (int, float)) and abs(got - want) > _tol(key) * want:
+            out.append(f"SVJ not met: {label}: the SVJ gives {want} m, the vehicle has {got} m")
+    return out
+
+
+def shrunk_beams(new_id, configured, base_model, base_configured):
+    if not base_configured:
+        return []
+    N, bN = configured["geometry"]["nodes"], base_configured["geometry"]["nodes"]
+    base = {}
+    for b in rigidity.beams(base_model, base_configured):
+        if b["a"] in bN and b["b"] in bN:
+            base[frozenset((b["a"], b["b"]))] = math.dist(bN[b["a"]], bN[b["b"]])
+    bad = []
+    for b in rigidity.beams(new_id, configured):
+        k = frozenset((b["a"], b["b"]))
+        if k in base and b["a"] in N and b["b"] in N and (b["values"].get("beamSpring") or 0) > 2e5:
+            d = math.dist(N[b["a"]], N[b["b"]])
+            if d < SHORT_M and base[k] > 1e-3 and d < SHRINK * base[k]:
+                bad.append((d / base[k], b["a"], b["b"], d))
+    if not bad:
+        return []
+    bad.sort()
+    shown = ", ".join(f"{a}-{c} {d * 1000:.0f} mm ({r * 100:.0f}% of the base's)" for r, a, c, d in bad[:5])
+    return [f"{len(bad)} stiff beams much shorter than the base's (the SVJ's points that tie them nearly coincide: bad geometry, it can "
+            f"shake the node apart at spawn): {shown}"]
+
+
 def run(new_id, files, base_model=None, base_configured=None):
     """The warnings for a built vehicle: its files {path: text} (read back with beamng.add_files) and, to compare with, the
     base's configuration. Returns a list of sentences (empty: nothing found)."""
@@ -145,6 +221,7 @@ def run(new_id, files, base_model=None, base_configured=None):
     docs = _docs(files, set(parts.values()))
     out = torsion_bars(N, docs)
     out += overlaps(N, parts, base_geo.get("nodes") or {}, base_geo.get("parts") or {})
+    out += shrunk_beams(new_id, configured, base_model, base_configured)
     out += stiff_nodes(new_id, configured)
     out += engine(docs)
     out += bump_steer(new_id, configured)
