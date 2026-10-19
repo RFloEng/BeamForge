@@ -56,6 +56,18 @@ def _docs(files, active):
     return out
 
 
+def torsion_sin(N, row):
+    """The smaller sin of the two angles a torsion bar's frame (rows' first four nodes) is made of; None for a row that is not one."""
+    if not (isinstance(row, list) and len(row) >= 4 and all(isinstance(x, str) and x in N for x in row[:4])):
+        return None
+    a, b, c, d = (N[x] for x in row[:4])
+    sins = []
+    for u, v in ((_sub(c, b), _sub(d, c)), (_sub(b, a), _sub(c, b))):
+        lu, lv = _norm(u), _norm(v)
+        sins.append(_norm(_cross(u, v)) / (lu * lv) if lu > 1e-9 and lv > 1e-9 else 0.0)
+    return min(sins)
+
+
 def torsion_bars(N, docs):
     out = []
     for name, part in sorted(docs.items()):
@@ -178,6 +190,7 @@ def compliance(new_id, files, svj, taken, study=None):
         if miss:
             why = WHY.get(key)
             out.append(f"SVJ not met: {r['label']}: the SVJ gives {want}{unit}, the vehicle has {got}{unit}" + (f" ({why})" if why else ""))
+    out += suspension_points(new_id, json.loads(cj), svj)
     m = json.loads(cj).get("measure") or {}
     ch = (svj or {}).get("chassis") or {}
     for key, label in (("wheelbase", "wheelbase"), ("track_front", "front track"), ("track_rear", "rear track")):
@@ -208,6 +221,50 @@ def shrunk_beams(new_id, configured, base_model, base_configured):
     shown = ", ".join(f"{a}-{c} {d * 1000:.0f} mm ({r * 100:.0f}% of the base's)" for r, a, c, d in bad[:5])
     return [f"{len(bad)} stiff beams much shorter than the base's (the SVJ's points that tie them nearly coincide: bad geometry, it can "
             f"shake the node apart at spawn): {shown}"]
+
+
+SUSP_TOL = 0.005       # m: a suspension point the vehicle puts further than this from the SVJ's is said
+
+
+def suspension_points(new_id, configured, svj):
+    """The SVJ's suspension points the written vehicle does not hold: each wheel's upright joints (the middle of the nodes that
+    make a joint), the strut top and the links' chassis points, against the SVJ's, by the base's role table. Sentences."""
+    from . import roles, svj as svjmod
+    geo, me = configured["geometry"], configured.get("measure") or {}
+    N, P = geo["nodes"], geo.get("parts") or {}
+    if "front_axle_y" not in me or "ground_z" not in me:
+        return []
+    hp = {}
+    for h in svjmod.hardpoints(svj, me["front_axle_y"], me["ground_z"]):
+        hp.setdefault(h["corner"], {})[h["name"]] = h["pos"]
+    mean = lambda ns: [sum(N[n][i] for n in ns) / len(ns) for i in range(3)]      # noqa: E731
+    out = []
+    for w in configured.get("wheels") or []:
+        rt, pts = roles.for_corner(P, N, w), hp.get(w["name"])
+        if not rt or not pts:
+            continue
+        miss = []
+        for joint, names in (("lower_ball_joint", ("lower_ball_joint",)), ("upper_ball_joint", ("upper_ball_joint",)),
+                             ("tie_rod_end", ("steering_tie_rod_end", "toe_link_outer"))):
+            ns = [n for n in rt["joints"].get(joint, []) if n in N]
+            want = next((pts[k] for k in names if k in pts), None)
+            if ns and want and math.dist(mean(ns), want) > SUSP_TOL:
+                miss.append(f"{joint.replace('_', ' ')} {math.dist(mean(ns), want) * 1000:.0f} mm")
+        st = rt.get("strut")
+        if st and st.get("top") and "strut.0" in pts and math.dist(mean([n for n in st["top"] if n in N]), pts["strut.0"]) > SUSP_TOL:
+            miss.append(f"strut top {math.dist(mean([n for n in st['top'] if n in N]), pts['strut.0']) * 1000:.0f} mm")
+        for role, prefixes in (("lower_arm", ("lower_control_arm.",)), ("upper_arm", ("upper_control_arm.", "upper_wishbone.")),
+                               ("tie_rod", ("steering_tie_rod.", "toe_link."))):
+            want = [p for k, p in pts.items() if k.startswith(prefixes)]
+            ns = [n for n in rt["pivots"].get(role, []) if n in N]
+            if want and ns:
+                far = max(min(math.dist(N[n], p) for p in want) for n in ns)
+                if far > SUSP_TOL:
+                    miss.append(f"{role.replace('_', ' ')} pivot {far * 1000:.0f} mm")
+        if miss:
+            out.append(f"SVJ not met: {w['name']} suspension points off the SVJ's: {', '.join(miss)} (the upright keeps the base's "
+                       "stiff shape; the other points are where the SVJ puts them)")
+    return out
 
 
 def run(new_id, files, base_model=None, base_configured=None):

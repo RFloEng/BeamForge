@@ -210,6 +210,17 @@ symmetric about the steering axis: the base turns 34 one way and 40 the other), 
 degrees. One rack travel is chosen for all hydros, the one whose lock on both sides, for both wheels, is nearest the base's
 (a rack moves both ends by the same amount); each factor is its share of that travel.
 
+## Suspension points: what is exact and what is not
+
+A converted corner (convert.py) puts the links' chassis points, the strut top and the wheel (centre, camber, toe, caster) on
+the SVJ's own values. The joints on the upright (ball joints, tie rod end, strut foot) stay where the base's rigid upright
+puts them: placed exactly on the SVJ's points they bend the stiff upright (its beams to 50-140% of their length) and the
+corner bursts at spawn, front and rear (cars tested in game). The report says how far each is ("SVJ not met: FL suspension
+points off the SVJ's: lower ball joint 31 mm...", checks.suspension_points). A chassis point that would land on a node it is
+tied to (a stiff beam of a few millimetres) is held back until the beam keeps 45% of the base's length, and said.
+`BF_EXACT` (environment) switches the modes for experiments: `pivots` (default), `vectors` (the SVJ's link vectors from the
+rigid upright), `front`, `all`. Exact joints everywhere need an upright built from the SVJ's points (docs/archetypes.md).
+
 ## Gear list: reverse and neutral are slots, not values
 
 A gearbox's `gearRatios` is `[reverse, neutral, 1st, ...]`. The base's reverse can be a template string

@@ -195,8 +195,9 @@ local function firstBroken()                                      -- the first b
     if shown < 25 and not seen[b.cid] and obj:beamIsBroken(b.cid) then
       seen[b.cid] = true
       shown = shown + 1
-      log("I", "bfcheck", string.format("first broken #%d at %.2f s: %s %s->%s part %s", shown, timer, tostring(b.name or ""),
-        tostring(v.data.nodes[b.id1].name), tostring(v.data.nodes[b.id2].name), tostring(b.partOrigin)))
+      log("I", "bfcheck", string.format("first broken #%d at %.2f s: %s %s->%s part %s (ref %.3f len %.3f pre %s spring %s strength %s)", shown, timer,
+        tostring(b.name or ""), tostring(v.data.nodes[b.id1].name), tostring(v.data.nodes[b.id2].name), tostring(b.partOrigin),
+        obj:getBeamRefLength(b.cid), obj:getBeamLength(b.cid), tostring(b.beamPrecompression), tostring(b.beamSpring), tostring(b.beamStrength)))
     end
   end
 end
@@ -214,6 +215,7 @@ local function stress()                                        -- the tank beams
 end
 
 local nameOf = {}
+local dumped = false
 local function frames()                                         -- the fastest node and the most loaded beams, in the first second
   if timer > 1.0 then return end
   local vmax, vn, vp = 0, "", ""
@@ -239,6 +241,21 @@ local function frames()                                         -- the fastest n
     s = s .. string.format(" [%s->%s %.0f%% %s]", tostring(v.data.nodes[b.id1].name), tostring(v.data.nodes[b.id2].name), top[i][1] * 100, tostring(b.partOrigin))
   end
   log("I", "bfcheck", string.format("frame %.2f s: fastest node %s (%s) %.1f m/s; most loaded beams:%s", timer, vn, vp, vmax, s))
+  if timer > 0.5 and not dumped and vmax > 5 then                 -- the fastest node's own beams, once
+    dumped = true
+    for _, b in pairs(v.data.beams) do
+      local a, c = v.data.nodes[b.id1], v.data.nodes[b.id2]
+      if tostring(a.name) == vn or tostring(c.name) == vn then
+        local ok, f = pcall(function() return obj:getBeamStress(b.cid) end)
+        log("I", "bfcheck", string.format("  fastest node %s: beam to %s ref %.3f len %.3f pre %s spring %s damp %s type %s stress %.0f part %s", vn,
+          tostring(a.name) == vn and tostring(c.name) or tostring(a.name), obj:getBeamRefLength(b.cid), obj:getBeamLength(b.cid),
+          tostring(b.beamPrecompression), tostring(b.beamSpring), tostring(b.beamDamp), tostring(b.beamType), ok and f or 0, tostring(b.partOrigin)))
+      end
+    end
+    for _, nd in pairs(v.data.nodes) do
+      if tostring(nd.name) == vn then log("I", "bfcheck", string.format("  fastest node %s: weight %s, collision %s, selfCollision %s", vn, tostring(nd.nodeWeight), tostring(nd.collision), tostring(nd.selfCollision))) end
+    end
+  end
 end
 
 local oilT = 0
@@ -1280,6 +1297,10 @@ def _steering_and_checks(model, new_id, base_configured, files, svj=None):
     except (KeyError, ValueError, StopIteration, IndexError):
         pass
     try:
+        notes += _torsion_fix(model, new_id, base_configured, files)
+    except (KeyError, ValueError, StopIteration, IndexError, TypeError) as e:
+        notes.append(f"torsion bar check skipped: {type(e).__name__} {e}")
+    try:
         notes += steering.fix_files(model, base_configured, new_id, files, lock_rack=False)[0]
         if steering.svj_tie_rods(svj):
             notes.append("tie rods kept where the SVJ puts them (rack end, rod and upright points): no bump steer tuning")
@@ -1292,6 +1313,43 @@ def _steering_and_checks(model, new_id, base_configured, files, svj=None):
         notes += ["CHECK: " + w for w in checks.run(new_id, files, model, base_configured)]
     except (KeyError, ValueError, StopIteration, IndexError) as e:
         notes.append(f"static checks skipped: {type(e).__name__} {e}")
+    return notes
+
+
+def _torsion_fix(model, new_id, base_configured, files):
+    """A torsion bar's frame (four nodes) that the fit left nearly in a line has no stable reference direction and spins up at
+    spawn (the front anti-roll bar's, once the subframe nodes it is hung on were moved level with its ends). The nodes of the
+    frame that belong to the bar's own part take, relative to the frame's other nodes, the place they had in the base. Changes
+    the files in place; returns notes."""
+    from . import checks
+    beamng.add_files(json.dumps(files))
+    cfg = json.loads(beamng.configure(new_id))
+    N, owner = cfg["geometry"]["nodes"], cfg["geometry"].get("parts") or {}
+    bN = (base_configured.get("geometry") or {}).get("nodes") or {}
+    docs = checks._docs(files, set(owner.values()))
+    deltas, notes = {}, []
+    for name, part in sorted(docs.items()):
+        for row in part.get("torsionbars") or []:
+            s = checks.torsion_sin(N, row)
+            bs = checks.torsion_sin(bN, row)                  # the base's: a frame the fit squeezed to under half of it is flagged
+            if s is None or not (s < checks.LINE_SIN or (bs is not None and s < 0.5 * bs and s < 0.5)):
+                continue
+            ids = row[:4]
+            for node, ref in ((ids[0], ids[1]), (ids[3], ids[2])):
+                if owner.get(node) == name and owner.get(ref) != name and node in bN and ref in bN:
+                    new = [N[ref][i] + bN[node][i] - bN[ref][i] for i in range(3)]
+                    deltas[node] = [new[i] - N[node][i] for i in range(3)]
+            if deltas:
+                notes.append(f"{name}: torsion bar {'-'.join(ids)} had its frame nearly in a line (sin {s:.2f}) after the fit: "
+                             f"{', '.join(n for n in deltas)} put back where the base had them against the frame's other nodes")
+    if not deltas:
+        return notes
+    for path, text in list(files.items()):
+        if not path.endswith(".jbeam"):
+            continue
+        doc = json.loads(text)
+        if any([_fit_nodes(p, deltas, {}) for p in doc.values() if isinstance(p, dict)]):
+            files[path] = json.dumps(doc, indent=1)
     return notes
 
 

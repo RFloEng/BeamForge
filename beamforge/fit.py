@@ -293,6 +293,7 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
 
     mapping, uprights, changes = [], [], []
     rigid_hubs = {}                                        # corner: (wheel, hub nodes) of uprights kept rigid
+    free_nodes = set()                                     # upright joints put on the SVJ's own points (convert.corner)
     converted = []                                         # corners converted by role (roles.py, convert.py)
     if "pickups" in stages:
         hps = svjmod.hardpoints(svj, yf, ax["ground"])
@@ -326,7 +327,8 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
                 targets.update(tg)
                 mapping.extend(info["rows"])
                 notes.extend(info["notes"])
-                rigid_hubs[corner] = (w, set(info["upright"]) - {w["node1"], w["node2"]})
+                rigid_hubs[corner] = (w, set(info["upright"]) - {w["node1"], w["node2"]} - set(info.get("free") or []))
+                free_nodes.update(info.get("free") or [])
                 converted.append(f"{corner} ({rt['part']})")
             for corner in {r["corner"] for r in mapping if r["corner"] not in by_role}:
                 rows = [r for r in mapping if r["corner"] == corner and r["nodes"] and r["kind"] in ("wheel", "upright")]
@@ -461,6 +463,7 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
         for n in group:
             out[n] = [new[n][i] + shift[i] for i in range(3)]
         protected.update(group)
+        protected.update(n for n in free_nodes if n in out)
         restored.append(f"{corner} ({worst * 1000:.0f} mm)")
     if restored:
         changes.append("uprights given back their exact shape after the body stage had bent them: " + ", ".join(restored))
@@ -605,6 +608,25 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
     if stiff:
         changes.append("solid parts (tank, engine, seats) kept their shape, as the body stage had bent them: " + ", ".join(stiff))
 
+    # a point put exactly on the SVJ's can land on top of a body node it is tied to, and a stiff beam of a few millimetres
+    # shakes both apart at spawn: such a point is held back along the beam until it keeps 45% of the base's length, and said
+    held = []
+    if free_nodes and beams:
+        for pair in beams:
+            for n, m in ((pair[0], pair[1]), (pair[1], pair[0])):
+                if n in free_nodes and m not in free_nodes and all(x in out and x in nodes for x in (n, m)):
+                    l0, l1 = math.dist(nodes[n], nodes[m]), math.dist(out[n], out[m])
+                    if l0 > 1e-3 and l1 < 0.45 * l0 and l1 < 0.07:
+                        d = [out[n][i] - out[m][i] for i in range(3)]
+                        dl = math.sqrt(sum(x * x for x in d))
+                        d = [x / dl for x in d] if dl > 1e-6 else [(nodes[n][i] - nodes[m][i]) / l0 for i in range(3)]
+                        new = [out[m][i] + d[i] * 0.45 * l0 for i in range(3)]
+                        held.append(f"{n} ({math.dist(new, out[n]) * 1000:.0f} mm, from {m})")
+                        out[n] = new
+    if held:
+        changes.append("points put on the SVJ's would have landed on top of a node they are tied to (a stiff beam of a few mm): "
+                       "held back to 45% of the base's length: " + ", ".join(held))
+
     # the wheels spawn with their axle as the base's (square); their camber and toe are a target the
     # export preloads the upright's beams to (square_axles)
     axles_out = square_axles(out, nodes, wheels)
@@ -690,7 +712,7 @@ def fit_json(geometry_json, wheels_json, svj_json, files_json, stages_json, over
 # ---------------------------------------------------------------- stage 3: pickup points
 
 # parts that are solid blocks, not skin: they keep their shape when the body stage bends the nodes around them
-SOLID = re.compile(r"tank|battery|engine|intake|transaxle|transmission|gearbox|differential|carrier|seat|shifter|radiator", re.I)
+SOLID = re.compile(r"spare|tank|battery|engine|intake|transaxle|transmission|gearbox|differential|carrier|seat|shifter|radiator", re.I)
 PANEL_SIM = re.compile(r"door|mirror|tailgate|trunk|hood|spoiler|headlight|taillight|foglight|glass|windshield", re.I)
 SUSPENSION = re.compile(r"suspension|strut|coilover|shock|damper|spring|steer|hub|arm|link|subframe|knuckle|upright", re.I)
 

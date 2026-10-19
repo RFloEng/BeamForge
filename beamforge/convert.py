@@ -19,6 +19,7 @@ displacement field, with the rest of the body.
 
 import copy
 import math
+import os
 
 from . import suspension, svj as svjmod
 
@@ -50,6 +51,8 @@ def _svj_points(svj, corner, hps):
             up["lower_ball_joint"] = pos
         elif "tie_rod_end" in n or "toe_link_outer" in n:
             up.setdefault("tie_rod_end", pos)
+        elif n in ("strut_lower", "strut_outboard", "damper_outboard"):
+            up.setdefault("strut_lower", pos)
     links = {}
     topo = ((svj.get("suspension") or {}).get(corner) or {}).get("topology") or {}
     for link in topo.get("links") or []:
@@ -203,7 +206,7 @@ def bump_steer_tie_rod(svj, corner_name, site, outer, tie_end, lower_piv, upper_
     return inner, max(abs(x) for x in before), max(abs(x) for x in after)
 
 
-def corner(nodes, roles, wheel, svj, corner_name, hps, wheel_axis=None, site=None):
+def corner(nodes, roles, wheel, svj, corner_name, hps, wheel_axis=None, site=None):  # noqa: C901
     """The converted corner: ({node: target position}, {"upright": [nodes kept rigid], "rows": mapping
     rows for the report, "notes": [...]}). nodes: the base's positions (the rest geometry); roles:
     roles.for_corner(); hps: this corner's svj.hardpoints() rows; wheel_axis: the wheel's outward axis
@@ -254,21 +257,56 @@ def corner(nodes, roles, wheel, svj, corner_name, hps, wheel_axis=None, site=Non
         targets[n] = place(nodes[n])
     rows.append({"corner": corner_name, "name": "wheel_center", "kind": "wheel", "nodes": [a1, a2], "target": W1,
                  "distance": round(math.dist(W0, W1), 4), "by": "role"})
+    # (BF_EXACT=all:) the upright's joints on the SVJ's own points, not where the base's rigid upright puts them: the ball joints and the tie
+    # rod end are where the SVJ says (the nodes of one joint keep their offsets from each other), so the arms, the rod and
+    # the strut work as the SVJ's set. The rest of the upright (axle, brake, hub) follows the wheel.
+    free = []
+    # The joints on the upright (ball joints, tie rod end, strut foot) exactly on the SVJ's points bent the base's stiff upright
+    # (its beams to 50-140% of their length) and the corner burst at spawn, front and rear (tested in game); so they are off
+    # unless asked: BF_EXACT=all, or front. 'pivots': the links' chassis points exact on the SVJ's, the upright rigid.
+    mode = os.environ.get("BF_EXACT", "pivots")                 # pivots | vectors (the SVJ's link vectors from the rigid upright) | front | all
+    joints_exact = mode == "all" or (mode == "front" and corner_name.startswith("F"))
+    for joint in ("lower_ball_joint", "upper_ball_joint", "tie_rod_end"):
+        ns = [n for n in jb.get(joint, []) if n in targets]
+        if joints_exact and ns and up_svj.get(joint):
+            mid = _mean([targets[n] for n in ns])
+            for n in ns:
+                targets[n] = [up_svj[joint][i] + targets[n][i] - mid[i] for i in range(3)]
+                free.append(n)
+            rows.append({"corner": corner_name, "name": joint, "kind": "upright", "nodes": list(ns), "target": up_svj[joint],
+                         "distance": round(math.dist(_mean([nodes[n] for n in ns]), up_svj[joint]), 4), "by": "role"})
     # the strut top: on the placed upright's rail line, at the SVJ's strut top height
     st = roles.get("strut")
     if st and st["top"] and st["rail_start"] in nodes:
         s0, t0 = nodes[st["rail_start"]], nodes[st["top"][0]]
         s1 = place(s0)
+        if joints_exact and up_svj.get("strut_lower"):            # the strut's lower end where the SVJ puts it
+            s1 = list(up_svj["strut_lower"])
+            targets[st["rail_start"]] = s1
+            free.append(st["rail_start"])
         d = _unit(_apply(R, [t0[k] - s0[k] for k in range(3)]))
         lam = math.dist(s0, t0)
         if links_svj.get("strut") and d and abs(d[2]) > 0.2:
             lam = (links_svj["strut"][0][2] - s1[2]) / d[2]
         top = [s1[i] + d[i] * lam for i in range(3)]
+        if links_svj.get("strut"):                                # and its top exactly on the SVJ's point
+            top = list(links_svj["strut"][0])
+        mid0 = _mean([nodes[n] for n in st["top"]])               # the top's nodes keep their offsets from each other
         for n in st["top"]:
-            targets[n] = list(top)
+            targets[n] = [top[i] + nodes[n][i] - mid0[i] for i in range(3)]
+            if links_svj.get("strut"):
+                free.append(n)
         rows.append({"corner": corner_name, "name": "strut_top", "kind": "chassis", "nodes": list(st["top"]),
                      "target": links_svj["strut"][0] if links_svj.get("strut") else top,
                      "distance": round(math.dist(t0, links_svj["strut"][0]), 4) if links_svj.get("strut") else 0.0,
+                     "by": "role"})
+    elif st and st["top"] and links_svj.get("strut"):             # a variant with no rail node: the top alone, on the SVJ's point
+        mid0 = _mean([nodes[n] for n in st["top"]])
+        for n in st["top"]:
+            targets[n] = [links_svj["strut"][0][i] + nodes[n][i] - mid0[i] for i in range(3)]
+            free.append(n)
+        rows.append({"corner": corner_name, "name": "strut_top", "kind": "chassis", "nodes": list(st["top"]),
+                     "target": links_svj["strut"][0], "distance": round(math.dist(nodes[st["top"][0]], links_svj["strut"][0]), 4),
                      "by": "role"})
     # the links' inner pivots: the SVJ's, measured from where the link's outer joint landed
     for role, base_nodes in roles["pivots"].items():
@@ -290,7 +328,7 @@ def corner(nodes, roles, wheel, svj, corner_name, hps, wheel_axis=None, site=Non
             notes.append(f"{corner_name}: {role} kept as the base's, moved with its ball joint (the SVJ's arm points do not suit it)")
             continue
         shift = [0.0, 0.0, 0.0]
-        if joint and jb.get(joint) and up_svj.get(joint):
+        if mode == "vectors" and joint and jb.get(joint) and up_svj.get(joint):
             landed = _mean([targets[n] for n in jb[joint] if n in targets] or [place(nodes[n]) for n in jb[joint]])
             shift = [landed[i] - up_svj[joint][i] for i in range(3)]
         want = [[p[i] + shift[i] for i in range(3)] for p in pts]
@@ -302,6 +340,7 @@ def corner(nodes, roles, wheel, svj, corner_name, hps, wheel_axis=None, site=Non
             pairs = [(n, min(wp, key=lambda p: math.dist(p, nodes[n]))) for n in bn]
         for n, p in pairs:
             targets[n] = p
+            free.append(n)
             rows.append({"corner": corner_name, "name": role, "kind": "chassis", "nodes": [n], "target": p,
                          "distance": round(math.dist(nodes[n], p), 4), "by": "role"})
     # a double wishbone corner's tie rod: the base upright's shape is kept, so the SVJ's link vectors, each from its own
@@ -329,4 +368,4 @@ def corner(nodes, roles, wheel, svj, corner_name, hps, wheel_axis=None, site=Non
                     r["target"], r["distance"] = targets[tie_nodes[0]], round(math.dist(nodes[tie_nodes[0]], targets[tie_nodes[0]]), 4)
             notes.append(f"{corner_name}: tie rod inner point placed for the least bump steer (toe change over +-60 mm of "
                          f"travel {before:.2f} deg as converted, {after:.2f} deg now)")
-    return targets, {"upright": upright, "rows": rows, "notes": notes}
+    return targets, {"upright": upright, "rows": rows, "notes": notes, "free": sorted(set(free))}

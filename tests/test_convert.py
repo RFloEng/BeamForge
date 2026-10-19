@@ -40,15 +40,33 @@ class TestConvert(unittest.TestCase):
         wc = [(t["wo"][i] + t["wi"][i]) / 2 for i in range(3)]
         for a, b in zip(wc, [0.75, -1.3, 0.3]):
             self.assertAlmostEqual(a, b, places=6)                            # the SVJ's wheel centre
-        self.assertAlmostEqual(math.dist(t["bl"], t["tl"]), math.dist(self.nodes["bl"], self.nodes["tl"]), places=6)   # rigid
+        self.assertAlmostEqual(math.dist(t["bl"], t["tl"]), math.dist(self.nodes["bl"], self.nodes["tl"]), places=6)   # upright rigid
+        for a, b in zip(t["p1l"], [0.3, -1.55, 0.2]):                         # the arm's chassis pivot: the SVJ's point, exactly
+            self.assertAlmostEqual(a, b, places=6)
+        self.assertAlmostEqual(t["kl"][2], 0.78, places=6)                   # the strut top at the SVJ's height
+        self.assertEqual(info["free"].count("bl"), 0)                        # the joints follow the rigid upright by default
+
+    def test_link_vectors_when_asked(self):
+        import os
+        os.environ["BF_EXACT"] = "vectors"
+        self.addCleanup(os.environ.pop, "BF_EXACT", None)
+        rt = roles.for_corner(self.parts, self.nodes, self.wheel)
+        hps = [h for h in svjmod.hardpoints(self.svj, -1.3, 0.0) if h["corner"] == "FL"]
+        t, info = convert.corner(self.nodes, rt, self.wheel, self.svj, "FL", hps, [1.0, 0.0, 0.0])
         shift = [t["bl"][i] - [0.65, -1.3, 0.2][i] for i in range(3)]     # the arm vector is the SVJ's, from where b landed
         for a, b in zip(t["p1l"], [0.3 + shift[0], -1.55 + shift[1], 0.2 + shift[2]]):
             self.assertAlmostEqual(a, b, places=6)
-        self.assertAlmostEqual(t["kl"][2], 0.78, places=6)                   # the strut top at the SVJ's height
-        d = [t["kl"][i] - t["sl"][i] for i in range(3)]                       # on the upright's rail line
-        d0 = [self.nodes["kl"][i] - self.nodes["sl"][i] for i in range(3)]
-        cos = sum(a * b for a, b in zip(d, d0)) / math.sqrt(sum(a * a for a in d) * sum(b * b for b in d0))
-        self.assertGreater(cos, 0.999)
+
+    def test_joints_exact_when_asked(self):
+        import os
+        os.environ["BF_EXACT"] = "all"
+        self.addCleanup(os.environ.pop, "BF_EXACT", None)
+        rt = roles.for_corner(self.parts, self.nodes, self.wheel)
+        hps = [h for h in svjmod.hardpoints(self.svj, -1.3, 0.0) if h["corner"] == "FL"]
+        t, info = convert.corner(self.nodes, rt, self.wheel, self.svj, "FL", hps, [1.0, 0.0, 0.0])
+        for a, b in zip(t["bl"], [0.65, -1.3, 0.2]):                          # the ball joint on the SVJ's own point
+            self.assertAlmostEqual(a, b, places=6)
+        self.assertIn("bl", info["free"])
 
     def test_trailing_arm_upright_not_turned_for_caster(self):
         roles.ROLES["car_suspension_F"]["caster"] = False

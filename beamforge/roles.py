@@ -60,15 +60,22 @@ def for_corner(parts, nodes, wheel):
     """The role table of the suspension at a wheel, with the side letter added: {"part", "upright",
     "joints", "pivots", "strut"} in node ids, or None when its part has no table (or a node is missing)."""
     side = "l" if (nodes.get(wheel["node1"], [0])[0] + nodes.get(wheel["node2"], [0])[0]) > 0 else "r"
-    for part, t in ROLES.items():
+    # a table with no variant of its own also serves the variants of its part (a rally or pro-drift build of the same
+    # suspension: the same node ids, other numbers); a variant with its own table is found first
+    for exact, (part, t) in [(True, kv) for kv in ROLES.items()] + [(False, kv) for kv in ROLES.items()]:
         up = [n + side for n in t["upright"]]
-        if not all(n in nodes and parts.get(n) == part for n in up):
+        same = (lambda q: q == part) if exact else (lambda q: isinstance(q, str) and q.startswith(part + "_"))   # noqa: E731
+        if not exact:                                      # a variant may lack a node of the table (a rally upright with no brake node)
+            up = [n for n in up if n in nodes and same(parts.get(n))]
+            if len(up) < 3:
+                continue
+        elif not all(n in nodes and same(parts.get(n)) for n in up):
             continue
         wc = [(nodes[wheel["node1"]][i] + nodes[wheel["node2"]][i]) / 2 for i in range(3)]
         if max(math.dist(nodes[n], wc) for n in up) > NEAR:
             continue                                       # another corner's (the front part at a rear wheel)
         sided = lambda ids: [n + side for n in ids if n + side in nodes]  # noqa: E731
-        out = {"part": part, "upright": up,
+        out = {"part": parts.get(up[0]), "upright": up,
                "joints": {k: sided(v) for k, v in t.get("joints", {}).items()},
                "pivots": {k: sided(v) for k, v in t.get("pivots", {}).items()}}
         if "caster" in t:
