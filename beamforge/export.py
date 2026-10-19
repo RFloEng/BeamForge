@@ -693,6 +693,78 @@ def susp_pieces(v, svj, path, place, files=None):
     return out
 
 
+def _role_nodes(rt, role):
+    """The base nodes a suspension piece of this role follows at a corner (a role table's nodes): an arm follows its pivots and
+    ball joints, a strut its top and foot, a steering rod its rack end and the upright joints. At least three, or none."""
+    j, pv, st = rt["joints"], rt["pivots"], rt.get("strut") or {}
+    if role == "arm":
+        ns = pv.get("lower_arm", []) + pv.get("upper_arm", []) + j.get("lower_ball_joint", []) + j.get("upper_ball_joint", [])
+    elif role == "strut":
+        ns = list(st.get("top", [])) + ([st["rail_start"]] if st.get("rail_start") else []) + j.get("lower_ball_joint", [])
+    elif role == "tie":
+        ns = pv.get("tie_rod", []) + j.get("tie_rod_end", []) + j.get("lower_ball_joint", [])
+    else:
+        return []
+    ns = list(dict.fromkeys(ns))
+    return ns if len(ns) >= 3 else []
+
+
+def static_susp_rows(v, svj, path, place, mesh_ref):
+    """The suspension parts a mesh file carries as static copies at the rest pose (wishbones, dampers, steering rods: found by their
+    names, gltf.guessed_pieces) as attach rows that follow the base's nodes of their role at the corner nearest to them, so
+    they move with the suspension instead of hanging in the air. "tag_nodes": the nodes that take the row's node group
+    (build adds it). A corner the base has no role table for gets none: its own meshes show."""
+    from . import roles
+    glb = path.lower().endswith(".glb")
+    with open(path, "rb") as fh:
+        data = fh.read()
+    geo = v["geometry"]
+    N, P = geo["nodes"], geo.get("parts") or {}
+    axes = svjmod.gltf_axes(svj)
+    off = svjmod.mesh_offset(svj, data, glb)[0] or [0.0, 0.0, 0.0]
+    wheels = [w for w in v.get("wheels") or [] if w.get("centre")]
+    rows = []
+    for name, role in gltf.guessed_pieces(data, glb):
+        if role == "hub":
+            continue                                       # the SVJ's own upright binding covers the hub
+        pos = gltf.positions(data, glb, under=name)
+        if not pos or not wheels:
+            continue
+        pts = [svjmod.from_sae([x + o for x, o in zip(svjmod.gltf_to_sae(p, axes), off)], place["yf"], place["ground"]) for p in pos]
+        lo, hi = ([f(p[i] for p in pts) for i in range(3)] for f in (min, max))
+        if lo[0] < -PIECE_MID and hi[0] > PIECE_MID:
+            continue
+        mid = [(a + b) / 2 for a, b in zip(lo, hi)]
+        w = min(wheels, key=lambda w: math.dist(w["centre"], mid))
+        if math.dist(w["centre"], mid) > PIECE_REACH:
+            continue
+        rt = roles.for_corner(P, N, w)
+        ns = _role_nodes(rt, role) if rt else []
+        if not ns:
+            continue
+        owners = [P[n] for n in ns if n in P]
+        rows.append({"path": f"susp.{w['name']}.{name}", "node": name, "mesh_ref": mesh_ref, "part": max(set(owners), key=owners.count),
+                     "groups": [f"bf_{role}_{w['name']}"], "tag_nodes": ns})
+    return rows
+
+
+def _tag_nodes(part, tags, base_groups):
+    """Add node groups to the part's nodes (tags: {node: [groups]}; base_groups: {node: [groups it has]}), written inline."""
+    rows = part.get("nodes")
+    done = 0
+    if not isinstance(rows, list):
+        return 0
+    for r in rows:
+        if isinstance(r, list) and r and isinstance(r[0], str) and r[0] in tags and len(r) >= 4:
+            groups = list(dict.fromkeys(list(base_groups.get(r[0], [])) + tags[r[0]]))
+            if isinstance(r[-1], dict):
+                r[-1]["group"] = groups
+            else:
+                r.append({"group": groups})
+            done += 1
+    return done
+
+
 def _wider_group(geo, nodes, reach=0.4):
     """A node group of three nodes or more near these nodes. A flexbody needs a reference plane: the wheel hub's own group
     has only the axle's two nodes, so the mesh would not load (VY node not found). Prefers a group named for the hub."""
@@ -767,7 +839,8 @@ def svj_attach(configured_json, svj_json, mapping_json=None, files_json=None, pl
             glass = _glass(v, svj, path, place, body) if not body["node"] or not _has(path, body["node"]) else []
             if glass:
                 body["exclude_prims"] = sorted({i for g in glass for i in g["prims"]})
-            out[out.index(body) + 1:out.index(body) + 1] = panels + glass
+            susp = static_susp_rows(v, svj, path, place, body.get("mesh_ref") or next(iter(files)))
+            out[out.index(body) + 1:out.index(body) + 1] = panels + glass + susp
     return json.dumps(out)
 
 
@@ -1168,7 +1241,15 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
             notes.append(f"{m['path']}: attached to {m['part']}, a shared part reused from the game; added to {v['main']} instead")
             m["part"] = v["main"]
 
+    tags = {}
+    for a in (opt or {}).get("attach") or []:
+        for node in a.get("tag_nodes") or []:
+            tags.setdefault(node, []).extend(a.get("groups") or [])
+    base_groups = (v.get("geometry") or {}).get("groups") or {}
+
     def finish(n, part):
+        if tags and n in active:
+            counts["tagged"] = counts.get("tagged", 0) + _tag_nodes(part, tags, base_groups)
         if choices.get(n) == "fit" and n in active:
             counts["nodes"] += _fit_nodes(part, deltas, vars_)
             _fit_flexbodies(part, n, shifts.get(n, {}), vars_)
