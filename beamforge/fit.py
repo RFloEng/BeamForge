@@ -501,7 +501,20 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
         far, near_ = (a, b) if dev[a] >= dev[b] else (b, a)
         pn = out[n]
         if far in protected and n in protected:
-            continue                                       # a restored upright's own rail: as the base had it
+            # a restored upright's own rail: as the base had it, unless the points put on the SVJ's pulled it off: the slide node
+            # is then fixed to a rail it is not on and BeamNG snaps it at spawn (82 mm tore a rear axle apart); the rail's end
+            # that is not on an SVJ point turns through the node, keeping its length
+            if gap > 0.003:
+                for e in (a, b):
+                    o = b if e == a else a
+                    if e not in free_nodes and ends.get(e, 0) == 1 and per_rail[(a, b)] == 1 and math.dist(out[o], pn) > 1e-3:
+                        L = math.dist(out[o], out[e])
+                        u = [pn[i] - out[o][i] for i in range(3)]
+                        lu = math.sqrt(sum(x * x for x in u))
+                        out[e] = [out[o][i] + u[i] / lu * L for i in range(3)]
+                        on_rail.append((e, gap))
+                        break
+            continue
         if (dev[far] > max(0.005, 2 * dev[near_]) and per_rail[(a, b)] == 1 and ends[far] == 1
                 and far not in protected and math.dist(out[near_], pn) > 1e-3):
             L = math.dist(out[near_], out[far])
