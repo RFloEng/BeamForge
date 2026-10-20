@@ -441,7 +441,7 @@ def _rename_refs(part, renames):
 # engine, running gear and what its props animate (pedals, gauge needles, the steering wheel), would show beside
 # the SVJ's meshes or through them; the SVJ is the car's looks. Lights (props with the SPOTLIGHT mesh) stay: they
 # are not meshes.
-KEEP = re.compile(r"(?<!steer)(?<!steer_)(?<!steering)(?<!steering_)wheel|tire|tyre|hubcap", re.I)
+KEEP = re.compile(r"(?<!steer)(?<!steer_)(?<!steering)(?<!steering_)wheel|tire|tyre|hubcap|halfshaft|driveshaft|propshaft", re.I)
 LIGHT_MESH = re.compile(r"^(spotlight|pointlight|)$", re.I)
 
 
@@ -738,6 +738,10 @@ def static_susp_rows(v, svj, path, place, mesh_ref):
         w = min(wheels, key=lambda w: math.dist(w["centre"], mid))
         if math.dist(w["centre"], mid) > PIECE_REACH:
             continue
+        ext = [h - l for h, l in zip(hi, lo)]
+        if ext[0] > 0.25 and ext[0] > 2.0 * max(ext[1], ext[2]) and abs(mid[2] - w["centre"][2]) < 0.15:
+            continue                                       # a long thin piece across the car at the axle's height is a driveshaft: the base's
+                                                           # own halfshaft (diff to hub) is kept, this static stub would hang from the hub
         rt = roles.for_corner(P, N, w)
         ns = _role_nodes(rt, role) if rt else []
         if not ns:

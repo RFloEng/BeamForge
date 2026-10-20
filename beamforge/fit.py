@@ -550,6 +550,25 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
             for n in group:
                 out[n] = list(move(nodes[n]))
             stiff.append(f"{name} ({worst * 1000:.0f} mm)")
+    # an axle's differential is no SVJ's point: its halfshafts run from it to the wheels, so it keeps its place against the axle (the
+    # base's offset from the wheel centres), not where the body stage's field carried it (the rear one went 0.36 m forward while the
+    # wheels moved 0.08: the shafts ran at an angle and the ends followed the wheels)
+    placed = []
+    for side in ("F", "R"):
+        ws = [w for w in wheels if w["name"][:1] == side and w.get("node1") in out and w.get("node2") in out and w["node1"] in nodes]
+        group = [n for n in out if n in nodes and re.search(rf"differential_{side}(_|$)", parts.get(n) or "")]
+        if not ws or not group:
+            continue
+        mid = lambda pos, w: [(pos[w["node1"]][i] + pos[w["node2"]][i]) / 2 for i in range(3)]      # noqa: E731
+        shift = [sum(mid(out, w)[i] - mid(nodes, w)[i] for w in ws) / len(ws) for i in range(3)]
+        shift[0] = 0.0
+        moved = max(math.dist(out[n], [nodes[n][i] + shift[i] for i in range(3)]) for n in group)
+        for n in group:
+            out[n] = [nodes[n][i] + shift[i] for i in range(3)]
+        if moved > 0.005:
+            placed.append(f"{side} ({moved * 1000:.0f} mm)")
+    if placed:
+        changes.append("differentials kept at their place against the axle (the base's), not where the body stage carried them: " + ", ".join(placed))
     # a door, a mirror, a hood keeps its shape too, scaled whole to the size the fit gives it: the body stage bends its nodes
     # unevenly (the rear doors of a wagon stretched 0.6 to 1.7 along their beams), and a warped door's beams yield and
     # wrinkle as the vehicle loads
