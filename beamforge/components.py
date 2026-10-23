@@ -22,10 +22,12 @@ NEAREST = 4                    # a component's mass goes to this many nodes
 
 
 def svj_components(svj):
-    """The SVJ's mass bodies as components (chassis.mass_bodies, with a mass and a position)."""
-    out = []
+    """The SVJ's mass bodies as components (chassis.mass_bodies, with a mass and a position), but the wheels, uprights
+    and links of a v0.100+ unified suspension (they are bodies there too; the wheels are counted as wheels)."""
+    from . import unified
+    out, skip = [], unified.suspension_bodies(svj or {})
     for b in ((svj or {}).get("chassis") or {}).get("mass_bodies") or []:
-        if isinstance(b, dict) and isinstance(b.get("mass"), (int, float)) and isinstance(b.get("position"), list) and len(b["position"]) == 3:
+        if isinstance(b, dict) and b.get("id") not in skip and isinstance(b.get("mass"), (int, float)) and isinstance(b.get("position"), list) and len(b["position"]) == 3:
             out.append({"id": str(b.get("id") or "body"), "kind": b.get("category") or "other", "mass": float(b["mass"]),
                         "position": [float(x) for x in b["position"]]})
     return out

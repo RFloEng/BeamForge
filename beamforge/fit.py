@@ -107,18 +107,17 @@ def mesh_points(svj, files, yf, ground, under=None, notes=None):
         node = under or (chassis["node"] if chassis else None)
         glb = path.lower().endswith(".glb")
         if not node or not gltf.has_node(data, node, glb):   # no body node: the whole mesh but the wheels and such
-            node, skip = None, gltf.NOT_BODY
+            node, skip = None, gltf.not_body(data, glb)
         else:
             skip = None
         raw = gltf.positions(data, is_glb=glb, under=node, skip=skip)
         if node:
-            whole = gltf.positions(data, is_glb=glb, under=None, skip=gltf.NOT_BODY)
-            ext = lambda q: max((max(p[i] for p in q) - min(p[i] for p in q) for i in range(3)), default=0.0)   # noqa: E731
-            if whole and ext(raw) < 0.7 * ext(whole):
+            got, whole = gltf.body_cover(data, node, glb)
+            if whole and got < gltf.BODY_SHARE * whole:
                 if notes is not None:
-                    notes.append(f"the SVJ's chassis node {node} covers {ext(raw):.2f} m of a {ext(whole):.2f} m body: not the whole car, "
+                    notes.append(f"the SVJ's chassis node {node} covers {got / whole:.0%} of the body's volume: not the whole car, "
                                  "so the whole mesh but its wheels, brakes, suspension and helper nodes is taken as the body")
-                raw = whole
+                raw = gltf.positions(data, is_glb=glb, under=None, skip=gltf.not_body(data, glb))
         off = svjmod.mesh_offset(svj, data, glb)[0] or [0.0, 0.0, 0.0]     # the mesh on its wheels
         pts += [svjmod.from_sae([a + b for a, b in zip(svjmod.gltf_to_sae(p, axes), off)], yf, ground) for p in raw]
     return pts

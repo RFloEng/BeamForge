@@ -36,7 +36,7 @@ import json
 import math
 import re
 
-from beamforge import beamng, dae, gltf, jbeam, rigidity, values
+from beamforge import beamng, dae, gltf, jbeam, rigidity, unified, values
 from beamforge import svj as svjmod
 
 ID = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
@@ -136,7 +136,12 @@ def _fit_nodes(part, deltas, vars_):
         if not d:
             continue
         for k, i in ((0, ix), (1, iy), (2, iz)):
-            row[i] = round(_num(row[i], vars_) + d[k], 5)
+            v = row[i]
+            if isinstance(v, str) and v.lstrip().startswith("$="):     # an expression (the occupant's camera nodes follow the seat's
+                if abs(d[k]) > 1e-6:                                    # pitch): kept, its variables are the slot's, the game's to give
+                    row[i] = f"$= ({v.lstrip()[2:].strip()}) + {round(d[k], 5)}"
+            else:
+                row[i] = round(_num(v, vars_) + d[k], 5)
         changed += 1
     return changed
 
@@ -441,7 +446,7 @@ def _rename_refs(part, renames):
 # engine, running gear and what its props animate (pedals, gauge needles, the steering wheel), would show beside
 # the SVJ's meshes or through them; the SVJ is the car's looks. Lights (props with the SPOTLIGHT mesh) stay: they
 # are not meshes.
-KEEP = re.compile(r"(?<!steer)(?<!steer_)(?<!steering)(?<!steering_)wheel|tire|tyre|hubcap|halfshaft|driveshaft|propshaft", re.I)
+KEEP = re.compile(r"(?<!steer)(?<!steer_)(?<!steering)(?<!steering_)wheel(?!_?arch|_?well)|tire|tyre|hubcap|halfshaft|driveshaft|propshaft", re.I)
 LIGHT_MESH = re.compile(r"^(spotlight|pointlight|)$", re.I)
 
 
@@ -468,6 +473,8 @@ PANELS = [("trunk", re.compile(r"trunk|boot(?!h)|tailgate|hatch(?!back)|rear_?li
 SVJ_PANEL = re.compile(r"^SVJ::body::(door_(fl|fr|rl|rr|l|r)|hood|bonnet|trunk|tailgate|hatch|bumper_(f|r|front|rear))$", re.I)
 SVJ_KIND = {"door": "door", "hood": "hood", "bonnet": "hood", "trunk": "trunk", "tailgate": "trunk", "hatch": "trunk",
             "bumper_f": "bumper_F", "bumper_front": "bumper_F", "bumper_r": "bumper_R", "bumper_rear": "bumper_R"}
+# the movable parts' kinds (unified.movable_parts) that are panels of the kinds above
+MOVABLE_PANEL = {"door": "door", "hood": "hood", "trunk": "trunk", "mirror": "mirror", "spoiler": "spoiler"}
 PANEL_MIN = 0.4     # m: the bounding-box diagonal of the smallest thing taken as a panel
 SWAPPABLE = ("bumper_R", "spoiler")
 PANEL_MIN_OF = {"mirror": 0.1, "glass": 0.15}      # (a mirror is small)
@@ -480,8 +487,9 @@ PANEL_SKIP = re.compile(r"^(wheel|tyre|tire|rim|disc|disk|brake|caliper|susp|fly
 def _panels(v, svj, files, place, chassis):
     """The body mesh's panels as attach rows of their own: [{"path", "node", "mesh_ref", "part",
     "groups"}], each on the base flexbody of its kind whose node group is nearest to it. Nodes named
-    by the SVJ convention (SVJ::body::door_fl, hood, trunk, bumper_f...) are taken when the file has
-    them; else the panels are found by the names modders use (PANELS)."""
+    by the SVJ convention (SVJ::body::door_fl, hood, trunk, bumper_f...) and the parts the SVJ hinges on the body
+    (unified.movable_parts: a rear door, a hood; the row carries its "hinge": joint, type, range, position and axis in
+    the vehicle's frame) are taken when the file has them; else the panels are found by the names modders use (PANELS)."""
     path = files.get(chassis["mesh_ref"]) or (next(iter(files.values())) if len(files) == 1 else None)
     if not path or not place:
         return []
@@ -497,14 +505,18 @@ def _panels(v, svj, files, place, chassis):
             members.setdefault(g, []).append(geo["nodes"][n])
     centre = lambda ps: [sum(p[i] for p in ps) / len(ps) for i in range(3)]  # noqa: E731
     out = []
-    names = gltf.named(data, SVJ_PANEL, glb, skip=PANEL_SKIP)
+    # the parts the SVJ hinges on the body (v0.99.5+ bodies and joints: doors, hood, trunk), by their own binding
+    moving = {m["visual"]: m for m in unified.movable_parts(svj)
+              if m["visual"] and m["kind"] in MOVABLE_PANEL and gltf.has_node(data, m["visual"], glb)}
+    names = list(dict.fromkeys(gltf.named(data, SVJ_PANEL, glb, skip=PANEL_SKIP) + list(moving)))
     by_name = not names                                    # no SVJ panel nodes: the modders' names
     for name in names or gltf.named(data, PANEL_ANY, glb, skip=PANEL_SKIP):
+        hinge = moving.get(name)
         if by_name:
             kind, _, base_re = next(k for k in PANELS if k[1].search(name))
         else:
             ident = name.split("::")[-1].lower()
-            kind = SVJ_KIND.get("door" if ident.startswith("door") else ident)
+            kind = MOVABLE_PANEL[hinge["kind"]] if hinge else SVJ_KIND.get("door" if ident.startswith("door") else ident)
             base_re = next(b for k, _, b in PANELS if k == kind)
         pts = gltf.positions(data, is_glb=glb, under=name, limit=4000)
         if not pts:
@@ -544,6 +556,11 @@ def _panels(v, svj, files, place, chassis):
                 row["side"] = side
             if kind == "glass":                            # a window breaks as the base's glass does
                 row["glass_of"] = best["mesh"]
+            if hinge:                                      # where the SVJ hinges it, in the vehicle's frame
+                ax = hinge["axis"]
+                row["hinge"] = {"joint": hinge["joint"], "type": hinge["joint_type"], "range": hinge["range"],
+                                "position": [round(c, 5) for c in svjmod.from_sae(hinge["hinge"], place["yf"], place["ground"])],
+                                "axis": [round(c, 6) for c in (-ax[1], -ax[0], -ax[2])]}
             out.append(row)
     return out
 
@@ -558,6 +575,15 @@ def _has(path, node):
         return gltf.has_node(fh.read(), node, path.lower().endswith(".glb"))
 
 
+def _own_body(path, node):
+    """Whether the chassis node is the body: it exists and covers most of the car (not just the cabin)."""
+    if not node or not _has(path, node):
+        return False
+    with open(path, "rb") as fh:
+        got, whole = gltf.body_cover(fh.read(), node, path.lower().endswith(".glb"))
+    return not whole or got >= gltf.BODY_SHARE * whole
+
+
 def _glass(v, svj, path, place, body):
     """The body mesh's window glass as attach rows of its own: [{"path", "node": None, "mesh_ref",
     "part", "groups", "prims": [primitive index in the body], "exclude", "glass_of": base mesh}], each
@@ -568,7 +594,7 @@ def _glass(v, svj, path, place, body):
         data = fh.read()
     glb = path.lower().endswith(".glb")
     names = body.get("exclude") or []
-    pattern = f"(?:{gltf.NOT_BODY.pattern})"
+    pattern = f"(?:{gltf.not_body(data, glb).pattern})"
     if names:
         pattern += "|^(?:" + "|".join(re.escape(x) for x in names) + ")$"
     skip = re.compile(pattern, re.I)
@@ -649,8 +675,8 @@ def _bound_pieces(v, svj, files, path):
     wheels = {w["name"] for w in v.get("wheels") or []}
     out = []
     for b in svjmod.part_bindings(svj):
-        if not b["role"] or b["corner"] not in wheels or b["part"] == "upright":
-            continue                                        # (the upright goes with its corner: svj_attach)
+        if not b["role"] or b["role"] == "shaft" or b["corner"] not in wheels or b["part"] == "upright":
+            continue                                        # (the upright goes with its corner, a half shaft on the base's: svj_attach)
         f = (files or {}).get(b["mesh_ref"]) or path
         if not f or not _has(f, b["node"]):
             continue
@@ -691,6 +717,55 @@ def susp_pieces(v, svj, path, place, files=None):
         if math.dist(c, mid) <= PIECE_REACH:
             out.append({"node": name, "role": role, "corner": corner})
     return out
+
+
+HALFSHAFT_MESH = re.compile(r"half_?shaft|axle_?shaft|driveshaft_?[fr]?[lr]|cv_?shaft", re.I)
+SHAFT_REACH = 0.8      # m: the base's half shaft taken for an SVJ one has its nodes' middle this close to the SVJ shaft's middle
+
+
+def shaft_rows(v, svj, files, path, place):
+    """The SVJ's half shafts (svj.part_bindings, role "shaft") as attach rows on the base's own half shaft at that corner
+    (its part and node groups, so the mesh turns and plunges with the wheel as the base's did), the base's mesh named in
+    "replaces" to leave it out. A shaft bound with placement link_between_points is placed from its inner CV joint to
+    its outer one ("link"); a rigid one stays where the file has it. A shaft whose corner has no base half shaft near it
+    gets no row (it stays in the body mesh, as a static piece)."""
+    geo = v["geometry"]
+    members = {}
+    for n, gs in (geo.get("groups") or {}).items():
+        for g in gs:
+            members.setdefault(g, []).append(geo["nodes"][n])
+    centre = lambda ps: [sum(p[i] for p in ps) / len(ps) for i in range(3)]  # noqa: E731
+    base = [f for f in v.get("flexbodies") or [] if HALFSHAFT_MESH.search(str(f.get("mesh"))) and f.get("groups")
+            and all(g in members for g in f["groups"])]
+    ends = {h["corner"]: h for h in unified.half_shafts(svj)}
+    rows, taken = [], set()
+    for b in svjmod.part_bindings(svj):
+        if b["role"] != "shaft" or b["corner"] not in ends:
+            continue
+        f = (files or {}).get(b["mesh_ref"]) or path
+        if not f or not _has(f, b["node"]):
+            continue
+        h = ends[b["corner"]]
+        mid_sae = [(sum(p[i] for p in h["inboard"]) / len(h["inboard"]) + h["outboard"][i]) / 2 for i in range(3)]
+        mid = svjmod.from_sae(mid_sae, place["yf"], place["ground"])
+        near = []
+        for x in base:
+            if x["mesh"] in taken:
+                continue
+            c = centre([p for g in x["groups"] for p in members[g]])
+            if c[0] * mid[0] > 0 and math.dist(mid, c) <= SHAFT_REACH:     # (the same side)
+                near.append((math.dist(mid, c), x))
+        if not near:
+            continue
+        x = min(near, key=lambda t: t[0])[1]
+        taken.add(x["mesh"])
+        row = {"path": f"shaft.{b['corner']}.{b['node']}", "node": b["node"], "mesh_ref": b["mesh_ref"], "part": x["part"],
+               "groups": list(x["groups"]), "replaces": [x["mesh"]]}
+        if b["placement"] == "link_between_points" and b["inboard"] and b["outboard"]:
+            row["link"] = {"inboard": b["inboard"], "outboard": b["outboard"], "axis": b["mesh_axis"],
+                           "from_point": b["from_point"], "scale": b["scale_to_length"]}
+        rows.append(row)
+    return rows
 
 
 def _role_nodes(rt, role):
@@ -744,12 +819,35 @@ def static_susp_rows(v, svj, path, place, mesh_ref):
                                                            # own halfshaft (diff to hub) is kept, this static stub would hang from the hub
         rt = roles.for_corner(P, N, w)
         ns = _role_nodes(rt, role) if rt else []
+        group = f"bf_{role}_{w['name']}"
+        if not ns:                                         # no role table for this base: the nodes at the piece's two ends
+            ns = _end_nodes(N, P, lo, hi)
+            group = f"bf_{role}_{w['name']}_{len(rows)}"   # (its own group: each piece follows its own nodes)
         if not ns:
             continue
         owners = [P[n] for n in ns if n in P]
         rows.append({"path": f"susp.{w['name']}.{name}", "node": name, "mesh_ref": mesh_ref, "part": max(set(owners), key=owners.count),
-                     "groups": [f"bf_{role}_{w['name']}"], "tag_nodes": ns})
+                     "groups": [group], "tag_nodes": ns})
     return rows
+
+
+END_NODES = 3          # base nodes taken at each end of a suspension piece that has no role table
+END_REACH = 0.25       # m: no farther from the end than this
+NOT_END = re.compile(r"wheel|tire|tyre|brake|hubcap|halfshaft|driveshaft|interior|seat|glass|door|panel|trim|occupant|^ocp", re.I)
+
+
+def _end_nodes(N, P, lo, hi):
+    """The base nodes a piece with no role table follows: the few nearest each end of its bounds' long side (an arm: its pivot on the
+    body and its joint on the upright), so the mesh moves and stretches with them. At least three, from at least two parts or places."""
+    axis = max(range(3), key=lambda i: hi[i] - lo[i])
+    ends = []
+    for sign in (0, 1):
+        end = [(lo[i] + hi[i]) / 2 for i in range(3)]
+        end[axis] = lo[axis] if sign == 0 else hi[axis]
+        near = sorted((math.dist(p, end), n) for n, p in N.items() if not NOT_END.search(P.get(n, "")) and math.dist(p, end) <= END_REACH)
+        ends.append([n for _, n in near[:END_NODES]])
+    ns = list(dict.fromkeys(ends[0] + ends[1]))
+    return ns if len(ns) >= 3 and ends[0] and ends[1] else []
 
 
 def _tag_nodes(part, tags, base_groups):
@@ -792,7 +890,8 @@ def svj_attach(configured_json, svj_json, mapping_json=None, files_json=None, pl
     the most nodes) and its most common node group. With the mesh files and the SVJ's place on the
     vehicle (files: {mesh id: path}; place: {"yf", "ground"}), the body is split into its panels:
     its doors, hood, trunk and bumpers (SVJ::body::door_fl..., else by the names modders use) go to the
-    base's part of that kind nearest to them (_panels), and the body row lists them in "exclude"."""
+    base's part of that kind nearest to them (_panels), its half shafts go on the base's (shaft_rows; "replaces" names the
+    base mesh they take the place of), and the body row lists them in "exclude"."""
     v, svj = json.loads(configured_json), json.loads(svj_json)
     mapping = json.loads(mapping_json) if mapping_json else []
     geo = v["geometry"]
@@ -840,11 +939,19 @@ def svj_attach(configured_json, svj_json, mapping_json=None, files_json=None, pl
             with open(path, "rb") as fh:                   # (a file naming its parts by the SVJ convention may hold a static copy under
                 static = {n for n, _ in gltf.guessed_pieces(fh.read(), path.lower().endswith(".glb"))}   # other names)
             body["exclude"] = sorted({p["node"] for p in panels} | {b["node"] for b in baked} | static)
-            glass = _glass(v, svj, path, place, body) if not body["node"] or not _has(path, body["node"]) else []
+            glass = _glass(v, svj, path, place, body) if not _own_body(path, body["node"]) else []
             if glass:
                 body["exclude_prims"] = sorted({i for g in glass for i in g["prims"]})
             susp = static_susp_rows(v, svj, path, place, body.get("mesh_ref") or next(iter(files)))
-            out[out.index(body) + 1:out.index(body) + 1] = panels + glass + susp
+            shafts = shaft_rows(v, svj, files, path, place)
+            shafts += wheel_rows(v, svj, path, place, body.get("mesh_ref") or next(iter(files)))
+            own = {p["node"] for p in panels} | {s["node"] for s in shafts} | {s["node"] for s in susp}   # (a static arm the SVJ binds as a body too)
+            with open(path, "rb") as fh:                   # (a static arm the SVJ binds as a body of its own, its mesh a node below: the arm follows the
+                above = gltf.with_ancestors(fh.read(), {s["node"] for s in susp}, path.lower().endswith(".glb"))   # suspension, the body row would hang)
+            out = [r for r in out if r is body or r["node"] not in own
+                   and not (r["path"].startswith("mass_bodies.") and r["node"] in above)]      # (a hinged part bound as a mass body: its panel row)
+            body["exclude"] = sorted(set(body["exclude"]) | own | {r["node"] for r in out if r is not body and r["node"]})
+            out[out.index(body) + 1:out.index(body) + 1] = panels + glass + susp + shafts
     return json.dumps(out)
 
 
@@ -871,7 +978,11 @@ def svj_meshes(svj, files, place, attach, new_id):
         if not under or not gltf.has_node(data, under, glb):
             if a["path"] != "chassis" and not a.get("prims"):
                 continue                                   # the file has no such node: nothing to add
-            under, skip = None, gltf.NOT_BODY              # the body: the whole mesh but the wheels and such
+            under, skip = None, gltf.not_body(data, glb)   # the body: the whole mesh but the wheels and such
+        elif a["path"] == "chassis":
+            got, whole = gltf.body_cover(data, under, glb)
+            if whole and got < gltf.BODY_SHARE * whole:    # a chassis node holding only the cabin: the body is the whole mesh
+                under, skip = None, gltf.not_body(data, glb)
         if a.get("exclude"):                               # and but the panels that go on their own parts
             names = "|".join(re.escape(x) for x in a["exclude"])
             skip = re.compile(f"(?:{skip.pattern})|^(?:{names})$" if skip else f"^(?:{names})$", re.I)
@@ -948,9 +1059,10 @@ def svj_materials(svjm, new_id):
                 if g["alpha"] == "BLEND":
                     # glass: a plain alpha blend (the SVJ's textures are not premultiplied, as the game's PreMulAlpha ones are),
                     # no shadow cast, shadows received, a reflective gloss as a window has
+                    inside = re.search(r"(^|_)int_|interior", name, re.I)         # (the inner pane: no sky reflected in it, the view out stays clear)
                     entry.update(translucent=True, translucentBlendOp="LerpAlpha", translucentZWrite=False, castShadows=False,
-                                 translucentRecvShadows=True, dynamicCubemap=True, alphaRef=0)
-                    stage.update(roughnessFactor=min(stage["roughnessFactor"], 0.08), metallicFactor=max(stage["metallicFactor"], 0.6))
+                                 translucentRecvShadows=True, dynamicCubemap=not inside, alphaRef=0)
+                    stage.update(roughnessFactor=min(stage["roughnessFactor"], 0.08), metallicFactor=min(stage["metallicFactor"], 0.1))
                 elif g["alpha"] == "MASK":
                     entry.update(alphaTest=True, alphaRef=int(255 * float(g.get("cutoff", 0.5))))
                 if g["double_sided"]:
@@ -1007,6 +1119,64 @@ def _drop_body_meshes(n, part):
     dropped += sum(1 for r in rows[1:] if isinstance(r, list)) - sum(1 for r in kept[1:] if isinstance(r, list))
     part["flexbodies"] = kept
     return dropped
+
+
+SVJ_WHEEL = re.compile(r"^SVJ::wheel::", re.I)
+WHEEL_REACH = 0.5      # m: an SVJ wheel's middle this close to a base wheel's centre is that wheel's
+
+
+def wheel_rows(v, svj, path, place, mesh_ref):
+    """The SVJ's own wheels (its SVJ::wheel::* nodes: rim, tyre, disc and what the file keeps in them) as attach rows on the
+    base's wheels: the mesh in the car's frame follows the node group the base's wheel mesh follows (the rim nodes, so it
+    spins with the wheel), and the base's wheel, tyre and hubcap meshes are named in "replaces". Only when every wheel the
+    base has finds its SVJ wheel (else the base's stay: a car with two kinds of wheel looks worse than the base's)."""
+    glb = path.lower().endswith(".glb")
+    with open(path, "rb") as fh:
+        data = fh.read()
+    doc, _ = gltf._document(data, glb, None)
+    names = [n.get("name") for n in doc.get("nodes", []) if SVJ_WHEEL.search(n.get("name") or "")]
+    wheels = [w for w in v.get("wheels") or [] if w.get("centre") and w.get("hubGroup")]
+    geo = v["geometry"]
+    members = {g for gs in (geo.get("groups") or {}).values() for g in gs}
+    if not names or not wheels:
+        return []
+    axes = svjmod.gltf_axes(svj)
+    off = svjmod.mesh_offset(svj, data, glb)[0] or [0.0, 0.0, 0.0]
+    count = {}
+    for part in (geo.get("parts") or {}).values():
+        count[part] = count.get(part, 0) + 1
+    body = max(count, key=count.get) if count else v.get("main")
+    rows, used = [], set()
+    for name in names:
+        pos = gltf.positions(data, glb, under=name)
+        if not pos:
+            continue
+        pts = [svjmod.from_sae([x + o for x, o in zip(svjmod.gltf_to_sae(p, axes), off)], place["yf"], place["ground"]) for p in pos]
+        mid = [(min(p[i] for p in pts) + max(p[i] for p in pts)) / 2 for i in range(3)]
+        w = min(wheels, key=lambda w: math.dist(w["centre"], mid))
+        if math.dist(w["centre"], mid) > WHEEL_REACH or w["name"] in used:
+            continue
+        mine = [f for f in v.get("flexbodies") or [] if w["hubGroup"] in (f.get("groups") or []) or w.get("group") in (f.get("groups") or [])]
+        rim = next((f for f in mine if re.search(r"wheel|rim", str(f["mesh"]), re.I) and not re.search(r"tire|tyre|brake|disc|hub_", str(f["mesh"]), re.I)
+                    and any(g in members for g in f["groups"])), None)       # (a group the game makes itself, wheelhub_FR, is not in the geometry)
+        if not rim:
+            continue
+        used.add(w["name"])
+        rows.append({"path": f"wheel.{w['name']}", "node": name, "mesh_ref": mesh_ref, "part": body, "groups": list(rim["groups"]),
+                     "replaces": sorted({f["mesh"] for f in (v.get("flexbodies") or [])
+                                         if re.search(r"wheel|rim|tire|tyre|hubcap", str(f["mesh"]), re.I) and not re.search(r"brake|disc|bracket", str(f["mesh"]), re.I)
+                                         and (f in mine or (f.get("pos") and math.dist(f["pos"], w["centre"]) < 0.2))})})
+    return rows if len(rows) == len(wheels) else []
+
+
+def _drop_replaced(part, meshes):
+    """Leave out the part's flexbodies of these meshes (the base's half shaft an SVJ one takes the place of)."""
+    rows = part.get("flexbodies")
+    if not (isinstance(rows, list) and rows and isinstance(rows[0], list)):
+        return 0
+    kept = [rows[0]] + [r for r in rows[1:] if not (isinstance(r, list) and r and r[0] in meshes)]
+    part["flexbodies"] = kept
+    return len(rows) - len(kept)
 
 
 def strip_meshes(files, keep=r"_svj_susp_"):
@@ -1245,6 +1415,8 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
             notes.append(f"{m['path']}: attached to {m['part']}, a shared part reused from the game; added to {v['main']} instead")
             m["part"] = v["main"]
 
+    replaced = {m for a in (opt or {}).get("attach") or [] for m in a.get("replaces") or []
+                if any(x["path"] == a["path"] for x in svjm)}
     tags = {}
     for a in (opt or {}).get("attach") or []:
         for node in a.get("tag_nodes") or []:
@@ -1276,6 +1448,8 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
             counts["sketch_nodes"], counts["sketch_beams"] = len(mounted["nodes"]), len(mounted["beams"])
         if opt and opt.get("replace") and svjm and n in active:
             counts["base_meshes_dropped"] += _drop_body_meshes(n, part)
+        if replaced and n in active:
+            counts["base_meshes_dropped"] += _drop_replaced(part, replaced)
         for m in svjm:
             if m["part"] == n:
                 extra = {}

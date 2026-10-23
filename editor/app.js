@@ -31,7 +31,7 @@ import { ZipWriter, BlobWriter, TextReader, BlobReader } from 'zipjs';
 import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, rememberedHandles, rememberHandles, access } from './library.js';
 
 // repo files copied into Pyodide's file system under /bf (add new Python modules here)
-const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py',
+const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py', 'beamforge/unified.py',
   'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py', 'beamforge/dae.py', 'beamforge/values.py',
   'beamforge/rigidity.py', 'beamforge/kinematics.py', 'beamforge/roles.py', 'beamforge/convert.py',
   'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py', 'beamforge/scratch.py', 'beamforge/tyres.py', 'beamforge/aero.py', 'beamforge/components.py', 'beamforge/mount.py', 'beamforge/dampers.py', 'beamforge/susp_donor.py', 'beamforge/checks.py', 'beamforge/pipeline.py'];

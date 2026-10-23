@@ -16,7 +16,7 @@ tools/svj_to_beamng.py runs it from the command line on the user's own install.
 import json
 import os
 
-from beamforge import beamng, export, fit, suspension, values
+from beamforge import beamng, export, fit, suspension, unified, values
 
 STAGES = ("wheelbase", "body", "pickups")
 
@@ -37,7 +37,9 @@ def run(base, svj, new_id, name, brand="BeamForge", config=None, svj_dir=None, s
     figure for); meshes: put the SVJ's meshes on it (replace: in place of the base's body); base_paths: every file of the
     base's folder, for the assets to copy; scale_structure: reach the SVJ's mass by scaling the body's beams with its
     nodes' weight (export.build). Returns {"out": export.build's result, "copies": {source path: new path},
-    "parts", "fit", "table", "taken", "files" (the SVJ meshes)}."""
+    "parts", "fit", "table", "taken", "files" (the SVJ meshes)}. A v0.100+ SVJ (wheel stations, bodies, joints) is
+    first given its corner view (unified.adopt), as the editor's import does."""
+    unified.adopt(svj)
     v = json.loads(beamng.configure(base, config))
     cfg = v["config"]
     parts = {x["slot"]: x["suggested"] for x in json.loads(values.suggest_parts(base, json.dumps(v), json.dumps(svj)))

@@ -222,6 +222,19 @@ def _read(doc, bufs, ai, width):
 # cameras and other helper nodes
 NOT_BODY = re.compile(r"^(wheel|tyre|tire|rim|disc|disk|brake|caliper|susp|hub_|flycam|damage_|cockpit_hr|steer_hr|"
                       r"shift_hr|driver|helmet|ext_|camera|cinture|bullone|bolt)|_hr$", re.I)
+NOT_BODY_GEAR = re.compile(r"^(wheel|tyre|tire|rim|disc|disk|brake|caliper|susp|hub_|flycam|damage_|"
+                           r"driver|helmet|ext_|camera|cinture|bullone|bolt)", re.I)       # (NOT_BODY without the cockpit's _HR)
+HIGH_DETAIL = re.compile(r"^(cockpit_hr|steer_hr|shift_hr)|_hr$", re.I)
+
+
+def not_body(data, is_glb=True):
+    """NOT_BODY for this file: a high-detail (_HR) node is left out only when the file also holds its low-detail one
+    (the node without _HR, or _LR); a file with only the _HR dash and steering wheel keeps them as its cockpit."""
+    doc, _ = _document(data, is_glb, None)
+    names = {(n.get("name") or "").lower() for n in doc.get("nodes", [])}
+    twins = [n for n in names if HIGH_DETAIL.search(n)
+             and (re.sub(r"_hr", "", n) in names or re.sub(r"_hr", "_lr", n) in names)]
+    return re.compile(NOT_BODY_GEAR.pattern + ("|^(?:" + "|".join(re.escape(n) for n in twins) + ")$" if twins else ""), re.I)
 
 
 def _meshes(doc, under, skip=None):
@@ -251,6 +264,20 @@ def _apply(m, p):
     x, y, z = p
     return [m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13],
             m[2] * x + m[6] * y + m[10] * z + m[14]]
+
+
+def with_ancestors(data, names, is_glb=True):
+    """The node names `names` and the names of every node above them."""
+    doc, _ = _document(data, is_glb, None)
+    nodes = doc.get("nodes", [])
+    parent = {c: i for i, n in enumerate(nodes) for c in n.get("children", [])}
+    out = set(names)
+    for i, n in enumerate(nodes):
+        if n.get("name") in names:
+            while i in parent:
+                i = parent[i]
+                out.add(nodes[i].get("name"))
+    return out
 
 
 def has_node(data, name, is_glb=True):
@@ -291,7 +318,7 @@ def named(data, pattern, is_glb=True, skip=None):
 # decide (a flexbody on the node groups of the part's role). Tested in order: a name takes the first role.
 PIECE_ROLES = (("tie", re.compile(r"(steer|tie).*(lever|rod|arm|link|beam)|(lever|rod|arm|link).*steer", re.I)),
                ("hub", re.compile(r"hub|knuckle|upright|spindle", re.I)),
-               ("arm", re.compile(r"wishbone|lever|(^|[_.])arm|link|(^|[_.])rod|beam|control", re.I)),
+               ("arm", re.compile(r"wishbone|lever|(^|[_.:])arm|brazo(?!s)|link|(^|[_.:])rod|beam|control", re.I)),
                ("strut", re.compile(r"strut|damper|amort|dump|spring|shock|susp", re.I)))
 # running gear, trim and other things that merely have such a word in their name
 PIECE_NOT = re.compile(r"caliper|disc|disk|rotor|pad|brake|wheel|tyre|tire|rim|wiper|cockpit|dash|steer_hr|steer_lr|_hr$|"
@@ -370,6 +397,23 @@ def _pieces(doc, guess=False):
     for ni in scenes[doc.get("scene", 0)].get("nodes", []):
         walk(ni)
     return out
+
+
+def body_cover(data, node, is_glb=True):
+    """(bounding-box volume of the meshes under `node`, that of the whole body: every mesh but NOT_BODY's). A chassis node
+    that covers well under the whole is not the body (a converter binding only the cabin and roll cage, say: its longest
+    side can still be most of the car's, so the volume is compared)."""
+    def vol(q):
+        v = 1.0
+        for i in range(3):
+            v *= max(p[i] for p in q) - min(p[i] for p in q)
+        return v
+    raw = positions(data, is_glb=is_glb, under=node)
+    whole = positions(data, is_glb=is_glb, under=None, skip=not_body(data, is_glb))
+    return (vol(raw), vol(whole)) if raw and whole else (0.0, 0.0)
+
+
+BODY_SHARE = 0.6        # a chassis node whose bounds hold less than this share of the whole body's volume is not the body
 
 
 def positions(data, is_glb=True, under=None, buffers=None, limit=60000, skip=None):

@@ -247,6 +247,37 @@ every part itself: `topology.links[].visual`, `spring.visual`, `damper.visual`, 
   Unverified against a real file: the axes are read in the SAE frame of the mesh (after `gltf_to_sae`), which the spec
   does not say outright.
 
+## SVJ v0.100 to v0.102: the unified suspension
+
+From v0.100 (§25) a file has no `suspension` corners: the suspension is bodies (`chassis.mass_bodies`), joints, springs and
+dampers (`constraints`) and a thin `wheel_stations[]` list. `unified.adopt` (called by `svj.load_bundle` and
+`pipeline.run`) derives the corner section the readers above know from them, the inverse of the SVJ repository's
+`tools/migrate_suspension.py`; the view is marked `x_beamforge_corner_view` and never written back.
+
+- The carrier's markers are the upright's hardpoints (on an axle body both stations share, the markers suffixed with the
+  station). The bodies jointed to the carrier are the links: their inboard points are the frames of their other joints
+  (the chassis, the rack), their outboard point the joint on the carrier, named by the carrier's marker at that place.
+- An arm the migration wrote as one revolute joint gets its second bush back from the body's position (a generated link
+  body sits midway between its inboard mean and its outboard point); a link whose position was authored gets a second
+  point 250 mm along the hinge axis (the same kinematics; noted).
+- `spring_<station>` and `damper_<station>` are read back at the wheel through the motion ratio the migration recorded
+  (`x_converted_from_wheel_rate`). A damper quoted at the damper keeps its curves and takes the motion ratio of a spring
+  on the same mounts, else a first-order estimate from the geometry (`x_motion_ratio_estimated`; noted).
+- Checked by a round trip on the SVJ repository's 28 examples and template (the corner files before the migration →
+  migration → this view): the suspension study's curves agree within a micrometre and the wheel values within 1 %;
+  points are lost only where the migration itself dropped a link (joint types it did not know: the swing and pendulum
+  axles, the HEMTT's trailing arms).
+- `unified.movable_parts`: the other bodies on a joint (doors, hood, trunk, wipers), with the hinge point, axis, range and
+  the poses that move them. A door or hood with a mesh binding becomes a panel row (`export._panels`), even when its node
+  has no `SVJ::body::door_*` name, and the row carries its `hinge` in the vehicle's frame. The hinge is not written into
+  the jbeam yet: the base's door keeps its own hinge beams.
+- Half shafts (`half_shaft_<station>` bodies, ends by §22.6: the joint where the body is `body_b` inboard, the one where it
+  is `body_a` outboard; else `powertrain.half_shafts` cv_inner / cv_outer): `svj.part_bindings` returns them with role
+  `shaft`, and `export.shaft_rows` puts the mesh on the base's own half shaft at that corner (its part and node groups),
+  placed with `link_between_points` when the file binds it so, and leaves the base's mesh out (`replaces`).
+- The wheels, uprights, links, rack and half shafts are left out of `components.svj_components` (they are bodies in a
+  unified file too).
+
 Not used yet: `static_setup` (ride height, corner weight, spring compression: the preload is computed for the car as built, which
 is what sets its ride height), `compliance_summary` (toe and lateral stiffness), and the A-notation stations (`A1L`...) of
 multi-axle vehicles (BeamForge's corners are FL, FR, RL, RR).

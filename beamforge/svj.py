@@ -1,6 +1,6 @@
 """SVJ (Standard Vehicle JSON) reading for BeamForge: bundles, meshes, hardpoints, comparison.
 
-SVJ: https://github.com/RFloEng/SVJ-standard-vehicle-json (spec v0.99.4).
+SVJ: https://github.com/RFloEng/SVJ-standard-vehicle-json (spec v0.99.4 to v0.102).
 Pure Python, standard library only (runs in Pyodide).
 
 Frames
@@ -13,7 +13,8 @@ Frames
   gltfToThree in editor/app.js.
 
 What this module does now: read an .svj.json or a .zip bundle, find its glTF meshes and
-check the visual bindings, list the suspension hardpoints in BeamNG coordinates, and compare
+check the visual bindings, list the suspension hardpoints (a v0.100+ file's wheel stations, bodies and joints are
+first read as corners: unified.py) in BeamNG coordinates, and compare
 the file's headline values with a BeamNG base vehicle (the start of the per-parameter choice,
 docs/roadmap.md step 3). It does not change the BeamNG vehicle yet.
 """
@@ -24,9 +25,9 @@ import shutil
 import zipfile
 from pathlib import Path
 
-from beamforge import gltf
+from beamforge import gltf, unified
 
-SVJ_VERSION = "0.99.4"
+SVJ_VERSION = "0.102"
 DEFAULT_GLTF_AXES = {"up": "Y", "forward": "-Z"}      # SVJ §22.4, Blender export convention
 
 
@@ -109,7 +110,8 @@ def mesh_offset(svj, data, is_glb=True):
 def visual_bindings(svj):
     """Every visual binding in an SVJ document: [{"path", "mesh_ref", "node", "uri"}].
 
-    Looks at chassis, suspension corners, mass_bodies and aerodynamics components. path is the
+    Looks at chassis, suspension corners, mass_bodies (but the bodies of a unified suspension, which its corners
+    and part_bindings cover) and aerodynamics components. path is the
     SVJ location, node the glTF node name (SVJ::<category>::<id>); a binding without mesh_ref
     uses the only mesh asset if there is one. uri is None when mesh_ref is not in assets.meshes.
     An SVJ with mesh assets but no chassis binding gets one implied ("implied": True, node None): its
@@ -127,8 +129,10 @@ def visual_bindings(svj):
     for name, c in (svj.get("suspension") or {}).items():
         if isinstance(c, dict):                           # the corner's upright: v0.97's corner-level form, or v0.99.2's
             add(f"suspension.{name}", c.get("visual") or ((c.get("topology") or {}).get("upright") or {}).get("visual"))
+    susp_bodies = unified.suspension_bodies(svj)            # (a v0.100+ file's wheels, uprights and links: by their corner)
     for b in (svj.get("chassis") or {}).get("mass_bodies", []) or []:
-        add(f"mass_bodies.{b.get('id')}", b.get("visual"))
+        if b.get("id") not in susp_bodies:
+            add(f"mass_bodies.{b.get('id')}", b.get("visual"))
     comps = (svj.get("aerodynamics") or {}).get("components")
     if isinstance(comps, dict):
         for k, a in comps.items():
@@ -145,8 +149,9 @@ def visual_bindings(svj):
 
 # The canonical part names of the glTF naming convention (docs/naming_convention.md, v0.99.2) and their aliases, by
 # the role a suspension part has on a BeamNG corner: the hub (upright), an arm (anything that locates the hub),
-# the strut (spring and damper) and the tie rod (steering or toe link).
-PART_ROLES = (("tie", re.compile(r"tie_rod|track_rod|steering_rod|steering_link|toe_link|toe_rod|toe_control|drag_link", re.I)),
+# the strut (spring and damper) and the tie rod (steering or toe link); a half shaft drives the hub ("shaft").
+PART_ROLES = (("shaft", re.compile(r"half_?shaft|axle_shaft|cv_shaft", re.I)),
+              ("tie", re.compile(r"tie_rod|track_rod|steering_rod|steering_link|toe_link|toe_rod|toe_control|drag_link", re.I)),
               ("hub", re.compile(r"upright|knuckle|hub_carrier|spindle|stub_axle|^hub", re.I)),
               ("strut", re.compile(r"strut|spring|coil|damper|shock", re.I)),
               ("arm", re.compile(r"wishbone|(^|_)arm|link|rod|rocker|bellcrank|pushrod|pullrod|uca$|lca$|axle_body|"
@@ -154,8 +159,8 @@ PART_ROLES = (("tie", re.compile(r"tie_rod|track_rod|steering_rod|steering_link|
 
 
 def part_role(name):
-    """The role of a suspension part by its canonical name (upper_wishbone, tie_rod, strut...): "hub", "arm",
-    "strut" or "tie"; None for what no corner follows (an anti-roll bar, a drop link)."""
+    """The role of a suspension part by its canonical name (upper_wishbone, tie_rod, strut, half_shaft...): "hub",
+    "arm", "strut", "tie" or "shaft"; None for what no corner follows (an anti-roll bar, a drop link)."""
     n = re.sub(r"_(f[lr]|r[lr]|a\d+[lrc])(_\w+)?$", "", str(name or "").lower())
     if re.search(r"arb|sway|stabili[sz]er|drop_link|end_link", n):
         return None
@@ -165,7 +170,8 @@ def part_role(name):
 def part_bindings(svj):
     """The suspension parts the file binds to glTF nodes one by one (SVJ v0.99.2, §22.3): [{"corner", "part", "role",
     "mesh_ref", "node", "placement", "mesh_axis", "from_point", "scale_to_length", "inboard", "outboard"}] for each
-    corner's upright, links, axle body, spring, damper and anti-roll bar that carry a `visual`. part is the part's name
+    corner's upright, links, axle body, spring, damper and anti-roll bar that carry a `visual`, and each half shaft
+    (unified.half_shafts: part "half_shaft", role "shaft", its ends the CV joints). part is the part's name
     (the link's `name`, "upright", "spring"...), role as part_role. For a `link_between_points` binding inboard is the
     link's inboard points and outboard its upright hardpoint (SAE, as in the file); otherwise both are None."""
     uris = {a["id"]: a["uri"] for a in (svj.get("assets") or {}).get("meshes", [])}
@@ -194,6 +200,16 @@ def part_bindings(svj):
         add("axle_body", (topo.get("axle_body") or {}).get("visual"))
         for k in ("spring", "damper", "arb"):
             add(k, (c.get(k) or {}).get("visual") if isinstance(c.get(k), dict) else None)
+    for h in unified.half_shafts(svj):                       # a half shaft: from its inner CV joint to its outer one
+        vis = h["visual"]
+        if not (isinstance(vis, dict) and vis.get("node")):
+            continue
+        link = vis.get("placement") == "link_between_points"
+        out.append({"corner": h["corner"], "part": "half_shaft", "role": "shaft",
+                    "mesh_ref": vis.get("mesh_ref") or (next(iter(uris)) if len(uris) == 1 else None), "node": vis["node"],
+                    "placement": vis.get("placement") or "rigid", "mesh_axis": vis.get("mesh_axis") or "+x",
+                    "from_point": vis.get("from_point"), "scale_to_length": bool(vis.get("scale_to_length")),
+                    "inboard": h["inboard"] if link else None, "outboard": h["outboard"] if link else None})
     return out
 
 
@@ -307,6 +323,11 @@ def load_bundle(path, work_dir):
     doc = json.loads(svj_file.read_text(encoding="utf-8"))
     meta = doc.get("_metadata") or {}
     notes, meshes = [], []
+    if unified.is_unified(doc):
+        derived = unified.adopt(doc)
+        notes.append(f"unified suspension (SVJ {meta.get('version')}): {len(doc['suspension'])} wheel stations read as corners "
+                     "from their bodies, joints, springs and dampers (a derived view, not written back)")
+        notes += derived
     if meta.get("coordinate_system", "SAE_J670") not in ("SAE_J670",) and not isinstance(meta.get("coordinate_system"), dict):
         notes.append(f"coordinate_system {meta.get('coordinate_system')!r}: only SAE_J670 is supported; points may be misplaced")
     root = svj_file.parent

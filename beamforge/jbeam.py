@@ -195,7 +195,8 @@ def _case(*args):
 
 _FUNCS = {"case": _case, "sin": math.sin, "cos": math.cos, "tan": math.tan, "abs": abs, "min": min, "max": max,
           "sqrt": math.sqrt, "floor": math.floor, "ceil": math.ceil, "round": round, "exp": math.exp,
-          "log": math.log, "random": lambda *a: 0.5}      # random: the middle of its range (offline, repeatable)
+          "log": math.log, "rad": math.radians, "deg": math.degrees, "clamp": lambda x, lo, hi: max(lo, min(hi, x)),
+          "asin": math.asin, "acos": math.acos, "atan": math.atan, "random": lambda *a: 0.5}      # random: the middle of its range (offline, repeatable)
 _LUA = [(re.compile(r"~="), "!="), (re.compile(r"\^"), "**"), (re.compile(r"\bnil\b"), "None"),
         (re.compile(r"\btrue\b"), "True"), (re.compile(r"\bfalse\b"), "False")]
 _VAR = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
@@ -206,7 +207,7 @@ def evaluate(expr, variables):
 
     Supported: numbers, $variables (an undefined one is nil), + - * / % ^, comparisons
     (== ~= < <= > >=), and / or / not (Lua semantics: "c and a or b" picks a or b), and the
-    functions in _FUNCS (case, sin, cos, round, min, max, sqrt ...). The expression is parsed into a
+    functions in _FUNCS (case, sin, cos, rad, clamp, round, min, max, sqrt ...). The expression is parsed into a
     Python syntax tree and walked node by node: no eval, no names or attributes beyond these, and
     powers are bounded, so a hostile file cannot run code or hang the editor.
     """
