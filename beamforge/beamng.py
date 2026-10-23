@@ -438,10 +438,11 @@ def measure(parts, active, geo):
             if isinstance(r, dict) and isinstance(r.get("radius"), (int, float)):
                 radius = r["radius"]
         rows += [r for r in jbeam.expand_table(pw) if r.get("node1") in nodes and r.get("node2") in nodes]
+    placed = {w["name"]: w["centre"] for w in globals()["wheels"](parts, active, geo, {})}      # with each wheel's wheelOffset
     wheels = []
     for r in rows:
         a, c = nodes[r["node1"]], nodes[r["node2"]]
-        centre = [round((a[i] + c[i]) / 2, 4) for i in range(3)]
+        centre = placed.get(str(r.get("name"))) or [round((a[i] + c[i]) / 2, 4) for i in range(3)]
         wheels.append({"name": str(r.get("name")), "centre": centre, "side": "L" if centre[0] > 0 else "R"})
     out = {"wheels": wheels, "wheelbase": None, "track_front": None, "track_rear": None, "ground_z": None}
     if nodes:

@@ -907,7 +907,7 @@ def powertrain_changes(model, configured, svj, take):
         rows += [[r, round(t - _interp(mod, r), 1)] for r, t in curve]   # the exhaust's change added back
         e = ch.setdefault(base["engine"], {})
         e["mainEngine.torque"] = rows
-        peak = max(t for _, t in curve)
+        peak = max(t for _, t in rows[1:])                # of the curve as written (the exhaust's change added back can raise it)
         # a turbo adds its boost on top of the curve: the torque rating allows the SVJ's boost (bar, as a torque factor of 1 + boost) else double
         head = (1 + sp["boost"]) * 1.15 if sp.get("turbo") and sp.get("boost") else 2.0 if sp.get("turbo") else 1.15
         e["mainEngine.maxTorqueRating"] = round(peak * head)            # past it the engine damages itself (piston rings: oil

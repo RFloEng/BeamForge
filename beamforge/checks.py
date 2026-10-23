@@ -156,7 +156,7 @@ def bump_steer(model, configured):
 # how far a built value may be from the SVJ's before it is said: relative, or metres for the CG and the track
 TOLERANCE = {"spring": 0.03, "damp": 0.08, "tyre": 0.01, "engine": 0.03, "gears": 0.01, "final_drive": 0.01, "aero": 0.10,
              "mass": 0.02, "cg_y": 0.03, "cg_z": 0.03, "wheelbase": 0.01, "track": 0.01}
-WHY = {"mass": "the base's structure is kept (it would be too stiff for lighter nodes; the scale structure option lightens it, but cars built that way were thrown out by the game's instability check, but cars built that way were thrown out by the game's instability check)",
+WHY = {"mass": "the base's structure is kept (it would be too stiff for lighter nodes; the scale structure option lightens it, but cars built that way were thrown out by the game's instability check)",
        "cg_y": "the body's node weights could not be moved further without going under what the physics step allows",
        "cg_z": "the body's node weights could not be moved further without going under what the physics step allows"}
 
