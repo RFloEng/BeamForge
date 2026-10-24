@@ -235,6 +235,19 @@ class TestCornerView(unittest.TestCase):
         self.assertAlmostEqual(math.dist(p1, [LCA0[i] + unified.SECOND_POINT * u[i] for i in range(3)]), 0.0, places=5)
         self.assertTrue(any("second point" in n for n in notes))
 
+    def test_strut_with_a_spherical_top_mount(self):         # the spec's strut top pivots (v0.102 rule: spherical, not fixed)
+        d = json.loads(json.dumps(DOC))
+        top = next(j for j in d["constraints"] if j["id"] == "fixed_strut_fl_inboard")
+        top["joint_type"] = "spherical"
+        notes = unified.adopt(d)
+        self.assertFalse(any("strut" in n and ("left out" in n or "not read" in n) for n in notes))   # the strut is read as before
+        strut = links(d["suspension"]["FL"])["strut"]
+        self.assertEqual((strut["type"], strut["inboard_points"], strut["inboard_joint_type"]), ("strut", [ST_TOP], "spherical"))
+
+    def test_two_spherical_pickups_need_no_guessed_point(self):
+        notes = unified.adopt(json.loads(json.dumps(DOC)))
+        self.assertFalse(any("second point" in n for n in notes if n.startswith("RL")))    # the rear wishbone has both pickups as given
+
     def test_shared_axle_body(self):
         """A beam axle carries both stations: each takes its own markers and links."""
         wl, wr = [-2.6, -0.75, -0.30], [-2.6, 0.75, -0.30]
