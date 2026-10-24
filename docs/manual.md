@@ -423,6 +423,17 @@ It then reads the zip back the way the game does, and prints missing parts, whee
 | `--out` | where the zip goes (default `out/`) |
 | `--install <mods folder>` | also copy the zip there; close the game first |
 
+### Tyre testbed
+
+`python tools/tyre_testbed.py --vehicles <BeamNG>/content/vehicles [--svj car.svj.json] [--csv library.csv] [--png curves.png]` reads every tyre part of your
+install (about a thousand) and puts each, and the SVJ's Magic Formula tyre, in the same terms (`beamforge/tyrelab.py`): size (width, radius, rim),
+peak grip at the reference load, grip against load relative to that load (load sensitivity), and class (road, sport, race, off-road, mud, winter).
+Without `--svj` it lists the library by class; with it, it ranks the tyres of the same rim by one score (lower is closer: width, radius, grip, load
+sensitivity, class) and draws the SVJ's curves against the best three. BeamNG's grip values are multipliers, not friction coefficients (the game's
+grip also comes from its tyre nodes and beams), so `--grip-scale` sets how many multiplier points one unit of real mu is worth (1.0 fits: the
+game's race tyres sit at 1.3-2.2, a road tyre's about 1.1). The same ranking chooses the tyre part when a car is made (`values.suggest_parts`), when
+the SVJ has a Magic Formula set; otherwise the tyre is chosen by size as before.
+
 ## 8. Testing in the game
 
 1. **Close the game.**

@@ -848,7 +848,7 @@ def suggest_parts(model, configured_json, svj_json):
             if same:
                 pick, why = min(same, key=len), "open differential, as the SVJ"
         elif opts and (WHEEL_SIZE.search(cur) or TYRE_SIZE.search(cur)) and re.search(r"(^|_)(wheel|tire|tyre)", slot + " " + cur, re.I):
-            pick, why = _closest_wheel(slot, cur, opts, svj)
+            pick, why = _closest_wheel(slot, cur, opts, svj, model)
         if pick is not None and pick != cur and (pick or why):
             out.append({"slot": slot, "current": cur, "suggested": pick, "why": why})
         for c in n.get("children", []):
@@ -857,11 +857,36 @@ def suggest_parts(model, configured_json, svj_json):
     return json.dumps(out)
 
 
-def _closest_wheel(slot, cur, opts, svj):
+def _lab_pick(model, svj, corner_key, cur, names):
+    """(part, why) of the option tyre nearest the SVJ's Pacejka tyre by size and characteristics (tyrelab), or None to leave it as it
+    is (the current tyre is as close, or the SVJ has no Magic Formula set, or an option is unknown)."""
+    from . import tyrelab
+    sp = tyrelab.svj_profile(svj, corner_key)
+    if not sp:
+        return None
+    recs = {r["part"]: r for r in tyrelab.model_library(model)}
+    scored = []
+    for name in dict.fromkeys([cur] + list(names)):
+        r = recs.get(name)
+        if r:
+            scored.append((tyrelab.score(sp, r, tyrelab.bng_profile(r, sp["fz0"]))["total"], len(name), name, r))
+    if not scored or cur not in {s[2] for s in scored}:
+        return None
+    best = min(scored, key=lambda s: s[:2])
+    now = next(s for s in scored if s[2] == cur)
+    if best[2] == cur or best[0] >= now[0] - 0.02:
+        return None, ""
+    r = best[3]
+    return best[2], (f"tyre {r['width_mm']}/{r['aspect'] or '-'} R{r['rim_in']} ({r['class']}), nearest to the SVJ's {sp['size']} by size and Pacejka grip "
+                     f"(score {best[0]:.2f} against {now[0]:.2f} for {cur})")
+
+
+def _closest_wheel(slot, cur, opts, svj, model=None):
     """The wheel (rim) or tyre option closest to the SVJ's size on that axle: (part, why) or (None, "")."""
     axle = "R" if re.search(r"(^|_)R(_|\d|$)|rear", slot + " " + cur) else "F"
     susp = svj.get("suspension") or {}
-    corner = next((susp[k] for k in (("RL", "RR") if axle == "R" else ("FL", "FR")) if isinstance(susp.get(k), dict)), None)
+    corner_key = next((k for k in (("RL", "RR") if axle == "R" else ("FL", "FR")) if isinstance(susp.get(k), dict)), None)
+    corner = susp.get(corner_key) if corner_key else None
     size = tyre_size(svj, corner) if corner else {}
     if not size.get("rim_in"):
         return None, ""
@@ -871,6 +896,9 @@ def _closest_wheel(slot, cur, opts, svj):
         cands = [(o, m) for o, m in cands if m and int(m.group(3)) == size["rim_in"]]
         if not cands:
             return None, ""
+        by_lab = _lab_pick(model, svj, corner_key, cur, [o for o, _ in cands]) if model else None
+        if by_lab:                                         # the SVJ's Magic Formula tyre against the game's: size and characteristics
+            return by_lab
         w, a = (size.get("width") or 0.2) * 1000, (size.get("aspect") or 0.55) * 100
         gap = lambda m: abs(int(m.group(1)) - w) / 10 + abs(int(m.group(2)) - a) / 5  # noqa: E731
         best = min(cands, key=lambda c: (gap(c[1]), len(c[0])))

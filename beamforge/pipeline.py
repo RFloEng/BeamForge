@@ -46,6 +46,13 @@ def run(base, svj, new_id, name, brand="BeamForge", config=None, svj_dir=None, s
     parts = {x["slot"]: x["suggested"] for x in json.loads(values.suggest_parts(base, json.dumps(v), json.dumps(svj)))
              if x.get("suggested") is not None}
     v = json.loads(beamng.configure(base, cfg, json.dumps(parts)))
+    for _ in range(2):                                 # (a tyre slot lists the sizes of its rim: asked again once the wheel is swapped)
+        more = {x["slot"]: x["suggested"] for x in json.loads(values.suggest_parts(base, json.dumps(v), json.dumps(svj)))
+                if x.get("suggested") is not None and x["slot"] not in parts}
+        if not more:
+            break
+        parts.update(more)
+        v = json.loads(beamng.configure(base, cfg, json.dumps(parts)))
     files = svj_mesh_files(svj, svj_dir) if (svj_dir and meshes) else {}
     r = {"moves": {}, "changes": [], "notes": [], "mapping": [], "axles": None, "place": None}
     if stages:
