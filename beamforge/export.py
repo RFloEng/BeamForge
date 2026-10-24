@@ -1003,6 +1003,13 @@ def svj_meshes(svj, files, place, attach, new_id):
         else:
             pos = [[round(c, 5) for c in svjmod.from_sae([x + o for x, o in zip(svjmod.gltf_to_sae(p, axes), off)],
                                                          place["yf"], place["ground"])] for p in pos]
+        want = (a.get("scale_to") or {}).get("radius")
+        if want and pos:                                   # a wheel the size the physics has: a mesh smaller than its declared tyre (the
+            ys, zs = [p[1] for p in pos], [p[2] for p in pos]      # AC conversions') would leave the car standing above its tyres
+            c = [(min(p[i] for p in pos) + max(p[i] for p in pos)) / 2 for i in range(3)]
+            k = want / (max(max(ys) - min(ys), max(zs) - min(zs)) / 2)
+            if 0.85 < k < 1.2 and abs(k - 1) > 0.01:
+                pos = [[round(c[i] + (p[i] - c[i]) * k, 5) for i in range(3)] for p in pos]
         if a.get("side"):                                  # one side of a node that holds both (both doors)
             s = a["side"]
             prims = [(k, [v for t in range(0, len(i) - 2, 3) for v in i[t:t + 3]
@@ -1121,6 +1128,14 @@ def _drop_body_meshes(n, part):
     return dropped
 
 
+def _loaded_radius(svj, w):
+    """The radius the SVJ's tyre stands on, m: its unloaded radius (what the values taken from the SVJ set on the car's tyre, the
+    base's own until then) less the deflection; None when neither is known."""
+    axle = "front" if str(w["name"]).startswith("F") else "rear"
+    r = (values.svj_values(svj).get(axle) or {}).get("tyre_radius") or w.get("radius")
+    return round(r - values.DEFLECTION, 4) if r else None
+
+
 SVJ_WHEEL = re.compile(r"^SVJ::wheel::", re.I)
 WHEEL_REACH = 0.5      # m: an SVJ wheel's middle this close to a base wheel's centre is that wheel's
 
@@ -1163,6 +1178,7 @@ def wheel_rows(v, svj, path, place, mesh_ref):
             continue
         used.add(w["name"])
         rows.append({"path": f"wheel.{w['name']}", "node": name, "mesh_ref": mesh_ref, "part": body, "groups": list(rim["groups"]),
+                     "scale_to": {"radius": _loaded_radius(svj, w)},
                      "replaces": sorted({f["mesh"] for f in (v.get("flexbodies") or [])
                                          if re.search(r"wheel|rim|tire|tyre|hubcap", str(f["mesh"]), re.I) and not re.search(r"brake|disc|bracket", str(f["mesh"]), re.I)
                                          and (f in mine or (f.get("pos") and math.dist(f["pos"], w["centre"]) < 0.2))})})
