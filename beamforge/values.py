@@ -900,11 +900,18 @@ def powertrain_changes(model, configured, svj, take):
     if take.get("engine") and sp["torque"] and base.get("engine"):
         mod = base.get("exhaust_mod") or []
         curve = [x for x in sorted(sp["torque"]) if x[0] > 0]          # (the table starts at 0 Nm at 0 rpm; no second row there)
+        # BeamNG's table is the torque before the engine's own friction: the game takes friction + dynamicFriction * w off it (combustionEngine.lua).
+        # The SVJ's curve is the net torque at the crank, so that loss is added back or the car pays it twice (10-20 % of its power).
+        me_ = (beamng._parts_held(model).get(base["engine"]) or {}).get("part", {}).get("mainEngine") or {}
+        xb = sp["x_beamng"]
+        fric = next((x for x in (xb.get("friction"), me_.get("friction")) if isinstance(x, (int, float))), 0.0)
+        dyn = next((x for x in (xb.get("dynamicFriction"), me_.get("dynamicFriction")) if isinstance(x, (int, float))), 0.0)
+        loss = lambda r: fric + dyn * r * math.pi / 30      # noqa: E731  (Nm at r rpm)
         rows = [["rpm", "torque"], [0, 0]]
         idle = sp["idle_rpm"] or curve[0][0]
         if curve[0][0] > idle:                            # below the first point: towards zero at standstill
-            rows.append([idle, round(curve[0][1] * idle / curve[0][0], 1)])
-        rows += [[r, round(t - _interp(mod, r), 1)] for r, t in curve]   # the exhaust's change added back
+            rows.append([idle, round(curve[0][1] * idle / curve[0][0] + loss(idle), 1)])
+        rows += [[r, round(t - _interp(mod, r) + loss(r), 1)] for r, t in curve]   # the exhaust's change added back, and the engine's friction
         e = ch.setdefault(base["engine"], {})
         e["mainEngine.torque"] = rows
         peak = max(t for _, t in rows[1:])                # of the curve as written (the exhaust's change added back can raise it)

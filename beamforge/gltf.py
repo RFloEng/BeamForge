@@ -266,6 +266,22 @@ def _apply(m, p):
             m[2] * x + m[6] * y + m[10] * z + m[14]]
 
 
+def below(data, name, is_glb=True):
+    """The names of the nodes below the node(s) called `name` (not itself)."""
+    doc, _ = _document(data, is_glb, None)
+    nodes = doc.get("nodes", [])
+    out = set()
+
+    def walk(i):
+        for c in nodes[i].get("children", []):
+            out.add(nodes[c].get("name"))
+            walk(c)
+    for i, n in enumerate(nodes):
+        if n.get("name") == name:
+            walk(i)
+    return out
+
+
 def with_ancestors(data, names, is_glb=True):
     """The node names `names` and the names of every node above them."""
     doc, _ = _document(data, is_glb, None)
@@ -319,6 +335,7 @@ def named(data, pattern, is_glb=True, skip=None):
 PIECE_ROLES = (("tie", re.compile(r"(steer|tie).*(lever|rod|arm|link|beam)|(lever|rod|arm|link).*steer", re.I)),
                ("hub", re.compile(r"hub|knuckle|upright|spindle", re.I)),
                ("arm", re.compile(r"wishbone|lever|(^|[_.:])arm|brazo(?!s)|link|(^|[_.:])rod|beam|control", re.I)),
+               ("axle", re.compile(r"(^|[_.])axle(?!_?shaft)|housing|de_dion|banjo", re.I)),   # (a solid axle's housing: follows the hubs at its ends)
                ("strut", re.compile(r"strut|damper|amort|dump|spring|shock|susp", re.I)))
 # running gear, trim and other things that merely have such a word in their name
 PIECE_NOT = re.compile(r"caliper|disc|disk|rotor|pad|brake|wheel|tyre|tire|rim|wiper|cockpit|dash|steer_hr|steer_lr|_hr$|"
@@ -391,6 +408,8 @@ def _pieces(doc, guess=False):
             if all(name != n for n, _ in out):
                 out.append((name, role))
             return
+        if role and "mesh" in nodes[ni] and all(name != n for n, _ in out):
+            out.append((name, role))     # a part with a mesh of its own that also holds finer parts (an axle with its shocks below it)
         for c in nodes[ni].get("children", []):
             walk(c)
     scenes = doc.get("scenes") or [{"nodes": list(range(len(nodes)))}]

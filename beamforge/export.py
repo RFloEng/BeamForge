@@ -799,22 +799,25 @@ def static_susp_rows(v, svj, path, place, mesh_ref):
     off = svjmod.mesh_offset(svj, data, glb)[0] or [0.0, 0.0, 0.0]
     wheels = [w for w in v.get("wheels") or [] if w.get("centre")]
     rows = []
-    for name, role in gltf.guessed_pieces(data, glb):
+    pieces = gltf.guessed_pieces(data, glb)
+    for name, role in pieces:
         if role == "hub":
             continue                                       # the SVJ's own upright binding covers the hub
-        pos = gltf.positions(data, glb, under=name)
+        kids = {n for n, _ in pieces if n != name} & gltf.below(data, name, glb)     # (finer parts below it have rows of their own)
+        pos = gltf.positions(data, glb, under=name, skip=re.compile("^(?:" + "|".join(re.escape(k) for k in sorted(kids)) + ")$") if kids else None)
         if not pos or not wheels:
             continue
         pts = [svjmod.from_sae([x + o for x, o in zip(svjmod.gltf_to_sae(p, axes), off)], place["yf"], place["ground"]) for p in pos]
         lo, hi = ([f(p[i] for p in pts) for i in range(3)] for f in (min, max))
-        if lo[0] < -PIECE_MID and hi[0] > PIECE_MID:
+        across = lo[0] < -PIECE_MID and hi[0] > PIECE_MID
+        if across and role != "axle":
             continue
         mid = [(a + b) / 2 for a, b in zip(lo, hi)]
         w = min(wheels, key=lambda w: math.dist(w["centre"], mid))
-        if math.dist(w["centre"], mid) > PIECE_REACH:
+        if math.dist(w["centre"], mid) > (PIECE_REACH if not across else 2.0):     # (an axle housing spans both wheels)
             continue
         ext = [h - l for h, l in zip(hi, lo)]
-        if ext[0] > 0.25 and ext[0] > 2.0 * max(ext[1], ext[2]) and abs(mid[2] - w["centre"][2]) < 0.15:
+        if role != "axle" and ext[0] > 0.25 and ext[0] > 2.0 * max(ext[1], ext[2]) and abs(mid[2] - w["centre"][2]) < 0.15:
             continue                                       # a long thin piece across the car at the axle's height is a driveshaft: the base's
                                                            # own halfshaft (diff to hub) is kept, this static stub would hang from the hub
         rt = roles.for_corner(P, N, w)
@@ -827,7 +830,7 @@ def static_susp_rows(v, svj, path, place, mesh_ref):
             continue
         owners = [P[n] for n in ns if n in P]
         rows.append({"path": f"susp.{w['name']}.{name}", "node": name, "mesh_ref": mesh_ref, "part": max(set(owners), key=owners.count),
-                     "groups": [group], "tag_nodes": ns})
+                     "groups": [group], "tag_nodes": ns, **({"exclude": sorted(kids)} if kids else {})})
     return rows
 
 
@@ -836,7 +839,7 @@ END_REACH = 0.25       # m: no farther from the end than this
 NOT_END = re.compile(r"wheel|tire|tyre|brake|hubcap|halfshaft|driveshaft|interior|seat|glass|door|panel|trim|occupant|^ocp", re.I)
 
 
-def _end_nodes(N, P, lo, hi):
+def _end_nodes(N, P, lo, hi):   # (an axle housing across the car: the nodes at its two ends, at the hubs)
     """The base nodes a piece with no role table follows: the few nearest each end of its bounds' long side (an arm: its pivot on the
     body and its joint on the upright), so the mesh moves and stretches with them. At least three, from at least two parts or places."""
     axis = max(range(3), key=lambda i: hi[i] - lo[i])
@@ -951,6 +954,15 @@ def svj_attach(configured_json, svj_json, mapping_json=None, files_json=None, pl
             out = [r for r in out if r is body or r["node"] not in own
                    and not (r["path"].startswith("mass_bodies.") and r["node"] in above)]      # (a hinged part bound as a mass body: its panel row)
             body["exclude"] = sorted(set(body["exclude"]) | own | {r["node"] for r in out if r is not body and r["node"]})
+            followers = {s["node"] for s in susp}
+            with open(path, "rb") as fh:                   # (a row's node that holds a piece which follows the suspension on its own, an upright's arm:
+                fdata = fh.read()                          # that piece is left out of the row, it would show twice, one rigid with the hub)
+            for r in out:
+                if r is body or not r.get("node") or r["path"].startswith("susp."):
+                    continue
+                kids = followers & gltf.below(fdata, r["node"], path.lower().endswith(".glb"))
+                if kids:
+                    r["exclude"] = sorted(set(r.get("exclude") or []) | kids)
             out[out.index(body) + 1:out.index(body) + 1] = panels + glass + susp + shafts
     return json.dumps(out)
 
