@@ -36,7 +36,7 @@ import json
 import math
 import re
 
-from beamforge import beamng, dae, gltf, jbeam, rigidity, unified, values
+from beamforge import beamng, dae, gltf, jbeam, png, rigidity, unified, values
 from beamforge import svj as svjmod
 
 ID = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
@@ -824,7 +824,7 @@ def static_susp_rows(v, svj, path, place, mesh_ref):
         ns = _role_nodes(rt, role) if rt else []
         group = f"bf_{role}_{w['name']}"
         if not ns:                                         # no role table for this base: the nodes at the piece's two ends
-            ns = _end_nodes(N, P, lo, hi)
+            ns = _end_nodes(N, P, lo, hi, w["centre"])
             group = f"bf_{role}_{w['name']}_{len(rows)}"   # (its own group: each piece follows its own nodes)
         if not ns:
             continue
@@ -834,21 +834,26 @@ def static_susp_rows(v, svj, path, place, mesh_ref):
     return rows
 
 
-END_NODES = 3          # base nodes taken at each end of a suspension piece that has no role table
+END_NODES = 3          # base nodes taken at the body end of a suspension piece that has no role table
+OUTER_NODES = 1        # and at its wheel end: more than the ball joint's node and the piece bends as the knuckle turns
 END_REACH = 0.25       # m: no farther from the end than this
 NOT_END = re.compile(r"wheel|tire|tyre|brake|hubcap|halfshaft|driveshaft|interior|seat|glass|door|panel|trim|occupant|^ocp", re.I)
 
 
-def _end_nodes(N, P, lo, hi):   # (an axle housing across the car: the nodes at its two ends, at the hubs)
+def _end_nodes(N, P, lo, hi, centre=None):   # (an axle housing across the car: the nodes at its two ends, at the hubs)
     """The base nodes a piece with no role table follows: the few nearest each end of its bounds' long side (an arm: its pivot on the
     body and its joint on the upright), so the mesh moves and stretches with them. At least three, from at least two parts or places."""
     axis = max(range(3), key=lambda i: hi[i] - lo[i])
-    ends = []
+    ends, points = [], []
     for sign in (0, 1):
         end = [(lo[i] + hi[i]) / 2 for i in range(3)]
         end[axis] = lo[axis] if sign == 0 else hi[axis]
+        points.append(end)
+    across = lo[0] < -PIECE_MID and hi[0] > PIECE_MID                                       # (an axle housing: both ends are at hubs)
+    outer = min((0, 1), key=lambda i: math.dist(points[i], centre)) if centre and not across else None      # the wheel's end
+    for i, end in enumerate(points):
         near = sorted((math.dist(p, end), n) for n, p in N.items() if not NOT_END.search(P.get(n, "")) and math.dist(p, end) <= END_REACH)
-        ends.append([n for _, n in near[:END_NODES]])
+        ends.append([n for _, n in near[:OUTER_NODES if i == outer else END_NODES]])
     ns = list(dict.fromkeys(ends[0] + ends[1]))
     return ns if len(ns) >= 3 and ends[0] and ends[1] else []
 
@@ -1077,6 +1082,23 @@ def svj_materials(svjm, new_id):
         path = f"vehicles/{new_id}/svj_textures/t{ident[0]}_{ident[1]}{ext}"
         images[path] = img[0]
         return "/" + path
+
+    opacity = {}
+
+    def opacity_map(img, ident):
+        """The path of a grey map of the colour texture's alpha (BeamNG reads a translucent material's opacity from an opacityMap, not
+        from the colour texture's alpha), and the least alpha it has; (None, None) for a texture with no alpha."""
+        if not img or not img[0] or "png" not in (img[1] or ""):
+            return None, None
+        if ident not in opacity:
+            a = png.alpha(img[0])
+            if a is None:
+                opacity[ident] = (None, None)
+            else:
+                path = f"vehicles/{new_id}/svj_textures/t{ident[0]}_{ident[1]}_op.png"
+                images[path] = a[0]
+                opacity[ident] = ("/" + path, a[2])
+        return opacity[ident]
     for m in svjm:
         for sub in m.get("submeshes") or [{"material": m["material"]}]:
             name = sub["material"]
@@ -1098,10 +1120,15 @@ def svj_materials(svjm, new_id):
                 if g["alpha"] == "BLEND":
                     # glass: a plain alpha blend (the SVJ's textures are not premultiplied, as the game's PreMulAlpha ones are),
                     # no shadow cast, shadows received, a reflective gloss as a window has
-                    inside = re.search(r"(^|_)int_|interior", name, re.I)         # (the inner pane: no sky reflected in it, the view out stays clear)
+                    inside = re.search(r"(^|_)int(_|$)|int_|windowint|window_int|interior|inner", name, re.I)         # (the inner pane: no sky reflected in it, the view out stays clear)
                     entry.update(translucent=True, translucentBlendOp="LerpAlpha", translucentZWrite=False, castShadows=False,
                                  translucentRecvShadows=True, dynamicCubemap=not inside, alphaRef=0)
                     stage.update(roughnessFactor=min(stage["roughnessFactor"], 0.08), metallicFactor=min(stage["metallicFactor"], 0.1))
+                    op, least = opacity_map(g["image"], g["image_id"])
+                    if op and least < 0.99:                          # a glass texture with a see-through part: its alpha is the opacity
+                        stage["opacityMap"] = op
+                    elif len(g["colour"]) > 3 and g["colour"][3] < 0.99:  # or the material's own alpha, as one factor
+                        stage["opacityFactor"] = round(float(g["colour"][3]), 3)
                 elif g["alpha"] == "MASK":
                     entry.update(alphaTest=True, alphaRef=int(255 * float(g.get("cutoff", 0.5))))
                 if g["double_sided"]:

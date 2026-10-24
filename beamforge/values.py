@@ -37,6 +37,11 @@ import re
 
 from beamforge import beamng, jbeam
 
+STRUCTURE_K = 1.2e6     # N/m: a beam with a precompressionRange this stiff is a coilover's seat structure, not its spring
+MIN_MR = 0.25           # a base spring or damper whose measured motion ratio is under this is not believed (a coilover sliding on rails reads
+#                         0.003-0.08 and is really near 1): the SVJ's, given at the wheel, is used
+MAX_PRELOAD = 0.35      # m: the most a spring may start compressed (a vanilla coilover starts 0.07-0.12 m): a softer spring than the car's weight
+#                         needs gets this much, and is raised to carry the weight at it
 DEFLECTION = 0.010      # m: unloaded minus loaded tyre radius, when the SVJ gives only the loaded one
 # parts that hold a corner's spring or damper (not the hood, trunk, steering or mirror dampers)
 SUSPENSION_PART = re.compile(r"strut|shock|spring|coilover|damper|suspension", re.I)
@@ -117,11 +122,11 @@ def svj_values(svj, study=None, base_mr=None):
         mr = spring.get("motion_ratio") or st.get("motion_ratio") or 1.0
         rate = spring.get("rate") if isinstance(spring.get("rate"), (int, float)) else None
         bm = (base_mr or {}).get(axle) or {}
-        smr = bm.get("spring") if (bm.get("spring") or 0) > 0.05 else mr      # the beam's ratio in the base
+        smr = bm.get("spring") if (bm.get("spring") or 0) > MIN_MR else mr      # the beam's ratio in the base
         v = {"wheel_rate": rate, "spring_mr": round(smr, 3), "spring_mr_from": "base" if smr is not mr else "svj",
              "coil_rate": round(rate / (smr * smr)) if rate else None}
         dmr = 1.0 if damper.get("reference") == "wheel" else (damper.get("motion_ratio") or 1.0)   # v0.99.4: at the wheel
-        bdm = bm.get("damper") if (bm.get("damper") or 0) > 0.05 else dmr
+        bdm = bm.get("damper") if (bm.get("damper") or 0) > MIN_MR else dmr
         k = (dmr / bdm) ** 2                              # slope at the damper -> the base's damper beam
         v["damper_mr"] = round(bdm, 3)
         for key, curve in (("bump", damper.get("bump_curve")), ("rebound", damper.get("rebound_curve"))):
@@ -190,8 +195,10 @@ def springs_and_dampers(model, configured):
                 continue
             bt = str(rec.get("beamType", ""))
             kind = None
-            if "precompressionRange" in rec and rec.get("beamSpring") not in (0, None, "0"):
-                kind = "spring"                           # |NORMAL, or |BOUNDED with its bump stop (a vanilla small hatchback's)
+            bs = rec.get("beamSpring")
+            if "precompressionRange" in rec and bs not in (0, None, "0") and not (isinstance(bs, (int, float)) and bs >= STRUCTURE_K):
+                kind = "spring"                           # |NORMAL, or |BOUNDED with its bump stop (a vanilla small hatchback's); not the coilover's
+                #                                           rigid seat beams (a coilover has them with a precompressionRange for its ride height)
             elif "BOUNDED" in bt and rec.get("beamDampRebound") is not None and                     any(_num_or(rec.get(k), {}, 1.0) != 0 for k in ("beamDamp", "beamDampRebound")):
                 kind = "damper"                           # (zero slow damping: a high-speed bump damper, left)
             if not kind:
@@ -530,11 +537,18 @@ def apply(model, configured, svj, take, study=None, length_factors=None, floors=
                                         + wheel_kg / max(1, len(configured["wheels"])))
     unsprung = {ax_: sum(v) / len(v) for ax_, v in each.items()}
     damp_floor = set()
+    pos_ = configured["geometry"]["nodes"]
+    side_ = lambda r: pos_[r["a"]][0] > 0                                   # noqa: E731  (the wheel's side)
+    parallel = {}                                                           # spring beams side by side at a wheel (a main spring and its helper): they share its rate
+    for r in sd:
+        if r["kind"] == "spring":
+            parallel[(r["axle"], side_(r))] = parallel.get((r["axle"], side_(r)), 0) + 1
     for r in sd:
         s = sv.get(r["axle"]) or {}
         new = {}
         if r["kind"] == "spring" and take.get(f"spring_{r['axle']}") and s.get("coil_rate"):
-            new["beamSpring"] = s["coil_rate"]
+            n_par = parallel.get((r["axle"], side_(r))) or 1
+            new["beamSpring"] = s["coil_rate"] / n_par
             # the ride height: the nodes are placed where the SVJ's hardpoints are, its static (loaded) pose, so
             # the springs' preload (precompressionRange, metres it starts compressed) holds the car there: the
             # spring carries the corner's sprung weight over its motion ratio, no more and no less. (Keeping
@@ -544,9 +558,13 @@ def apply(model, configured, svj, take, study=None, length_factors=None, floors=
             k0 = _num_or(r["values"].get("beamSpring"), vars_, None)
             pr = _num_or(r["values"].get("precompressionRange"), vars_, None)
             if k0 and pr is not None and axle_kg.get(r["axle"]):
-                mr = ((base_mr or {}).get(r["axle"]) or {}).get("spring") or 1.0
+                mr = s.get("spring_mr") or 1.0                     # (the guarded ratio: the base's if believable, else the SVJ's)
                 f1 = (axle_kg[r["axle"]][1] / 2 - unsprung.get(r["axle"], 0.0)) * 9.81 / mr
-                new["precompressionRange"] = round(max(0.002, f1 / s["coil_rate"]), 4)
+                rate = s["coil_rate"]
+                if f1 / rate > MAX_PRELOAD:                        # the SVJ's rate is for a lighter car: stiff enough to carry this one at the cap
+                    rate = f1 / MAX_PRELOAD
+                    new["beamSpring"] = round(rate / n_par)
+                new["precompressionRange"] = round(max(0.002, f1 / rate), 4)
         if r["kind"] == "damper":
             if take.get(f"damp_bump_{r['axle']}") and s.get("damp_bump"):
                 new.update(beamDamp=s["damp_bump"], beamDampFast=s["damp_bump_fast"], beamDampVelocitySplit=s["damp_split"])

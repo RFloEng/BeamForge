@@ -399,11 +399,14 @@ def _pieces(doc, guess=False):
                 return True
         return False
 
+    def holds_svj(ni):                   # a node that holds the SVJ's own bound nodes (wheels, uprights, the body) is a container, not a part
+        return any((nodes[c].get("name") or "").startswith("SVJ::") or holds_svj(c) for c in nodes[ni].get("children", []))
+
     def walk(ni):
         name = nodes[ni].get("name") or ""
         if PIECE_NOT.search(name):
             return
-        role = role_of(name)
+        role = None if holds_svj(ni) else role_of(name)
         if role and has_mesh(ni) and not finer(ni):
             if all(name != n for n, _ in out):
                 out.append((name, role))
