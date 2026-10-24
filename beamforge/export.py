@@ -853,6 +853,26 @@ def _end_nodes(N, P, lo, hi):   # (an axle housing across the car: the nodes at 
     return ns if len(ns) >= 3 and ends[0] and ends[1] else []
 
 
+def _link_sections(opt, v):
+    """{wheel name: tubes.section} for the corner links: the SVJ's own (a link's "x_tube": {"section": "tube 30x2 steel_4130n"} in the corner's
+    topology, the arms' and rods' median wins), else the build's default (opt["link_tube"]); {} when neither is given. A section that does not
+    parse is skipped with its error left to the caller (tubes.SectionError)."""
+    from beamforge import tubes
+    default = (opt or {}).get("link_tube")
+    corners = ((opt or {}).get("svj") or {}).get("suspension") or {}
+    out = {}
+    for w in v.get("wheels") or []:
+        text = None
+        links = ((corners.get(w["name"]) or {}).get("topology") or {}).get("links") or []
+        given = [l["x_tube"]["section"] for l in links if isinstance(l.get("x_tube"), dict) and l["x_tube"].get("section")]
+        if given:
+            text = sorted(given)[len(given) // 2]
+        text = text or default
+        if text:
+            out[w["name"]] = tubes.section(text)
+    return out
+
+
 def _tag_nodes(part, tags, base_groups):
     """Add node groups to the part's nodes (tags: {node: [groups]}; base_groups: {node: [groups it has]}), written inline."""
     rows = part.get("nodes")
@@ -1348,6 +1368,21 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     for (part, row), f in stiff.items():
         if f > 1.0 + 1e-3 and "beamSpring" in by_key[(part, row)]["values"]:
             taken_beams.setdefault(part, {}).setdefault(row, {})["beamSpring"] = round(by_key[(part, row)]["values"]["beamSpring"] * f)
+    # the corners' links as real tubes (E A / L within what the nodes allow, the tubes' mass at their ends): kinematics.tube_links
+    tube_notes = []
+    sections = _link_sections(opt, v)
+    if sections and not pure:
+        t_beams, t_weights, t_report = kinematics.tube_links(model, v, sections, bl, values.springs_and_dampers(model, v), taken_weights,
+                                                             {(p, r): vals for p, rr in taken_beams.items() for r, vals in rr.items()})
+        for part, rr in t_beams.items():
+            for row, vals in rr.items():
+                taken_beams.setdefault(part, {}).setdefault(row, {}).update(vals)
+        for part, rr in t_weights.items():
+            taken_weights.setdefault(part, {}).update(rr)
+        for r in t_report:
+            tube_notes.append(f"{r['wheel']}: {r['beams']} link beams as {sections[r['wheel']]['text']} tubes: E A / L {r['k_real_mn']} MN/m on average, "
+                              f"set to {r['k_set_mn']} MN/m (x{r['factor']} the base's)" + (" (the nodes' limit: more weight on them would allow more)" if r["capped"] else "")
+                              + f", {r['added_kg']} kg of tube added")
     # the wheels' camber and toe (fit()'s "axles"): spawned square, the upright's beams to the wheel are
     # preloaded so it settles at the SVJ's alignment (as vanilla cars set theirs)
     preloaded = axle_preload(model, v, bl, (opt or {}).get("axles") or {})
@@ -1424,6 +1459,7 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
             what = f"its links stiffened x{r['factor']}" if r["factor"] > 1.0 else "its links could not be stiffened"
             notes.append(f"{r['wheel']}: the fitted suspension holds the wheel {100 * (1 - 1 / soft):.0f} % softer than the base's; "
                          + what + (" (its nodes are at the physics step's limit: still softer)" if r["capped"] else ""))
+    notes += tube_notes
     counts["corners_stiffened"] = sum(1 for r in bench if r["factor"] > 1.0)
     if rig_stats:
         counts["rigidity_beams"] = rig_stats["beams"]

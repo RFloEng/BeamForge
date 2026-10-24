@@ -416,6 +416,7 @@ It then reads the zip back the way the game does, and prints missing parts, whee
 | Option | Use |
 | --- | --- |
 | `--vehicles` | the game's `content/vehicles` folder (or set `BEAMNG_VEHICLES`) |
+| `--link-tube "tube 30x2 steel_4130n"` | the corner links as real tubes: each member beam takes E A / L of its tube, within what its nodes allow (the physics step, `rigidity.py`), and the tubes' mass (about six tubes a corner) goes on their end nodes, which raises that allowance. Only ever stiffer than the base's beam. A link's own `x_tube: {"section": ...}` in the SVJ wins over the option. Sections: `tube <OD>x<wall> <material>` in mm (`steel_1018`, `steel_4130n`, `al_6061_t6`), see `beamforge/tubes.py` |
 | `--config` | the base configuration (default: its default) |
 | `--stages wheelbase,pickups` | only some fit stages; `--stages ""` for no fit |
 | `--no-meshes` / `--keep-body` | keep the base's look / add the SVJ's meshes beside its body |

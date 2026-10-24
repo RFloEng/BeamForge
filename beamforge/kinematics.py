@@ -252,6 +252,138 @@ def stiffen(model, configured, bl=None, springs=None, weights=None, tolerance=0.
     return out, report
 
 
+TUBE_MIN_LEN = 0.12  # m: a link beam shorter than this is the upright's own structure, not a tube member
+TUBE_MEMBERS = 6     # tubes in a corner's links (a double wishbone: four arm tubes, the tie rod and one more)
+TUBE_MAX_LEN = 1.3   # m: nor one longer than this (a beam across the car)
+TUBE_HUB = 0.32      # m from the wheel centre: the upright's nodes; a member has one end there and the other out at the body
+
+
+def tube_links(model, configured, section_of, bl=None, springs=None, weights=None, held=None):
+    """The corner links with their real tubes: each suspension link (a wishbone's member, a tie rod, a trailing arm: the beams of
+    the corner's suspension parts that are not springs, dampers or the upright's short structure) takes E A / L of its tube
+    (tubes.limits), the mass of the tube split between its end nodes, and the tube's strength where it is more than the base's.
+
+    BeamNG cannot run real steel at its nodes' weights (FBeam 8.9.6): a node may carry only k / m up to its limit (rigidity._limits),
+    so the stiffness is the smaller of E A / L and what the nodes allow, which the tube's own mass raises. Only ever stiffer than the
+    beam is. section_of: {wheel name: tubes.section} (a wheel without one is left as it is); weights: {part: {row: kg}} taken so far
+    (the tubes' mass is added to it); held: {(part, row): {key: value}} already taken for beams (stiffened links: their values are
+    the ones to build on). Returns ({part: {row: {"beamSpring", "beamDamp", "beamDeform", "beamStrength"}}}, {part: {row: kg}},
+    [{"wheel", "beams", "factor", "capped", "added_kg"}])."""
+    from beamforge import rigidity, tubes
+    geo = configured["geometry"]
+    nodes = geo["nodes"]
+    bl = bl if bl is not None else beam_list(model, configured)
+    springs = springs if springs is not None else values.springs_and_dampers(model, configured)
+    measured = {(r["part"], r["row"]) for r in springs}
+    held = held or {}
+    lk, lc = rigidity._limits(model, configured, bl)
+    rows, _ = values.node_weights(model, configured)
+    base_kg, m = {}, {}
+    for part, row, nid, kg, _ in rows:
+        cur = ((weights or {}).get(part) or {}).get(row, kg)
+        base_kg[(part, row)] = (nid, cur)
+        m[nid] = m.get(nid, 0.0) + cur
+    changes, added, report = {}, {}, []
+    done = set()
+    for w in configured.get("wheels") or []:
+        sec = (section_of or {}).get(w["name"])
+        if not sec or w["node1"] not in nodes or w["node2"] not in nodes:
+            continue
+        axle = [w["node1"], w["node2"]]
+        centre = [(nodes[axle[0]][i] + nodes[axle[1]][i]) / 2 for i in range(3)]
+        _, idx, _ = _system(nodes, geo.get("parts") or {}, [b for b in bl if b["values"].get("beamSpring", 0) > 0], axle, [centre])
+        links = [b for b in bl if values.UNSPRUNG.search(b["part"]) and (b["part"], b["row"]) not in measured
+                 and (b["part"], b["row"]) not in done and (b["a"] in idx or b["b"] in idx)
+                 and b["values"].get("beamSpring", 0) > 0 and not NO_LOAD.search(b["type"])
+                 and TUBE_MIN_LEN <= math.dist(nodes[b["a"]], nodes[b["b"]]) <= TUBE_MAX_LEN
+                 and (math.dist(nodes[b["a"]], centre) <= TUBE_HUB) != (math.dist(nodes[b["b"]], centre) <= TUBE_HUB)]   # one end on the upright
+        if not links:
+            continue
+        real = {}
+        for b in links:
+            L = math.dist(nodes[b["a"]], nodes[b["b"]])
+            real[id(b)] = tubes.limits(sec, L)
+        # the tubes' mass at their ends: a corner has about TUBE_MEMBERS tubes, though the base models each as several beams, so the
+        # mass is that of TUBE_MEMBERS tubes of the beams' mean length, shared by the beams by their length
+        lens = {id(b): math.dist(nodes[b["a"]], nodes[b["b"]]) for b in links}
+        mean_len = sum(lens.values()) / len(lens)
+        budget = TUBE_MEMBERS * sec["rho"] * sec["A"] * mean_len
+        share = min(1.0, budget / (sum(real[id(b)]["mass"] for b in links) or 1.0))
+        extra = {}
+        for b in links:
+            for n in (b["a"], b["b"]):
+                extra[n] = extra.get(n, 0.0) + real[id(b)]["mass"] * share / 2
+        m_new = {n: m.get(n, 0.0) + extra.get(n, 0.0) for n in set(m) | set(extra)}
+        # the other beams' share of each node's k and c (springs, the body's beams, the corner's other beams)
+        ksum, csum, lk_, lc_ = {}, {}, {}, {}
+        for b in bl:
+            for n in (b["a"], b["b"]):
+                ksum[n] = ksum.get(n, 0.0) + b["values"].get("beamSpring", 0.0)
+                csum[n] = csum.get(n, 0.0) + b["values"].get("beamDamp", 0.0)
+        old = {id(b): (held.get((b["part"], b["row"])) or {}).get("beamSpring", b["values"]["beamSpring"]) for b in links}
+        oldc = {id(b): (held.get((b["part"], b["row"])) or {}).get("beamDamp", b["values"].get("beamDamp", 0.0)) for b in links}
+        lsum, lcs = {}, {}
+        for b in links:
+            for n in (b["a"], b["b"]):
+                lsum[n] = lsum.get(n, 0.0) + old[id(b)]
+                lcs[n] = lcs.get(n, 0.0) + oldc[id(b)]
+        want = {id(b): max(old[id(b)], real[id(b)]["k"]) for b in links}
+        # every node may carry k <= limit * its new mass: the links there share what is left once the others are taken
+        scale = {}
+        for n in lsum:
+            if not m_new.get(n) or not lk.get(n):
+                continue
+            others = ksum[n] - lsum[n]
+            tot = sum(want[id(b)] for b in links if n in (b["a"], b["b"]))
+            room = lk[n] * m_new[n] - others
+            if tot > room:
+                scale[n] = max(0.0, room / tot)
+        capped = bool(scale)
+        newk = {}
+        for b in links:
+            s = min(scale.get(b["a"], 1.0), scale.get(b["b"], 1.0))
+            newk[id(b)] = max(old[id(b)], want[id(b)] * s)
+        # damping follows the stiffness (the base's ratio), within each node's limit
+        ratio = {id(b): newk[id(b)] / old[id(b)] for b in links}
+        cscale = {}
+        for n in lcs:
+            if not m_new.get(n) or not lc.get(n):
+                continue
+            others = csum[n] - lcs[n]
+            tot = sum(oldc[id(b)] * ratio[id(b)] for b in links if n in (b["a"], b["b"]))
+            if tot > lc[n] * m_new[n] - others:
+                cscale[n] = max(0.0, (lc[n] * m_new[n] - others) / tot)
+        for b in links:
+            key = (b["part"], b["row"])
+            s = min(cscale.get(b["a"], 1.0), cscale.get(b["b"], 1.0))
+            k = newk[id(b)]
+            c = max(oldc[id(b)], oldc[id(b)] * ratio[id(b)] * s)
+            ch = {}
+            if k > b["values"]["beamSpring"] * 1.001:
+                ch["beamSpring"] = round(k)
+                if c > 0:
+                    ch["beamDamp"] = round(c, 2)
+                for key_ in ("beamDeform", "beamStrength"):
+                    if real[id(b)][key_] > b["values"].get(key_, 0.0) * 1.001:
+                        ch[key_] = round(real[id(b)][key_])
+            if ch:
+                changes.setdefault(b["part"], {}).setdefault(b["row"], {}).update(ch)
+            done.add(key)
+        kg = 0.0
+        for (part, row), (nid, cur) in base_kg.items():
+            if nid in extra:
+                add = round(extra[nid] / sum(1 for p_, r_ in base_kg if base_kg[(p_, r_)][0] == nid), 4)
+                added.setdefault(part, {})[row] = round(cur + add, 4)
+                kg += add
+        for n, x in extra.items():
+            m[n] = m.get(n, 0.0) + x
+        gain = [newk[id(b)] / old[id(b)] for b in links]
+        report.append({"wheel": w["name"], "beams": len(links), "factor": round(sum(gain) / len(gain), 2), "capped": capped,
+                       "added_kg": round(kg, 2), "k_real_mn": round(sum(real[id(b)]["k"] for b in links) / len(links) / 1e6, 1),
+                       "k_set_mn": round(sum(newk[id(b)] for b in links) / len(links) / 1e6, 1)})
+    return changes, added, report
+
+
 def follows_wheel(model, configured, wheel, bl=None, springs=None, share=0.2):
     """The suspension nodes that move with a wheel (hub, strut bottom, the anti-roll bar's link): pushed
     up in the static solve, those that move at least this share of its travel. The wheel's own nodes

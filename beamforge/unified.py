@@ -311,7 +311,7 @@ def corner_view(doc):
                 "arm" if len(pts) >= 2 else "rod"
             link = {"name": base, "type": kind, "inboard_points": pts, "outboard_ref": "hardpoints." + ref_of(outer, base),
                     "joint_type": jt, "inboard_joint_type": types[0] if types else None, "body_ref": other}
-            for k in ("mass", "inertia", "visual"):
+            for k in ("mass", "inertia", "visual", "x_tube"):
                 if body.get(k) is not None:
                     link[k] = body[k]
             if _pos(body.get("position")):

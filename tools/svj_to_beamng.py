@@ -53,6 +53,8 @@ def main(argv=None):
     ap.add_argument("--no-glass-break", action="store_true", help="the SVJ's windows as plain glass that never cracks")
     ap.add_argument("--tank", choices=("nofire", "none", "strong"), help="a diagnostic: the fuel tank non-flammable, or left out")
     ap.add_argument("--no-self-collision", action="store_true", help="a diagnostic: no part's nodes collide with the vehicle's own body (wheels apart)")
+    ap.add_argument("--link-tube", help="the suspension links as real tubes, e.g. \"tube 30x2 steel_4130n\" (E A / L within what the nodes allow, "
+                                        "the tube mass at their ends); a link's own x_tube section in the SVJ wins")
     ap.add_argument("--diagnose", action="store_true", help="add a small game extension that logs the broken and deformed beams after loading")
     ap.add_argument("--out", default="out", help="folder for the mod zip")
     ap.add_argument("--install", help="a mods folder to copy the zip into")
@@ -69,7 +71,8 @@ def main(argv=None):
     stages = [s for s in a.stages.split(",") if s.strip()]
     r = pipeline.run(a.base, svj, a.id, a.name or a.id, a.brand, a.config, os.path.dirname(os.path.abspath(a.svj)), stages,
                      meshes=not a.no_meshes, replace=not a.keep_body, base_paths=base_paths,
-                     scale_structure=a.scale_structure and not a.keep_structure, glass_break=not a.no_glass_break, tank_mode=a.tank, diagnose=a.diagnose, no_selfcol=a.no_self_collision)
+                     scale_structure=a.scale_structure and not a.keep_structure, glass_break=not a.no_glass_break, tank_mode=a.tank, diagnose=a.diagnose, no_selfcol=a.no_self_collision,
+                     link_tube=a.link_tube)
     out = r["out"]
     print("parts suggested:", r["parts"] or "none")
     print("fit:", len(r["fit"]["moves"]), "nodes moved")
