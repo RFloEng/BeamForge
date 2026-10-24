@@ -440,6 +440,16 @@ It then reads the zip back the way the game does, and prints missing parts, whee
 | `--out` | where the zip goes (default `out/`) |
 | `--install <mods folder>` | also copy the zip there; close the game first |
 
+### Chassis flex testbed
+
+`python tools/chassis_flex.py --vehicles <BeamNG>/content/vehicles [--models covet,pessima] [--parts shell|all|<regex>] [--csv out.csv]` runs the torsion bench
+real bodies get on a vanilla car's beams: the body is held at its rear suspension mounts, opposite vertical forces act through a rigid bracket at the front
+mounts, and the stiffness is torque over twist in N m per degree, the unit the published figures use (`tools/flex_reference.json`: a few real cars with their
+sources; add better ones). The body is a network of linear springs (each beam's `beamSpring`; one-way supports, dampers, springs and the running gear are left
+out). `shell` is the body's own parts (what a body-in-white test measures), `all` adds closures, panels and interior. Results are checked for equilibrium and a
+car whose body is a mechanism between the mounts is reported as having no valid result. Needs numpy and scipy. The result depends on how the bench is
+defined (what counts as body, where it is loaded): compare cars with each other and with the real figures to a factor of about two, not closer.
+
 ### Tyre testbed
 
 `python tools/tyre_testbed.py --vehicles <BeamNG>/content/vehicles [--svj car.svj.json] [--csv library.csv] [--png curves.png]` reads every tyre part of your

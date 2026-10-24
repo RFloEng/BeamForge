@@ -1,0 +1,19 @@
+{
+  "about": "Published torsional stiffness of real car bodies, N m per degree. Sources differ in what was measured (body-in-white or the finished car, with or without glass, seats and doors) and these are not a certified dataset: the first two are from a manufacturer's press page, the rest from an enthusiast list that cites a 2014 blog (no test method given). Add better figures (a paper, a manufacturer's data) as they are found.",
+  "compact_road_car_nm_per_deg": 16000,
+  "cars": [
+    {"car": "VW Polo, 5th generation (6R)", "nm_per_deg": 14000, "note": "VW's own figure, 'already good'", "source": "https://www.volkswagen-newsroom.com/de/der-neue-polo-die-fahrvorstellung-2574/expressiv-designter-kompaktwagen-2595"},
+    {"car": "VW Polo, MQB (AW)", "nm_per_deg": 18000, "note": "VW: 'more than 18,000'", "source": "https://www.volkswagen-newsroom.com/de/der-neue-polo-die-fahrvorstellung-2574/expressiv-designter-kompaktwagen-2595"},
+    {"car": "BMW E46 sedan, folding seats", "nm_per_deg": 13000, "note": "list citing a 2014 blog", "source": "https://zroadster.org/threads/torsional-stiffness-or-lack-thereof-some-numbers.12474"},
+    {"car": "BMW E46 sedan, no folding seats", "nm_per_deg": 18000, "note": "list citing a 2014 blog", "source": "https://zroadster.org/threads/torsional-stiffness-or-lack-thereof-some-numbers.12474"},
+    {"car": "BMW E85 Z4 roadster", "nm_per_deg": 16000, "note": "list citing a 2014 blog", "source": "https://zroadster.org/threads/torsional-stiffness-or-lack-thereof-some-numbers.12474"},
+    {"car": "BMW E85 Z4 coupe", "nm_per_deg": 32000, "note": "list citing a 2014 blog", "source": "https://zroadster.org/threads/torsional-stiffness-or-lack-thereof-some-numbers.12474"},
+    {"car": "BMW E36 Z3", "nm_per_deg": 5600, "note": "list citing a 2014 blog", "source": "https://zroadster.org/threads/torsional-stiffness-or-lack-thereof-some-numbers.12474"},
+    {"car": "Mazda MX-5 NA / NB", "nm_per_deg": 6000, "note": "convertible; list citing a 2014 blog", "source": "https://zroadster.org/threads/torsional-stiffness-or-lack-thereof-some-numbers.12474"},
+    {"car": "Mazda MX-5 NC", "nm_per_deg": 8800, "note": "convertible; list citing a 2014 blog", "source": "https://zroadster.org/threads/torsional-stiffness-or-lack-thereof-some-numbers.12474"},
+    {"car": "Audi TT roadster Mk1", "nm_per_deg": 10000, "note": "convertible; list citing a 2014 blog", "source": "https://zroadster.org/threads/torsional-stiffness-or-lack-thereof-some-numbers.12474"},
+    {"car": "BMW X5 (E70)", "nm_per_deg": 27000, "note": "'about 27,000 Nm/deg', BMW presentation", "source": "https://ahssinsights.org/wp-content/uploads/GDIS-Prez/P1_The%20Mixed%20Material%20Concept%20of%20the%20New%20BMW%20X5_2007.pdf"},
+    {"car": "Pre-war racing car (range's low end)", "nm_per_deg": 1356, "note": "1,000 lb ft per degree", "source": "https://en.wikipedia.org/wiki/Body_flex"},
+    {"car": "Some modern production cars (range's high end)", "nm_per_deg": 33900, "note": "25,000 lb ft per degree", "source": "https://en.wikipedia.org/wiki/Body_flex"}
+  ]
+}
