@@ -34,7 +34,7 @@ import { TEXT_FILE, canRemember, handleDir, listDir, zipSource, readFolder, reme
 const FILES = ['beamforge/__init__.py', 'beamforge/jbeam.py', 'beamforge/beamng.py', 'beamforge/gltf.py', 'beamforge/svj.py', 'beamforge/unified.py',
   'beamforge/fit.py', 'beamforge/suspension.py', 'beamforge/export.py', 'beamforge/dae.py', 'beamforge/values.py',
   'beamforge/rigidity.py', 'beamforge/kinematics.py', 'beamforge/roles.py', 'beamforge/convert.py',
-  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py', 'beamforge/scratch.py', 'beamforge/tyres.py', 'beamforge/tyrelab.py', 'beamforge/aero.py', 'beamforge/components.py', 'beamforge/mount.py', 'beamforge/dampers.py', 'beamforge/susp_donor.py', 'beamforge/checks.py', 'beamforge/pipeline.py'];
+  'beamforge/archetype.py', 'beamforge/steering.py', 'beamforge/structure.py', 'beamforge/skeleton.py', 'beamforge/tubes.py', 'beamforge/powertrain.py', 'beamforge/donors.py', 'beamforge/scratch.py', 'beamforge/tyres.py', 'beamforge/tyrelab.py', 'beamforge/cage.py', 'beamforge/aero.py', 'beamforge/components.py', 'beamforge/mount.py', 'beamforge/dampers.py', 'beamforge/susp_donor.py', 'beamforge/checks.py', 'beamforge/pipeline.py'];
 const REPO = new URL('../', import.meta.url);
 
 const $ = (id) => document.getElementById(id);
@@ -44,7 +44,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 // last line of a Python traceback, without the exception class
 const pyError = (e) => String(e.message || e).trim().split('\n').pop().replace(/^\w+Error: /, '');
 
-let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy, strpy, ptpy, donpy, scpy, typy, aepy, copy_, rigpy, mtpy, dmpy;
+let py, vehpy, svjpy, fitpy, suspy, exppy, valpy, skpy, strpy, ptpy, donpy, scpy, typy, aepy, copy_, rigpy, mtpy, dmpy, cagepy;
 const timing = {};         // ms per step, shown in the footer by drawTiming
 
 // ---------- Python engine ----------
@@ -69,6 +69,7 @@ async function boot() {
   skpy = py.pyimport('beamforge.skeleton');
   strpy = py.pyimport('beamforge.structure');
   ptpy = py.pyimport('beamforge.powertrain');
+  cagepy = py.pyimport('beamforge.cage');
   donpy = py.pyimport('beamforge.donors');
   scpy = py.pyimport('beamforge.scratch');
   typy = py.pyimport('beamforge.tyres');
@@ -109,12 +110,13 @@ scene.add(new THREE.GridHelper(10, 50, 0xb8c0c8, 0xdde2e7));
 // skelG: a STEP skeleton built into nodes and beams (drawSkeleton)
 const vehG = new THREE.Group(), meshG = new THREE.Group(), hpG = new THREE.Group(), bodyG = new THREE.Group(), suspG = new THREE.Group();
 const skelG = new THREE.Group(), compG = new THREE.Group();   // compG: the components' masses (drawComponents)
+const cageG = new THREE.Group();                              // cageG: the roll bar or cage of the Cage workspace (drawCage)
 // BeamNG's axes (X left, Y rear, Z up) in three.js's (x, z, y) make a left-handed set: drawn as they are, the whole car
 // shows as its mirror image (lettering reads backwards). One mirror at the root puts it right; everything below keeps
 // working in BeamNG's axes, and glTF meshes (gltfToThree) land in the same space.
 const world = new THREE.Group();
 world.scale.x = -1;
-world.add(vehG, meshG, hpG, bodyG, suspG, skelG, compG);
+world.add(vehG, meshG, hpG, bodyG, suspG, skelG, compG, cageG);
 scene.add(world);
 
 // BeamNG axes (X left, Y rear, Z up) -> three.js (Y up)
@@ -146,7 +148,7 @@ function fitCamera() {
   renderer.render(scene, camera);
 })();
 
-function drawScene() { drawVehicle(); placeSvj(); drawHardpoints(); drawSuspension(); drawSkeleton(); drawComponents(); }
+function drawScene() { drawVehicle(); placeSvj(); drawHardpoints(); drawSuspension(); drawSkeleton(); drawComponents(); drawCage(); }
 function redraw() { drawScene(); drawSpaces(); drawVehList(); drawInspector(); drawBudget(); showIssues(issues()); drawTiming(); autosave(); }
 
 // ---------- base vehicle: any BeamNG vehicle from the user's own install or mods ----------
@@ -1618,6 +1620,7 @@ function drawInspector() {
     wheels: () => wheelsPanel(),
     aero: () => aeroPanel(),
     components: () => componentsPanel(),
+    cage: () => cagePanel(),
     assembly: () => assemblyPanel(),
   }[ws]();
   el.innerHTML = html;
@@ -1630,6 +1633,7 @@ function drawInspector() {
   if (ws === 'wheels') bindWheels(el);
   if (ws === 'aero') bindAero(el);
   if (ws === 'components') bindComponents(el);
+  if (ws === 'cage') bindCage(el);
   if (ws === 'assembly') { bindExport(); bindAssembly(el); }
   el.querySelectorAll('[data-goto]').forEach((b) => { b.onclick = () => setWorkspace(b.dataset.goto); });
 }
@@ -2102,6 +2106,7 @@ const WORKSPACES = [
   ['components', 'Components', 'The masses the car carries (engine, fuel, driver, battery, ballast): its mass and centre of gravity'],
   ['aero', 'Aero', 'Drag and downforce: the base, the SVJ or your own numbers, the forces per axle at speed'],
   ['powertrain', 'Powertrain', 'Engine, gearbox, final drive and steering: the base\'s, the SVJ\'s or your own; the transmission parts'],
+  ['cage', 'Cage', "A roll bar or safety cage from its tubes (FBeam's rules): their mass, strength and stiffness, as a jbeam part"],
   ['checks', 'Checks', 'Stability and structure of the vehicle and the sketch'],
   ['assembly', 'Assembly', 'Everything together: the new vehicle to export'],
 ];
@@ -2502,6 +2507,106 @@ function bindAero(el) {
   }; });
 }
 
+// ---------- Cage: a roll bar or safety cage from its tubes ----------
+// FBeam's cage (beamforge/cage.py): the member tubes of an FIA-style cage or a rear roll bar, moved into the car's cabin from a few numbers.
+// Each member is a real tube (E A / L, yield and buckling force, mass); BeamNG runs a spring no stiffer than its two end nodes allow, so
+// the panel shows the real stiffness of the frame and the share the game keeps. The result can be drawn in the view and downloaded
+// as a jbeam part. (Not yet written into an exported vehicle.)
+const CAGE_OPTIONS = { recommended: { main: '45x2.5', other: '40x2', diag: '50x2' }, fia_min: { main: '45x2.5', other: '38x2.5', diag: '38x2.5' },
+  light: { main: '50x2', other: '40x2', diag: '40x2' } };       // = cage.OPTIONS
+const CAGE_PARAMS = [['apillar_y', 'A-pillar feet, y'], ['hoop_y', 'Main hoop, y'], ['backstay_y', 'Backstay feet, y'],
+  ['half_width', 'Half width'], ['floor_z', 'Floor, z'], ['roof_z', 'Roof, z']];
+let cageEdit = { layout: 'cage', option: 'recommended', custom: { main: '45x2.5', other: '40x2', diag: '50x2' }, params: {} };
+let cageMemo = null;           // { key, data }: the last cage computed
+
+function cageInputs() {        // the tubes and the cabin numbers in use: the vehicle's, the user's over them
+  const auto = veh && veh.measure ? JSON.parse(cagepy.params_json(JSON.stringify(veh.measure))) : null;
+  const used = auto ? { ...auto, ...cageEdit.params } : (Object.keys(cageEdit.params).length ? { ...cageEdit.params } : null);
+  const sizes = cageEdit.option === 'custom' ? cageEdit.custom : CAGE_OPTIONS[cageEdit.option];
+  return { auto, used, sizes };
+}
+
+function cageData() {
+  const { used, sizes } = cageInputs();
+  const key = JSON.stringify([cageEdit.layout, sizes, used]);
+  if (!cageMemo || cageMemo.key !== key) cageMemo = { key, data: JSON.parse(cagepy.compute_json(cageEdit.layout, JSON.stringify(sizes), used ? JSON.stringify(used) : null)) };
+  return cageMemo.data;
+}
+
+function drawCage() {
+  cageG.clear();
+  cageG.visible = ws === 'cage';
+  if (ws !== 'cage') return;
+  const d = cageData();
+  if (d.error) return;
+  const pts = { buckling: [], yield: [] };
+  for (const r of d.rows) pts[r.governs].push(v3(d.nodes[r.a]), v3(d.nodes[r.b]));
+  for (const [g, color] of [['buckling', 0xe3a008], ['yield', 0x2f81f7]]) {
+    if (pts[g].length) cageG.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts[g]), new THREE.LineBasicMaterial({ color, depthTest: false })));
+  }
+  const geo = new THREE.SphereGeometry(0.018, 10, 6);
+  for (const p of Object.values(d.nodes)) {
+    const s = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x57606a, depthTest: false }));
+    s.position.copy(v3(p));
+    cageG.add(s);
+  }
+}
+
+function cagePanel() {
+  const { auto, used } = cageInputs();
+  const d = cageData();
+  const opt = (k, label) => `<option value="${k}" ${cageEdit.option === k ? 'selected' : ''}>${esc(label)}</option>`;
+  const layouts = d.layouts || { cage: 'Full cage', bar: 'Rear roll bar' };
+  const sel = `<p class="row"><span>Layout</span><select data-cage="layout">${Object.entries(layouts)
+      .map(([k, l]) => `<option value="${k}" ${cageEdit.layout === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></p>
+    <p class="row"><span>Tubes</span><select data-cage="option">${opt('recommended', 'Recommended: 45x2.5 main, 40x2 others, 50x2 diagonal')}
+      ${opt('fia_min', 'FIA minimum: 45x2.5 / 38x2.5')}${opt('light', 'Light: 50x2 / 40x2')}${opt('custom', 'My own sizes')}</select></p>
+    ${cageEdit.option === 'custom' ? `<p class="row"><span>Main, others, diagonal</span>${['main', 'other', 'diag'].map((k) =>
+      `<input data-cagesize="${k}" value="${esc(cageEdit.custom[k])}" style="width:5em" title="outer diameter x wall, mm">`).join(' ')}</p>` : ''}`;
+  const num = `<details ${veh ? '' : 'open'}><summary>The cabin${auto ? ' (from the base vehicle)' : ''}</summary>
+    <p class="quiet">${auto ? 'The numbers the vehicle suggests, in BeamNG metres; type over any of them.' : "Open a base vehicle for suggested numbers; these are FBeam's compact car."}</p>
+    <table class="cmp">${CAGE_PARAMS.map(([k, label]) => `<tr><td>${label}</td><td><input type="number" step="0.01" data-cageparam="${k}" style="width:6em"
+      value="${used && used[k] != null ? used[k] : ''}" placeholder="${auto ? auto[k] : ''}"></td></tr>`).join('')}</table>
+    <p><button id="cagereset" class="mini">Back to the vehicle's numbers</button></p></details>`;
+  if (d.error) return `<h2>Cage</h2>${sel}<p class="bad">${esc(d.error)}</p>`;
+  const s = d.summary, kn = (n) => fmt(n / 1e3, 1), mn = (n) => fmt(n / 1e6, 1);
+  const stiff = [['side', 'Side push at the hoop top (N/m)'], ['fore_aft', 'Fore-aft push (N/m)'], ['twist', 'Vertical couple on the top corners (N m/rad)']];
+  const rows = d.rows.map((r) => `<tr><td>${esc(r.group)}</td><td>${esc(r.tube)}</td><td>${fmt(r.L, 2)}</td><td>${fmt(r.mass, 2)}</td><td>${kn(r.yield)}</td>
+    <td>${kn(r.buckling)}</td><td><span class="band ${r.governs === 'buckling' ? 'high' : 'ok'}">${r.governs}</span></td><td>${mn(r.k_real)}</td><td>${mn(r.k_set)}</td></tr>`).join('');
+  return `<h2>Cage</h2>
+    <p class="quiet">A roll bar or safety cage from its tubes: each member's mass, the force it yields or buckles at, and the spring BeamNG can run for it
+      (FBeam's rules, FIA 253-8.3.3 minimum tubes). Amber members in the view buckle first, blue ones yield.</p>
+    ${sel}${num}
+    <p><b>${fmt(s.tube_kg, 1)} kg</b> of tube, <b>${fmt(s.node_kg, 1)} kg</b> on the nodes (joints included). Weakest member: <b>${fmt(s.weakest.force_kn, 1)} kN</b>
+      (${esc(s.weakest.group)}, ${esc(s.weakest.tube)}, ${esc(s.weakest.governs)}).</p>
+    <table class="cmp"><tr><th>Stiffness at the main hoop</th><th>Real steel</th><th>As BeamNG runs it</th><th>Share kept</th></tr>
+      ${stiff.map(([k, label]) => `<tr><td>${label}</td><td>${s.real[k] ? fmt(s.real[k] / 1e6, 1) + ' M' : '–'}</td><td>${s.beamng[k] ? fmt(s.beamng[k] / 1e6, 2) + ' M' : '–'}</td>
+        <td>${s.share[k] != null ? Math.round(s.share[k] * 100) + ' %' : '–'}</td></tr>`).join('')}</table>
+    <p class="quiet">The game's physics step caps each spring by its end nodes' weight (k at most 0.25 times the reduced mass times (2 / dt)^2 at 2000 Hz), so a
+      cage keeps a small share of real steel's stiffness: the frame's rigidity comes from triangulation, and a stiffer cage needs heavier nodes.</p>
+    <details open><summary>Members (${d.rows.length})</summary><table class="cmp"><tr><th>Member</th><th>Tube mm</th><th>L m</th><th>kg</th><th>Yield kN</th><th>Buckles kN</th><th></th>
+      <th>E A/L MN/m</th><th>Spring MN/m</th></tr>${rows}</table></details>
+    <p><button id="cagedl" class="primary">Download the cage as a jbeam part</button></p>`;
+}
+
+function bindCage(el) {
+  el.querySelectorAll('[data-cage]').forEach((x) => { x.onchange = () => { cageEdit[x.dataset.cage] = x.value; redraw(); }; });
+  el.querySelectorAll('[data-cagesize]').forEach((x) => { x.onchange = () => { cageEdit.custom[x.dataset.cagesize] = x.value.trim(); redraw(); }; });
+  el.querySelectorAll('[data-cageparam]').forEach((x) => { x.onchange = () => {
+    if (x.value === '') delete cageEdit.params[x.dataset.cageparam]; else cageEdit.params[x.dataset.cageparam] = +x.value;
+    redraw();
+  }; });
+  if ($('cagereset')) $('cagereset').onclick = () => { cageEdit.params = {}; redraw(); };
+  if ($('cagedl')) $('cagedl').onclick = () => {
+    const { used, sizes } = cageInputs();
+    const text = cagepy.part_json(cageEdit.layout, JSON.stringify(sizes), used ? JSON.stringify(used) : null, 'bf_cage');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    a.download = 'bf_cage.jbeam';
+    a.click();
+  };
+}
+
 // ---------- Checks: the vehicle's and the sketch's stability and structure ----------
 let checkRes = null;          // { veh (the configured vehicle it was run on), data (structure.checks_json) }
 

@@ -263,6 +263,23 @@ These are the masses a car from scratch carries.
 - In the view, components are orange and the CG is red.
 - A base vehicle keeps its own masses; its mass and CG are taken in SVJ instead.
 
+### Cage
+
+A roll bar or safety cage from its tubes (FBeam's rules, `beamforge/cage.py`).
+
+- **Layout**: the full FIA-style cage (12 nodes, 18 tubes: main hoop, A-pillar and roof-rail hoops, windscreen header, backstays, door bars, two
+  diagonals) or the rear roll bar alone (main hoop, backstays, the hoop's diagonal).
+- **Tubes**: the FIA 253-8.3.3 minimums (45x2.5 main, 38x2.5 others), a lighter 50x2 / 40x2 set, FBeam's recommended mix, or your own sizes
+  (outer diameter x wall, mm, steel).
+- **The cabin**: six numbers (A-pillar feet, main hoop and backstay feet along the car, half width, floor and roof height) place the cage. With a base
+  vehicle open they start from its wheelbase, track and height; type over any of them.
+- The panel gives the tube mass and the mass on the nodes, the weakest member and what it fails by (yield or Euler buckling), each member's E A / L and
+  the spring BeamNG can run (the smaller of E A / L and what its end nodes allow at 2000 Hz), and the frame's stiffness at the main hoop, real and as the
+  game runs it, with the share the game keeps (about 3-15 %: a cage's rigidity in BeamNG comes from triangulation, and a stiffer one needs heavier nodes).
+- In the view, members that buckle first are amber and those that yield first are blue.
+- **Download the cage as a jbeam part** writes `bf_cage.jbeam` (nodes with their weights, beams with `fbeamSection`, spring, deform and strength).
+  The cage is not yet written into an exported vehicle.
+
 ### Aero
 
 - The drag area (Cd × frontal area) and lift per axle from the base, the SVJ, or your own numbers.
