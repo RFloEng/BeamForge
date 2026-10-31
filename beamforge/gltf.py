@@ -260,6 +260,24 @@ def _meshes(doc, under, skip=None):
     return out
 
 
+def _mirrored(m):
+    """Whether a column-major 4x4 matrix turns the model inside out (a negative determinant: a mirrored node, such as the -1 scale a left-handed
+    game's exporter puts on its root): glTF asks for the triangles' winding to be reversed there, or their faces point into the car."""
+    a, b, c = m[0:3], m[4:7], m[8:11]
+    det = (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]))
+    return det < 0
+
+
+def _wound(idx, mirrored):
+    """The triangle index list `idx`, each triangle's winding reversed when `mirrored`."""
+    if not mirrored:
+        return idx
+    out = list(idx)
+    for i in range(0, len(out) - 2, 3):
+        out[i + 1], out[i + 2] = out[i + 2], out[i + 1]
+    return out
+
+
 def _apply(m, p):
     x, y, z = p
     return [m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13],
@@ -488,7 +506,7 @@ def textured(data, is_glb=True, under=None, buffers=None, skip=None):
                 idx = [base + v[0] for v in _read(doc, bufs, prim["indices"], 1)]
             else:
                 idx = [base + i for i in range(len(pts) - len(pts) % 3)]
-            groups.append((prim.get("material"), idx))
+            groups.append((prim.get("material"), _wound(idx, _mirrored(m))))
     return pos, uvs, groups
 
 
@@ -542,7 +560,8 @@ def triangles(data, is_glb=True, under=None, buffers=None, skip=None):
             pts = _read(doc, bufs, ai, 3)
             pos += [_apply(m, p) for p in pts]
             if "indices" in prim:
-                idx += [base + v[0] for v in _read(doc, bufs, prim["indices"], 1)]
+                part = [base + v[0] for v in _read(doc, bufs, prim["indices"], 1)]
             else:
-                idx += [base + i for i in range(len(pts) - len(pts) % 3)]
+                part = [base + i for i in range(len(pts) - len(pts) % 3)]
+            idx += _wound(part, _mirrored(m))
     return pos, idx

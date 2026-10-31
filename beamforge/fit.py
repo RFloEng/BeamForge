@@ -164,6 +164,42 @@ def _clamp(k):
     return min(LIMITS[1], max(LIMITS[0], k))
 
 
+def mesh_surface(svj, files, yf, ground, notes=None, pieces=None):
+    """The SVJ body mesh's triangles in BeamNG coordinates, placed at the front axle line yf and ground like mesh_points: an array (n, 3, 3), the whole
+    mesh but its interior, wheels, brakes, suspension and helper nodes (the outer shell the skin is morphed onto); None when there is none.
+    pieces: a dict filled with the closure and panel pieces by role ({role: [(name, triangles)]}, morph.ROLES), the mesh nodes a base part's nodes go to."""
+    import numpy as np
+    from . import morph
+    axes = svjmod.gltf_axes(svj)
+    chassis = next((b for b in svjmod.visual_bindings(svj) if b["path"] == "chassis"), None)
+    tris = []
+    for mid, path in files.items():
+        if chassis and chassis["mesh_ref"] not in (None, mid):
+            continue
+        with open(path, "rb") as fh:
+            data = fh.read()
+        glb = path.lower().endswith(".glb")
+        skip = re.compile(gltf.not_body(data, glb).pattern + "|" + morph.MESH_INSIDE.pattern, re.I)
+        pos, _, prims = gltf.textured(data, is_glb=glb, under=None, skip=skip)
+        if not pos or not prims:
+            continue
+        off = svjmod.mesh_offset(svj, data, glb)[0] or [0.0, 0.0, 0.0]
+        pts = np.array([svjmod.from_sae([a + b for a, b in zip(svjmod.gltf_to_sae(p, axes), off)], yf, ground) for p in pos])
+        idx = np.array([i for _, ix in prims for i in ix]).reshape(-1, 3)
+        tris.append(pts[idx])
+        if pieces is not None:
+            from . import morph as _m
+            for nm in sorted({n for n in gltf.node_names(data, is_glb=glb) if n and not skip.search(n)}):
+                role = _m.role_of(nm)
+                if not role:
+                    continue
+                p_, ix_ = gltf.triangles(data, is_glb=glb, under=nm, skip=skip)
+                if p_ and ix_:
+                    q = np.array([svjmod.from_sae([a + b for a, b in zip(svjmod.gltf_to_sae(p, axes), off)], yf, ground) for p in p_])
+                    pieces.setdefault(role, []).append((nm, q[np.array(ix_).reshape(-1, 3)]))
+    return np.concatenate(tris) if tris else None
+
+
 def _profile(points, centres, window):
     """Per slice: (half width, top) by robust percentiles of the points within `window` of its centre,
     or None with too few points."""
@@ -187,11 +223,13 @@ def size(points):
 # ---------------------------------------------------------------- the fit
 
 def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beams=None, beam_parts=None, overrides=None,
-        slides=None):
+        slides=None, skin=None, mesh_tris=None, mesh_pieces=None):
     """Fit the vehicle to the SVJ.
 
     nodes: {id: [x, y, z]} without moves (the configured vehicle); parts: {id: part}; wheels:
-    beamng.wheels(); mesh: the body mesh points (mesh_points()), needed for "body"; beams and
+    beamng.wheels(); mesh: the body mesh points (mesh_points()), needed for "body"; skin and mesh_tris (the collision
+    skin, the mesh's triangles: mesh_surface()), needed for "morph", the stage that fits the body to the mesh by morphing
+    (morph.py) in place of "body"; beams and
     beam_parts (beamng geometry) and overrides ({"<corner>:<hardpoint>": node}), for "pickups".
     Returns {"nodes": new positions, "moves": {id: [dx, dy, dz]}, "report": [{"stage", "label",
     "base", "target", "after", "unit"}], "mapping": map_hardpoints() rows with "after" (m), "uprights":
@@ -221,6 +259,18 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
             yr = yf + wb
         else:
             notes.append("the SVJ has no chassis.wheelbase: stage 1 skipped")
+
+    morph_changes = []
+    if "morph" in stages:
+        from . import morph
+        res = morph.morph(out, nodes, parts, skin, beams or [], beam_parts or [], mesh_tris, slides=slides, pieces=mesh_pieces)
+        if "error" in res:
+            notes.append(res["error"])
+        else:
+            report += res["report"]
+            notes += res["notes"]
+            morph_changes = res["changes"]
+        stages = [s_ for s_ in stages if s_ != "body"]            # (the morph is the body stage)
 
     if "body" in stages:
         if not mesh:
@@ -291,7 +341,7 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
             report.append({"stage": "body", "label": "Rear overhang", "unit": "m", "base": round(before["rear"] - yr, 4),
                            "target": round(target["rear"] - yr, 4), "after": round(after["rear"] - yr, 4)})
 
-    mapping, uprights, changes = [], [], []
+    mapping, uprights, changes = [], [], list(morph_changes)
     rigid_hubs = {}                                        # corner: (wheel, hub nodes) of uprights kept rigid
     free_nodes = set()                                     # upright joints put on the SVJ's own points (convert.corner)
     converted = []                                         # corners converted by role (roles.py, convert.py)
@@ -578,7 +628,18 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
             continue
         if any(n in protected or n in wheel_nodes or n in slide_nodes for n in group):
             continue
-        move = rigid_fit([nodes[n] for n in group], [out[n] for n in group], scale=True)
+        src, dst = [nodes[n] for n in group], [out[n] for n in group]
+        if "morph" in stages and beams and re.search(r"door|hood|tailgate|trunk", name, re.I):
+            # after the morph the body around a closure is where the mesh is, its own nodes are the average of what the skin asked: the
+            # body nodes it is tied to (hinges, latches) weigh in, so it closes on them (a door left open a few cm at its seam)
+            gs = set(group)
+            tied = {b if a in gs else a for a, b in (x[:2] for x in beams) if (a in gs) != (b in gs) and a in out and b in nodes}
+            tied = {n for n in tied if parts.get(n) and not PANEL_SIM.search(parts[n]) and not SUSPENSION.search(parts[n])
+                    and n not in protected and n not in wheel_nodes}
+            if len(tied) >= 3:
+                src = src + [nodes[n] for n in tied] * 4
+                dst = dst + [out[n] for n in tied] * 4
+        move = rigid_fit(src, dst, scale=True)
         worst = max(math.dist(out[n], move(nodes[n])) for n in group)
         if worst > 0.005:
             for n in group:
@@ -715,7 +776,12 @@ def fit_json(geometry_json, wheels_json, svj_json, files_json, stages_json, over
     stages = json.loads(stages_json)
     nodes = geo.get("rest") or geo["nodes"]
     ax = axles(nodes, wheels)
-    mesh, notes = None, []
+    mesh, notes, tris, pieces = None, [], None, {}
+    if "morph" in stages and ax:
+        try:
+            tris = mesh_surface(svj, json.loads(files_json), ax["yf"], ax["ground"], notes=notes, pieces=pieces)
+        except (OSError, ValueError, KeyError, IndexError, ImportError) as exc:
+            notes.append(f"could not read the SVJ body mesh for the morph: {exc}")
     if "body" in stages and ax:
         try:
             files = json.loads(files_json)
@@ -734,7 +800,7 @@ def fit_json(geometry_json, wheels_json, svj_json, files_json, stages_json, over
         except (OSError, ValueError, KeyError, IndexError) as exc:
             notes.append(f"could not read the SVJ body mesh: {exc}")
     r = fit(nodes, geo["parts"], wheels, svj, mesh, stages, geo.get("beams"), geo.get("beam_parts"),
-            json.loads(overrides_json) if overrides_json else None, geo.get("slides"))
+            json.loads(overrides_json) if overrides_json else None, geo.get("slides"), geo.get("skin"), tris, pieces)
     return json.dumps({"moves": r["moves"], "report": r["report"], "mapping": r["mapping"], "uprights": r["uprights"],
                        "changes": r["changes"], "axles": r["axles"],
                        "place": r["place"],

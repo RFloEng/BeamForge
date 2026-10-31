@@ -45,3 +45,14 @@ class TestPieces(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MirroredNodes(unittest.TestCase):
+    def test_negative_scale_reverses_winding(self):
+        from beamforge import gltf
+        mirror = gltf._matrix({"scale": [-1, 1, 1]})
+        self.assertTrue(gltf._mirrored(mirror))
+        self.assertFalse(gltf._mirrored(gltf._matrix({"scale": [1, 1, 1], "translation": [1, 2, 3]})))
+        self.assertFalse(gltf._mirrored(gltf._mul(mirror, mirror)))                 # two mirrors are a proper turn again
+        self.assertEqual(gltf._wound([0, 1, 2, 3, 4, 5], True), [0, 2, 1, 3, 5, 4])
+        self.assertEqual(gltf._wound([0, 1, 2], False), [0, 1, 2])

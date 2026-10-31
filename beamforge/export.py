@@ -32,6 +32,7 @@ The editor copies the rest of the base folder (meshes, materials, Lua) beside th
 stay in the game, where the materials find them by their absolute paths.
 """
 
+import os
 import json
 import math
 import re
@@ -1069,6 +1070,11 @@ def svj_meshes(svj, files, place, attach, new_id):
     return out
 
 
+GLASS_NAME = re.compile(r"glass|window|windscreen|windshield|visor", re.I)
+CLEAR_ALPHA = 0.05      # a glass texture with less mean alpha than this is clear all over
+GLASS_TINT = 0.15       # the opacity such a pane gets: a light tint that still reflects, where the file's cut-out would leave it invisible
+
+
 def svj_materials(svjm, new_id):
     """The materials.json of the SVJ meshes and their texture files: ({name: BeamNG material (v1.5)},
     {path in the vehicle folder: bytes}). glTF base colour (map and factor), normal map, metal and
@@ -1087,17 +1093,17 @@ def svj_materials(svjm, new_id):
 
     def opacity_map(img, ident):
         """The path of a grey map of the colour texture's alpha (BeamNG reads a translucent material's opacity from an opacityMap, not
-        from the colour texture's alpha), and the least alpha it has; (None, None) for a texture with no alpha."""
+        from the colour texture's alpha), the least alpha it has and its mean; (None, None, None) for a texture with no alpha."""
         if not img or not img[0] or "png" not in (img[1] or ""):
-            return None, None
+            return None, None, None
         if ident not in opacity:
             a = png.alpha(img[0])
             if a is None:
-                opacity[ident] = (None, None)
+                opacity[ident] = (None, None, None)
             else:
                 path = f"vehicles/{new_id}/svj_textures/t{ident[0]}_{ident[1]}_op.png"
                 images[path] = a[0]
-                opacity[ident] = ("/" + path, a[2])
+                opacity[ident] = ("/" + path, a[2], a[1])
         return opacity[ident]
     for m in svjm:
         for sub in m.get("submeshes") or [{"material": m["material"]}]:
@@ -1117,20 +1123,30 @@ def svj_materials(svjm, new_id):
                 nm = tex(g["normal_image"], g["normal_id"])
                 if nm:
                     stage["normalMap"] = nm
-                if g["alpha"] == "BLEND":
+                mode = g["alpha"]
+                if mode in ("MASK", "OPAQUE") and GLASS_NAME.search(name) and not NOT_GLASS.search(name):
+                    op, least, mean = opacity_map(g["image"], g["image_id"])
+                    if op and least < 0.99:                             # a pane the file marks cut-out or solid but whose texture is see-through: glass
+                        mode = "BLEND"
+                if mode == "BLEND":
                     # glass: a plain alpha blend (the SVJ's textures are not premultiplied, as the game's PreMulAlpha ones are),
                     # no shadow cast, shadows received, a reflective gloss as a window has
                     inside = re.search(r"(^|_)int(_|$)|int_|windowint|window_int|interior|inner", name, re.I)         # (the inner pane: no sky reflected in it, the view out stays clear)
                     entry.update(translucent=True, translucentBlendOp="LerpAlpha", translucentZWrite=False, castShadows=False,
                                  translucentRecvShadows=True, dynamicCubemap=not inside, alphaRef=0)
                     stage.update(roughnessFactor=min(stage["roughnessFactor"], 0.08), metallicFactor=min(stage["metallicFactor"], 0.1))
-                    op, least = opacity_map(g["image"], g["image_id"])
-                    if op and least < 0.99:                          # a glass texture with a see-through part: its alpha is the opacity
+                    op, least, mean = opacity_map(g["image"], g["image_id"])
+                    if op and mean is not None and mean < CLEAR_ALPHA:    # a pane whose texture is clear all over (alpha 0, as an AC window's): a light tint
+                        stage["opacityFactor"] = GLASS_TINT
+                    elif op and least < 0.99:                        # a glass texture with a see-through part: its alpha is the opacity
                         stage["opacityMap"] = op
                     elif len(g["colour"]) > 3 and g["colour"][3] < 0.99:  # or the material's own alpha, as one factor
                         stage["opacityFactor"] = round(float(g["colour"][3]), 3)
-                elif g["alpha"] == "MASK":
+                elif mode == "MASK":
                     entry.update(alphaTest=True, alphaRef=int(255 * float(g.get("cutoff", 0.5))))
+                    op, least, _ = opacity_map(g["image"], g["image_id"])       # (the game's cut-out materials, grilles, fences, lettering, read an opacityMap too)
+                    if op and least < 0.99:
+                        stage["opacityMap"] = op
                 if g["double_sided"]:
                     entry["doubleSided"] = True
             entry["Stages"] = [stage, {}, {}, {}]
@@ -1324,6 +1340,25 @@ def _add_beams(part, added):
 
 
 def build(model, new_id, name, configured_json, choices_json, brand=None, svj_json=None, added_json=None, mount_json=None):
+    """_build(), with the body's beams following their length change (rigidity.LENGTH: stiffness k = E A / L, node weights by beam length) when the
+    SVJ's options say the body was morphed ("morph": true): the morph changes the beams' lengths smoothly and by a bounded amount, the case that rule is
+    for. Everything else as _build()."""
+    opt = json.loads(svj_json) if svj_json else {}
+    before = rigidity.LENGTH
+    rigidity.LENGTH = before or (bool(opt.get("morph")) and not os.environ.get("BEAMFORGE_NO_LENGTH"))      # (the env var: a diagnostic, a morph with the base's stiffness)
+    from beamforge import kinematics
+    ck, mr = kinematics.CORNER_KG, values.MASS_RESERVE
+    if opt.get("corner_kg"):
+        kinematics.CORNER_KG = float(opt["corner_kg"])
+        values.MASS_RESERVE = 4 * kinematics.CORNER_KG
+    try:
+        return _build(model, new_id, name, configured_json, choices_json, brand, svj_json, added_json, mount_json)
+    finally:
+        rigidity.LENGTH = before
+        kinematics.CORNER_KG, values.MASS_RESERVE = ck, mr
+
+
+def _build(model, new_id, name, configured_json, choices_json, brand=None, svj_json=None, added_json=None, mount_json=None):
     """The text files of the new vehicle: {"files": {path: text}, "renamed": {old: new}, "notes": [...],
     "counts": {...}}. configured: beamng.configure() of the edited vehicle (with its moves); choices:
     {part: "reuse" | "copy" | "fit"} (missing parts take plan()'s proposal). svj_json (optional):
@@ -1585,10 +1620,8 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
         pc["model"] = new_id
         pc["parts"] = {s: renames.get(p, p) for s, p in (pc.get("parts") or {}).items()}
         return json.dumps(pc, indent=2)
-    for path in sorted(p for p in beamng._DOCS if p.startswith(base_dir) and p.lower().endswith(".pc")):
-        doc = beamng._DOCS[path]
-        if isinstance(doc, dict):
-            files[f"vehicles/{new_id}/" + path[len(base_dir):]] = pc_for(doc)
+    # (the base's other configurations are left out: each would be a card of its own in the vehicle list, "BeamForge Ardente", "BeamForge Tograc"...,
+    # for a car that is not the one built)
     edited = dict(v["pc"])
     edited["parts"] = dict(edited.get("parts") or {})
     if taken_vars:                                          # values driven by tuning variables
@@ -1605,8 +1638,6 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     if brand:
         info["Brand"] = brand
     files[f"vehicles/{new_id}/info.json"] = json.dumps(info, indent=2)
-    for path in sorted(p for p in beamng._DOCS if p.startswith(base_dir) and re.search(r"/info_[^/]+\.json$", p)):
-        files[f"vehicles/{new_id}/" + path[len(base_dir):]] = beamng._TEXT.get(path, "")
     files[f"vehicles/{new_id}/info_beamforge.json"] = json.dumps(
         {"Configuration": "BeamForge", "Description": f"{name}: made with BeamForge from {model}"}, indent=2)
 

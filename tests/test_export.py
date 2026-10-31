@@ -41,7 +41,7 @@ class TestExport(unittest.TestCase):
         self.assertEqual(hub["slots"][1][1], "toyfit_steel_wheel_F")                # slot default follows the new name
         pc = json.loads(f["vehicles/toyfit/beamforge.pc"])
         self.assertEqual((pc["model"], pc["parts"]["wheel_F_toy"]), ("toyfit", "toyfit_steel_wheel_F"))
-        self.assertEqual(json.loads(f["vehicles/toyfit/sport.pc"])["model"], "toyfit")
+        self.assertNotIn("vehicles/toyfit/sport.pc", f)                             # the base's other configurations are not carried over (each would be a card of its own)
         info = json.loads(f["vehicles/toyfit/info.json"])
         self.assertEqual((info["Name"], info["Brand"], info["default_pc"]), ("Toy Fit", "BeamForge", "beamforge"))
         self.assertNotIn("vehicles/toycar/toycar.jbeam", f)                        # nothing of the base is rewritten

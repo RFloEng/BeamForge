@@ -262,7 +262,7 @@ def geometry(parts, tree, vars_, moves=None):
     """Nodes and beams of the configured vehicle, for drawing: {"nodes": {id: [x, y, z]}, "beams": [[a, b]],
     "parts": {node id: part}, "beam_parts": [part of each beam], "rest": {id: [x, y, z] without the
     user's moves}, "groups": {id: [node groups]}, "slides": [[slide node, rail start, rail end, spring]],
-    "ops": {part: [nodeOffset, nodeMove]} (the slot
+    "skin": {node id: part} (the nodes of the collision triangles), "ops": {part: [nodeOffset, nodeMove]} (the slot
     shifts the part gets, summed down the tree)}. Slot nodeOffset / nodeMove are applied to the part in
     the slot and its children (nodeOffset x mirrored by each node's side, as the game does).
     Expressions that cannot be evaluated offline count as 0. "rest", "groups" and "ops" place the
@@ -276,7 +276,7 @@ def geometry(parts, tree, vars_, moves=None):
     moves = moves or {}
     part_moves, node_moves = moves.get("parts") or {}, moves.get("nodes") or {}
     nodes, owner, beams, beam_parts, rest, groups, ops = {}, {}, [], [], {}, {}, {}
-    rails, slides = {}, []
+    rails, slides, skin = {}, [], {}
 
     def walk(node, off, move, user):
         name = node["part"]
@@ -312,6 +312,12 @@ def geometry(parts, tree, vars_, moves=None):
                 if isinstance(a, str) and isinstance(b, str):
                     beams.append([a, b])
                     beam_parts.append(name)
+        trows = part.get("triangles") or []                           # (the collision skin: the nodes of the body's collision triangles)
+        if trows and isinstance(trows[0], list):
+            for r in jbeam.expand_table(trows):
+                for k_ in ("id1", "id2", "id3"):
+                    if isinstance(r.get(k_), str):
+                        skin.setdefault(r[k_], name)
         for rn, rail in (part.get("rails") or {}).items() if isinstance(part.get("rails"), dict) else ():
             links = rail.get("links:") or rail.get("links") if isinstance(rail, dict) else None
             if isinstance(links, list) and len(links) >= 2:
@@ -335,7 +341,7 @@ def geometry(parts, tree, vars_, moves=None):
     slid = [[n, rails[r][0], rails[r][1], k] for n, r, k in slides
             if r in rails and n in nodes and rails[r][0] in nodes and rails[r][1] in nodes]
     return {"nodes": nodes, "beams": [beams[i] for i in keep], "parts": owner, "beam_parts": [beam_parts[i] for i in keep],
-            "rest": rest, "groups": groups, "ops": ops, "slides": slid}
+            "rest": rest, "groups": groups, "ops": ops, "slides": slid, "skin": {n: p for n, p in skin.items() if n in nodes}}
 
 
 def _vec(d, vars_, default=0.0):

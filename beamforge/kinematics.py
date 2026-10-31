@@ -258,6 +258,9 @@ TUBE_MAX_LEN = 1.3   # m: nor one longer than this (a beam across the car)
 TUBE_HUB = 0.32      # m from the wheel centre: the upright's nodes; a member has one end there and the other out at the body
 
 
+CORNER_KG = 0.0          # kg put on each corner's upright nodes by tube_links (the build's option; values.MASS_RESERVE keeps the same from the body's)
+
+
 def tube_links(model, configured, section_of, bl=None, springs=None, weights=None, held=None):
     """The corner links with their real tubes: each suspension link (a wishbone's member, a tie rod, a trailing arm: the beams of
     the corner's suspension parts that are not springs, dampers or the upright's short structure) takes E A / L of its tube
@@ -313,6 +316,15 @@ def tube_links(model, configured, section_of, bl=None, springs=None, weights=Non
         for b in links:
             for n in (b["a"], b["b"]):
                 extra[n] = extra.get(n, 0.0) + real[id(b)]["mass"] * share / 2
+        if CORNER_KG:                                       # the corner's unsprung mass on the links' upright ends, by the number of links on each
+            ends = {}
+            for b in links:
+                for n in (b["a"], b["b"]):
+                    if math.dist(nodes[n], centre) <= TUBE_HUB:
+                        ends[n] = ends.get(n, 0) + 1
+            tot_ends = sum(ends.values())
+            for n, c in ends.items():
+                extra[n] = extra.get(n, 0.0) + CORNER_KG * c / tot_ends
         m_new = {n: m.get(n, 0.0) + extra.get(n, 0.0) for n in set(m) | set(extra)}
         # the other beams' share of each node's k and c (springs, the body's beams, the corner's other beams)
         ksum, csum, lk_, lc_ = {}, {}, {}, {}

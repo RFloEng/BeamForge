@@ -4,7 +4,8 @@ Pure Python, standard library only. The base vehicle's files must already be loa
 the editor's, in its order:
 
   parts     the base's alternatives nearest the SVJ (values.suggest_parts: wheels, intake, gearbox, drive layout...)
-  fit       the fit to the SVJ (fit.py: wheelbase, body to the mesh, pickup points; any of them)
+  fit       the fit to the SVJ (fit.py: wheelbase, body to the mesh, pickup points; any of them; "morph" in place of "body" fits the body to the
+            mesh by morphing it, with the beams' stiffness and the nodes' weight following the new lengths)
   values    every value the values table has an SVJ figure for (springs, dampers, tyres, engine, gears, final drive,
             mass and CG, steering, drag), as with every "take" box ticked
   meshes    the SVJ's meshes on the base's parts (export.svj_attach), in place of the base's body or beside it
@@ -15,6 +16,7 @@ tools/svj_to_beamng.py runs it from the command line on the user's own install.
 
 import json
 import os
+import re
 
 from beamforge import beamng, export, fit, suspension, unified, values
 
@@ -33,7 +35,7 @@ def svj_mesh_files(svj, svj_dir):
 
 def run(base, svj, new_id, name, brand="BeamForge", config=None, svj_dir=None, stages=STAGES, take=None,
         meshes=True, replace=True, base_paths=(), scale_structure=False, glass_break=True, tank_mode=None, diagnose=False, no_selfcol=False,
-        link_tube=None):
+        link_tube=None, drop=None, corner_kg=None):
     """The new vehicle from the base and the SVJ. take: the values table keys to take (None: every one the SVJ has a
     figure for); meshes: put the SVJ's meshes on it (replace: in place of the base's body); base_paths: every file of the
     base's folder, for the assets to copy; scale_structure: reach the SVJ's mass by scaling the body's beams with its
@@ -53,6 +55,16 @@ def run(base, svj, new_id, name, brand="BeamForge", config=None, svj_dir=None, s
             break
         parts.update(more)
         v = json.loads(beamng.configure(base, cfg, json.dumps(parts)))
+    if drop:                                           # parts to leave out (their slots emptied): accessories the fit would put out of place
+        rx = re.compile(drop, re.I)
+
+        def walk(n):
+            if n.get("part") and rx.search(n["part"]) and n.get("slot"):
+                parts[n["slot"]] = ""
+            for c in n.get("children") or []:
+                walk(c)
+        walk(v["tree"])
+        v = json.loads(beamng.configure(base, cfg, json.dumps(parts)))
     files = svj_mesh_files(svj, svj_dir) if (svj_dir and meshes) else {}
     r = {"moves": {}, "changes": [], "notes": [], "mapping": [], "axles": None, "place": None}
     if stages:
@@ -66,7 +78,7 @@ def run(base, svj, new_id, name, brand="BeamForge", config=None, svj_dir=None, s
     meas = cv.get("measure") or {}
     place = r.get("place") or {"yf": meas.get("front_axle_y") or 0.0, "ground": meas.get("ground_z") or 0.0}
     opt = {"svj": svj, "take": taken, "study": {"corners": study["corners"]}, "scale_structure": bool(scale_structure), "glass_break": bool(glass_break), "tank_mode": tank_mode, "diagnose": bool(diagnose), "no_selfcol": bool(no_selfcol),
-           "link_tube": link_tube}
+           "link_tube": link_tube, "morph": "morph" in stages, "corner_kg": corner_kg}
     if files:
         opt.update(files=files, place=place, replace=replace,
                    attach=json.loads(export.svj_attach(configured, json.dumps(svj), json.dumps(r.get("mapping") or []),

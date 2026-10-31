@@ -38,7 +38,11 @@ The order matters. Global, approximate stages come first; exact constraints come
 - **Measured on the body only:** suspension, wheel, drivetrain, mirror and antenna nodes are left out of the measurement, but every node moves with the map, so the car stays joined. Stage 3 then puts the pickups where the SVJ says.
 - **Safety:** a mesh more than 1.6 times larger or smaller than the vehicle (wrong units or axes) is refused with a note, and the scale factors are clamped to 0.6–1.6.
 
-### Stage 3: suspension pickup points (exact, local)
+#### Stage 2b: body by morphing (optional, `--morph`)
+
+An alternative to stage 2 (`beamforge/morph.py`, measured with `tools/fit_distance.py`; `tools/morph_test.py` is the prototype). The stage 2 per-axis map leaves the skin as far from the mesh as the unfitted base (6 cm mean on the Yaris). The morph: the outer skin nodes (no other skin node beyond them along an axis) take the nearest point of the mesh, 2 cm inside it, as their target; a biharmonic radial basis function (phi = r, affine part, smoothing 0.01 m) through those displacements, with the running gear held, moves every other node; then a relaxation keeps each body beam within 0.75 to 1.35 of its base length (0.70 to 1.40 held hard), nodes of different parts closer than 12 cm in the base are not let closer than 0.6 of their distance, and slide nodes go back to their base fraction of their rail. A beam that is longer or shorter than the base's is no longer the base's beam, so with the morph on `rigidity.LENGTH` is set: the beam stiffness goes with L0 / L1 and the node weights follow the beam lengths. Yaris on the Covet: skin 6.0 -> 2.5 cm mean (88 % within 5 cm against 52 %), 97 % within 10 cm.
+
+## Stage 3: suspension pickup points (exact, local)
 
 - Every SVJ hardpoint is tied to one node of the base vehicle (see the mapping below). The tie gives a target for that node. A wheel centre moves its wheel's two axle nodes together.
 - A hub of the same shape as the SVJ upright (within 25 mm rms) moves as one piece with its tied points (the best rotation and translation, Horn's method). Between 25 and 30 mm it is reshaped: only its tied nodes are set, and the rest of it follows them through the displacement field.

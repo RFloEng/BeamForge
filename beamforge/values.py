@@ -385,6 +385,9 @@ UNSPRUNG = re.compile(r"suspension|strut|coilover|shock|damper|spring|hub|arm|li
                       r"steering|tierod|wheel|tire|tyre|brake|swaybar|halfshaft|axle|differential|finaldrive", re.I)
 
 
+MASS_RESERVE = 0.0       # kg of the SVJ's mass the body's nodes leave for the corners' upright nodes (kinematics.CORNER_KG, set by the build's option)
+
+
 def weight_changes(model, configured, mass=None, cg_y=None, cg_z=None, length_factors=None, floors=None):
     """New node weights for a target mass (kg, wheels included) and CG (behind the front axle, height;
     m): {part: {row: kg}}. None leaves that value as it is. length_factors ({node: factor},
@@ -407,7 +410,7 @@ def weight_changes(model, configured, mass=None, cg_y=None, cg_z=None, length_fa
         return {}
     meas = configured.get("measure") or {}
     yf, zg = meas.get("front_axle_y") or 0.0, meas.get("ground_z") or 0.0
-    total = (mass - wheel_kg) if mass is not None else m             # the target, without the wheels
+    total = (mass - wheel_kg - MASS_RESERVE) if mass is not None else m             # the target, without the wheels
     # the suspension's nodes and the body nodes its beams hold on to (the mounts) keep their weight
     # the suspension and its mounts; if that leaves the body too little, the suspension alone; else all scale
     for fixed in ([UNSPRUNG.search(r[0]) is not None or r[2] in mounts for r in rows],

@@ -55,6 +55,12 @@ def main(argv=None):
     ap.add_argument("--no-self-collision", action="store_true", help="a diagnostic: no part's nodes collide with the vehicle's own body (wheels apart)")
     ap.add_argument("--link-tube", help="the suspension links as real tubes, e.g. \"tube 30x2 steel_4130n\" (E A / L within what the nodes allow, "
                                         "the tube mass at their ends); a link's own x_tube section in the SVJ wins")
+    ap.add_argument("--corner-kg", type=float, help="kg of unsprung mass put on each corner's upright nodes (a real knuckle, hub and brake weigh more than the base's "
+                                                    "nodes hold); the body's nodes give it back, the mass stays. A corner's links can only be as stiff as their nodes are heavy, "
+                                                    "so with --link-tube this allows stiffer links")
+    ap.add_argument("--morph", action="store_true", help="fit the body to the SVJ's mesh by morphing (skin onto the mesh, a smooth map for the rest, "
+                                                          "stiffness and weights following the beam lengths) in place of the body stage; needs numpy and scipy")
+    ap.add_argument("--drop", help="a regex of part names to leave out (their slots emptied), e.g. air.?bump: accessories the fit would put out of place")
     ap.add_argument("--diagnose", action="store_true", help="add a small game extension that logs the broken and deformed beams after loading")
     ap.add_argument("--out", default="out", help="folder for the mod zip")
     ap.add_argument("--install", help="a mods folder to copy the zip into")
@@ -69,10 +75,12 @@ def main(argv=None):
     load_zip(os.path.join(a.vehicles, "common.zip"))
     base_paths = load_zip(base_zip)
     stages = [s for s in a.stages.split(",") if s.strip()]
+    if a.morph:
+        stages = ["morph" if s == "body" else s for s in stages] if "body" in stages else stages + ["morph"]
     r = pipeline.run(a.base, svj, a.id, a.name or a.id, a.brand, a.config, os.path.dirname(os.path.abspath(a.svj)), stages,
                      meshes=not a.no_meshes, replace=not a.keep_body, base_paths=base_paths,
                      scale_structure=a.scale_structure and not a.keep_structure, glass_break=not a.no_glass_break, tank_mode=a.tank, diagnose=a.diagnose, no_selfcol=a.no_self_collision,
-                     link_tube=a.link_tube)
+                     link_tube=a.link_tube, drop=a.drop, corner_kg=a.corner_kg)
     out = r["out"]
     print("parts suggested:", r["parts"] or "none")
     print("fit:", len(r["fit"]["moves"]), "nodes moved")
