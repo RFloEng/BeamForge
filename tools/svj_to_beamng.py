@@ -58,6 +58,8 @@ def main(argv=None):
     ap.add_argument("--corner-kg", type=float, help="kg of unsprung mass put on each corner's upright nodes (a real knuckle, hub and brake weigh more than the base's "
                                                     "nodes hold); the body's nodes give it back, the mass stays. A corner's links can only be as stiff as their nodes are heavy, "
                                                     "so with --link-tube this allows stiffer links")
+    ap.add_argument("--link-damp", type=float, help="times the damping the suspension links take with --link-tube (default 1: the base's damping ratio to its "
+                                                     "stiffness), still within each node's damping limit; stops the slow wobble of stiff links")
     ap.add_argument("--morph", action="store_true", help="fit the body to the SVJ's mesh by morphing (skin onto the mesh, a smooth map for the rest, "
                                                           "stiffness and weights following the beam lengths) in place of the body stage; needs numpy and scipy")
     ap.add_argument("--drop", help="a regex of part names to leave out (their slots emptied), e.g. air.?bump: accessories the fit would put out of place")
@@ -80,7 +82,7 @@ def main(argv=None):
     r = pipeline.run(a.base, svj, a.id, a.name or a.id, a.brand, a.config, os.path.dirname(os.path.abspath(a.svj)), stages,
                      meshes=not a.no_meshes, replace=not a.keep_body, base_paths=base_paths,
                      scale_structure=a.scale_structure and not a.keep_structure, glass_break=not a.no_glass_break, tank_mode=a.tank, diagnose=a.diagnose, no_selfcol=a.no_self_collision,
-                     link_tube=a.link_tube, drop=a.drop, corner_kg=a.corner_kg)
+                     link_tube=a.link_tube, drop=a.drop, corner_kg=a.corner_kg, link_damp=a.link_damp)
     out = r["out"]
     print("parts suggested:", r["parts"] or "none")
     print("fit:", len(r["fit"]["moves"]), "nodes moved")

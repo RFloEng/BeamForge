@@ -258,7 +258,8 @@ TUBE_MAX_LEN = 1.3   # m: nor one longer than this (a beam across the car)
 TUBE_HUB = 0.32      # m from the wheel centre: the upright's nodes; a member has one end there and the other out at the body
 
 
-CORNER_KG = 0.0          # kg put on each corner's upright nodes by tube_links (the build's option; values.MASS_RESERVE keeps the same from the body's)
+LINK_DAMP = 1.0          # times the damping the stiffened links take (the build's option --link-damp), still within each node's damping limit
+CORNER_KG = 0.0         # kg put on each corner's upright nodes by tube_links (the build's option; values.MASS_RESERVE keeps the same from the body's)
 
 
 def tube_links(model, configured, section_of, bl=None, springs=None, weights=None, held=None):
@@ -362,22 +363,22 @@ def tube_links(model, configured, section_of, bl=None, springs=None, weights=Non
             if not m_new.get(n) or not lc.get(n):
                 continue
             others = csum[n] - lcs[n]
-            tot = sum(oldc[id(b)] * ratio[id(b)] for b in links if n in (b["a"], b["b"]))
+            tot = sum(oldc[id(b)] * ratio[id(b)] * LINK_DAMP for b in links if n in (b["a"], b["b"]))
             if tot > lc[n] * m_new[n] - others:
                 cscale[n] = max(0.0, (lc[n] * m_new[n] - others) / tot)
         for b in links:
             key = (b["part"], b["row"])
             s = min(cscale.get(b["a"], 1.0), cscale.get(b["b"], 1.0))
             k = newk[id(b)]
-            c = max(oldc[id(b)], oldc[id(b)] * ratio[id(b)] * s)
+            c = max(oldc[id(b)], oldc[id(b)] * ratio[id(b)] * LINK_DAMP * s)
             ch = {}
             if k > b["values"]["beamSpring"] * 1.001:
                 ch["beamSpring"] = round(k)
-                if c > 0:
-                    ch["beamDamp"] = round(c, 2)
                 for key_ in ("beamDeform", "beamStrength"):
                     if real[id(b)][key_] > b["values"].get(key_, 0.0) * 1.001:
                         ch[key_] = round(real[id(b)][key_])
+            if c > 0 and c > b["values"].get("beamDamp", 0.0) * 1.001:   # (damping alone may rise with the stiffness left as it is)
+                ch["beamDamp"] = round(c, 2)
             if ch:
                 changes.setdefault(b["part"], {}).setdefault(b["row"], {}).update(ch)
             done.add(key)

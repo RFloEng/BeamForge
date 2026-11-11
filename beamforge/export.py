@@ -447,7 +447,7 @@ def _rename_refs(part, renames):
 # engine, running gear and what its props animate (pedals, gauge needles, the steering wheel), would show beside
 # the SVJ's meshes or through them; the SVJ is the car's looks. Lights (props with the SPOTLIGHT mesh) stay: they
 # are not meshes.
-KEEP = re.compile(r"(?<!steer)(?<!steer_)(?<!steering)(?<!steering_)wheel(?!_?arch|_?well)|tire|tyre|hubcap|halfshaft|driveshaft|propshaft", re.I)
+KEEP = re.compile(r"(?<!steer)(?<!steer_)(?<!steering)(?<!steering_)wheel(?!_?arch|_?well)|tire|tyre|hubcap", re.I)
 LIGHT_MESH = re.compile(r"^(spotlight|pointlight|)$", re.I)
 
 
@@ -585,22 +585,23 @@ def _own_body(path, node):
     return not whole or got >= gltf.BODY_SHARE * whole
 
 
-def _glass(v, svj, path, place, body):
+def _glass(v, svj, path, place, body, own=False):
     """The body mesh's window glass as attach rows of its own: [{"path", "node": None, "mesh_ref",
     "part", "groups", "prims": [primitive index in the body], "exclude", "glass_of": base mesh}], each
     pane on the base's glass flexbody nearest to it, so it breaks as glass (the base's deform group
     and damaged material) instead of bending with the body. Glass: a transparent (BLEND) material, or
-    one named like glass, and not a light's."""
+    one named like glass, and not a light's. own: the body is its own node (the chassis row reads the mesh below that node): the panes are
+    counted the same way, and the rows name that node."""
     with open(path, "rb") as fh:
         data = fh.read()
     glb = path.lower().endswith(".glb")
     names = body.get("exclude") or []
-    pattern = f"(?:{gltf.not_body(data, glb).pattern})"
+    pattern = f"(?:{gltf.not_body(data, glb).pattern})" if not own else None
     if names:
-        pattern += "|^(?:" + "|".join(re.escape(x) for x in names) + ")$"
-    skip = re.compile(pattern, re.I)
+        pattern = (pattern + "|" if pattern else "") + "^(?:" + "|".join(re.escape(x) for x in names) + ")$"
+    skip = re.compile(pattern, re.I) if pattern else None
     mats, _ = gltf.materials(data, glb)
-    pos, _, prims = gltf.textured(data, is_glb=glb, under=None, skip=skip)
+    pos, _, prims = gltf.textured(data, is_glb=glb, under=body["node"] if own else None, skip=skip)
     axes = svjmod.gltf_axes(svj)
     off = svjmod.mesh_offset(svj, data, glb)[0] or [0.0, 0.0, 0.0]
     geo = v["geometry"]
@@ -622,7 +623,7 @@ def _glass(v, svj, path, place, body):
                     for j in set(idx)])
         best = min(cands, key=lambda f: math.dist(c, centre([p for g in f["groups"] for p in members[g]])))
         r = rows.setdefault((best["part"], best["mesh"]), {
-            "path": f"chassis.glass.{best['part']}", "node": None, "mesh_ref": body["mesh_ref"], "part": best["part"],
+            "path": f"chassis.glass.{best['part']}", "node": body["node"] if own else None, "mesh_ref": body["mesh_ref"], "part": best["part"],
             "groups": list(best["groups"]), "prims": [], "exclude": list(names), "glass_of": best["mesh"]})
         r["prims"].append(i)
     return list(rows.values())
@@ -785,11 +786,12 @@ def _role_nodes(rt, role):
     return ns if len(ns) >= 3 else []
 
 
-def static_susp_rows(v, svj, path, place, mesh_ref):
+def static_susp_rows(v, svj, path, place, mesh_ref, files=None):
     """The suspension parts a mesh file carries as static copies at the rest pose (wishbones, dampers, steering rods: found by their
     names, gltf.guessed_pieces) as attach rows that follow the base's nodes of their role at the corner nearest to them, so
     they move with the suspension instead of hanging in the air. "tag_nodes": the nodes that take the row's node group
-    (build adds it). A corner the base has no role table for gets none: its own meshes show."""
+    (build adds it). The parts the SVJ binds node by node (arms, struts, rods: susp_pieces) are taken too, at the corner it names. A corner the
+    base has no role table for gets none: its own meshes show."""
     from . import roles
     glb = path.lower().endswith(".glb")
     with open(path, "rb") as fh:
@@ -801,6 +803,8 @@ def static_susp_rows(v, svj, path, place, mesh_ref):
     wheels = [w for w in v.get("wheels") or [] if w.get("centre")]
     rows = []
     pieces = gltf.guessed_pieces(data, glb)
+    bound = {b["node"]: b for b in _bound_pieces(v, svj, files, path) if b["role"] in ("arm", "strut", "tie") and not b.get("link")} if files else {}
+    pieces = pieces + [(n, b["role"]) for n, b in bound.items() if n not in {x for x, _ in pieces}]
     for name, role in pieces:
         if role == "hub":
             continue                                       # the SVJ's own upright binding covers the hub
@@ -815,6 +819,8 @@ def static_susp_rows(v, svj, path, place, mesh_ref):
             continue
         mid = [(a + b) / 2 for a, b in zip(lo, hi)]
         w = min(wheels, key=lambda w: math.dist(w["centre"], mid))
+        if name in bound:                                  # (the corner the SVJ names)
+            w = next((x for x in wheels if x["name"] == bound[name]["corner"]), w)
         if math.dist(w["centre"], mid) > (PIECE_REACH if not across else 2.0):     # (an axle housing spans both wheels)
             continue
         ext = [h - l for h, l in zip(hi, lo)]
@@ -968,10 +974,10 @@ def svj_attach(configured_json, svj_json, mapping_json=None, files_json=None, pl
             with open(path, "rb") as fh:                   # (a file naming its parts by the SVJ convention may hold a static copy under
                 static = {n for n, _ in gltf.guessed_pieces(fh.read(), path.lower().endswith(".glb"))}   # other names)
             body["exclude"] = sorted({p["node"] for p in panels} | {b["node"] for b in baked} | static)
-            glass = _glass(v, svj, path, place, body) if not _own_body(path, body["node"]) else []
+            glass = _glass(v, svj, path, place, body, own=_own_body(path, body["node"]))
             if glass:
                 body["exclude_prims"] = sorted({i for g in glass for i in g["prims"]})
-            susp = static_susp_rows(v, svj, path, place, body.get("mesh_ref") or next(iter(files)))
+            susp = static_susp_rows(v, svj, path, place, body.get("mesh_ref") or next(iter(files)), files)
             shafts = shaft_rows(v, svj, files, path, place)
             shafts += wheel_rows(v, svj, path, place, body.get("mesh_ref") or next(iter(files)))
             own = {p["node"] for p in panels} | {s["node"] for s in shafts} | {s["node"] for s in susp}   # (a static arm the SVJ binds as a body too)
@@ -1351,11 +1357,15 @@ def build(model, new_id, name, configured_json, choices_json, brand=None, svj_js
     if opt.get("corner_kg"):
         kinematics.CORNER_KG = float(opt["corner_kg"])
         values.MASS_RESERVE = 4 * kinematics.CORNER_KG
+    ld = kinematics.LINK_DAMP
+    if opt.get("link_damp"):
+        kinematics.LINK_DAMP = float(opt["link_damp"])
     try:
         return _build(model, new_id, name, configured_json, choices_json, brand, svj_json, added_json, mount_json)
     finally:
         rigidity.LENGTH = before
         kinematics.CORNER_KG, values.MASS_RESERVE = ck, mr
+        kinematics.LINK_DAMP = ld
 
 
 def _build(model, new_id, name, configured_json, choices_json, brand=None, svj_json=None, added_json=None, mount_json=None):

@@ -18,7 +18,7 @@ import json
 import os
 import re
 
-from beamforge import beamng, export, fit, suspension, unified, values
+from beamforge import beamng, export, fit, gltf, suspension, unified, values
 
 STAGES = ("wheelbase", "body", "pickups")
 
@@ -27,15 +27,37 @@ def svj_mesh_files(svj, svj_dir):
     """{mesh id: path} of the SVJ's meshes found beside it (assets.meshes[].uri, relative to the SVJ's folder)."""
     out = {}
     for m in (svj.get("assets") or {}).get("meshes") or []:
-        p = os.path.join(svj_dir, str(m.get("uri") or ""))
-        if m.get("id") and m.get("uri") and os.path.exists(p):
+        uri = str(m.get("uri") or "")
+        if not uri.lower().endswith((".glb", ".gltf")) and str(m.get("preview") or "").lower().endswith((".glb", ".gltf")):
+            uri = str(m["preview"])                    # an OpenUSD mesh (.usdz) with a glTF preview beside it: the preview is the one we read
+        p = os.path.join(svj_dir, uri)
+        if m.get("id") and uri and os.path.exists(p):
             out[m["id"]] = p
     return out
 
 
+REAR_DOOR = r"door(?:glass)?_?(?:r[lr]|b[lr]|rear)"
+
+
+def missing_doors(svj, svj_dir):
+    """A regex of the base's rear door parts when the SVJ's mesh has its front doors as nodes (SVJ::body::door_fl, door_fr) and no rear ones
+    (door_rl, door_rr...): those doors have no mesh to carry, and morphed onto the body shell they would only be strange jbeam. None otherwise."""
+    for path in svj_mesh_files(svj, svj_dir).values():
+        try:
+            with open(path, "rb") as fh:
+                names = [n for n in gltf.node_names(fh.read(), path.lower().endswith(".glb")) if n]
+        except (OSError, ValueError):
+            continue
+        front = any(re.match(r"^SVJ::body::door_f[lr]$", n, re.I) for n in names)
+        rear = any(re.match(r"^SVJ::body::door_(?:r[lr]|b[lr])$", n, re.I) for n in names)
+        if front and not rear:
+            return REAR_DOOR
+    return None
+
+
 def run(base, svj, new_id, name, brand="BeamForge", config=None, svj_dir=None, stages=STAGES, take=None,
         meshes=True, replace=True, base_paths=(), scale_structure=False, glass_break=True, tank_mode=None, diagnose=False, no_selfcol=False,
-        link_tube=None, drop=None, corner_kg=None):
+        link_tube=None, drop=None, corner_kg=None, link_damp=None):
     """The new vehicle from the base and the SVJ. take: the values table keys to take (None: every one the SVJ has a
     figure for); meshes: put the SVJ's meshes on it (replace: in place of the base's body); base_paths: every file of the
     base's folder, for the assets to copy; scale_structure: reach the SVJ's mass by scaling the body's beams with its
@@ -55,6 +77,9 @@ def run(base, svj, new_id, name, brand="BeamForge", config=None, svj_dir=None, s
             break
         parts.update(more)
         v = json.loads(beamng.configure(base, cfg, json.dumps(parts)))
+    absent = missing_doors(svj, svj_dir) if (svj_dir and meshes) else None
+    if absent:                                         # a body mesh with front doors only: the base's rear doors would be jbeam with no mesh
+        drop = f"(?:{drop})|{absent}" if drop else absent
     if drop:                                           # parts to leave out (their slots emptied): accessories the fit would put out of place
         rx = re.compile(drop, re.I)
 
@@ -78,7 +103,7 @@ def run(base, svj, new_id, name, brand="BeamForge", config=None, svj_dir=None, s
     meas = cv.get("measure") or {}
     place = r.get("place") or {"yf": meas.get("front_axle_y") or 0.0, "ground": meas.get("ground_z") or 0.0}
     opt = {"svj": svj, "take": taken, "study": {"corners": study["corners"]}, "scale_structure": bool(scale_structure), "glass_break": bool(glass_break), "tank_mode": tank_mode, "diagnose": bool(diagnose), "no_selfcol": bool(no_selfcol),
-           "link_tube": link_tube, "morph": "morph" in stages, "corner_kg": corner_kg}
+           "link_tube": link_tube, "morph": "morph" in stages, "corner_kg": corner_kg, "link_damp": link_damp}
     if files:
         opt.update(files=files, place=place, replace=replace,
                    attach=json.loads(export.svj_attach(configured, json.dumps(svj), json.dumps(r.get("mapping") or []),
