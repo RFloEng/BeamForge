@@ -20,6 +20,7 @@ softer one (k = E A / L).
 """
 
 import math
+import os
 import re
 
 OFFSET = -0.02              # m: a skin node sits this far inside the visual mesh
@@ -110,7 +111,10 @@ def rbf_map(ctrl, disp, smooth):
     A[m:, :m] = P.T
     rhs = np.zeros((m + 4, 3))
     rhs[:m] = disp
-    sol = np.linalg.solve(A, rhs)
+    try:
+        sol = np.linalg.solve(A, rhs)
+    except np.linalg.LinAlgError:                        # control points on one plane or line: the affine part is not determined; the least-squares one is
+        sol = np.linalg.lstsq(A, rhs, rcond=None)[0]
     w, c = sol[:m], sol[m:]
 
     def f(x):
@@ -200,7 +204,198 @@ def place_slides(out, base, slides):
             out[n] = [round(out[a][i] + t * (out[b][i] - out[a][i]), 4) for i in range(3)]
 
 
-def morph(out, base, parts, skin, beams, beam_parts, tri, smooth=SMOOTH, slides=None, pieces=None):
+SHELL = re.compile(r"(?:^|_)body(?:_|$)|chassis|(?:^|_)frame(?:_|$)|unibody", re.I)
+MAX_TURN = 25.0             # degrees: a part is turned no more than this to follow the nodes it hangs on (more: only moved)
+SNAP_PIECE = 0.12          # m: a part's outer node goes to its own mesh piece when that is no further than this from where the part hangs
+SNAP_MESH = 0.05            # m: ... to the nearest mesh surface, for a part with no piece of its own, when it is no further than this
+ANCHOR_REACH = 0.6          # m: an SVJ fixing point belongs to the part of its role that has a node within this of it
+ANCHOR_CLUSTER = 0.35       # m: the part's fixing nodes at the point: those within this of it
+ANCHOR_MAX = 0.25           # m: the largest shift of a part to put its fixing nodes on the SVJ's point (more: the point is not trusted)
+ANCHOR_ROLES = (("door", re.compile(r"door", re.I)), ("hood", re.compile(r"bonnet|hood", re.I)),
+                ("trunk", re.compile(r"boot|trunk|tailgate|hatch|liftgate", re.I)), ("bumper", re.compile(r"bumper|fascia", re.I)),
+                ("spoiler", re.compile(r"spoiler|wing", re.I)), ("fender", re.compile(r"fender|mudguard", re.I)))
+
+
+def anchor_role(name):
+    """The role a part or an SVJ body name stands for in a fixing point (door, hood, trunk, bumper, spoiler: a wing too, fender), or None."""
+    if not name or ROLE_NOT.search(name):
+        return None
+    return next((r for r, rx in ANCHOR_ROLES if rx.search(name)), None)
+
+
+def anchors_from_svj(svj, yf, ground):
+    """The SVJ's fixing points between the chassis and its body pieces (a v0.103 RBR file's constraints: hinge_door_fl, hinge_hood, fixed_bumper_f...) as
+    [{"id", "body", "role", "hinge", "point"}] in BeamNG coordinates for a front axle at yf and the ground at `ground`; the SVJ is read in SAE J670 (unified.adopt
+    has converted an ISO 8855 file): x = -Y, y = yf - X, z = ground - Z. An SVJ without such constraints gives []."""
+    out = []
+    for c in (svj or {}).get("constraints") or []:
+        if str(c.get("body_a") or "") != "chassis":
+            continue
+        body = str(c.get("body_b") or "")
+        role = anchor_role(body)
+        p = (c.get("frame_a") or {}).get("position")
+        if role and isinstance(p, (list, tuple)) and len(p) == 3:
+            out.append({"id": c.get("id"), "body": body, "role": role, "hinge": str(c.get("joint_type") or "") in ("revolute", "hinge"),
+                        "point": [-p[1], yf - p[0], ground - p[2]]})
+    return out
+
+
+def shell_parts(by_part):
+    """The parts that make the body shell, of {part: [outer nodes]}: the ones named body / chassis / frame, else the part with most outer nodes."""
+    named = {p for p in by_part if SHELL.search(p)}
+    if named:
+        return named
+    return {max(by_part, key=lambda p: len(by_part[p]))} if by_part else set()
+
+
+def piecewise_map(ids, idx, X0, X1, outer, parts, ia, ib, shell, pieces, anchors, tree, pts, nrm):
+    """Every part that is not the shell or the running gear is fitted on its own, in the order it can hang on parts already placed: it first moves as one
+    rigid piece with the nodes it hangs on (the nodes with a beam to a placed part follow what those moved), then, if the SVJ has a fixing point for it
+    (anchors), is shifted so its fixing nodes sit on that point, then its outer nodes snap to its own mesh piece (or, with none, to the nearest surface when
+    that is close) through a smooth map over the part alone, its fixing nodes held. X1: the shell's map for every node (the start, and what is kept for a
+    part with nothing to hang on). Returns (X1, {"rigid", "local", "anchored"}, notes)."""
+    import numpy as np
+    from scipy.spatial import cKDTree
+    X1 = X1.copy()
+    n = len(ids)
+    pname = [parts.get(i) or "" for i in ids]
+    by_outer = {}
+    for o in outer:
+        by_outer.setdefault(parts.get(o) or "", []).append(idx[o])
+    todo = [p for p in by_outer if p not in shell and not GEAR.search(p)]
+    done = np.array([pname[i] in shell or bool(GEAR.search(pname[i])) for i in range(n)])
+    members = {p: [] for p in todo}
+    for i in range(n):
+        if pname[i] in members:
+            members[pname[i]].append(i)
+    nbr = [[] for _ in range(n)]
+    for a, b in zip(ia.tolist(), ib.tolist()):
+        if pname[a] != pname[b]:
+            nbr[a].append(b)
+            nbr[b].append(a)
+    notes, stats = [], {"rigid": 0, "local": 0, "anchored": 0}
+    # a fixing point belongs to the part of its role nearest it
+    pick = {}
+    for a in anchors or []:
+        best, bd = None, ANCHOR_REACH
+        for p in todo:
+            if anchor_role(p) != a["role"] or p in pick:
+                continue
+            d = float(np.min(np.linalg.norm(X1[members[p]] - np.array(a["point"]), axis=1))) if members[p] else 9.0
+            if d < bd:
+                best, bd = p, d
+        if best:
+            pick[best] = a
+        else:
+            notes.append(f"SVJ fixing point {a['id']} ({a['role']}): no part of that role within {ANCHOR_REACH:.1f} m of it")
+    pending = list(todo)
+    for rnd in range(6):
+        for q in list(pending):
+            mem = members[q]
+            att = [i for i in mem if any(done[j] for j in nbr[i])]
+            if len(att) < 3 and rnd < 5 and len(mem) > 3:
+                continue                                              # (wait for the parts it hangs on to be placed)
+            pending.remove(q)
+            if not att:
+                done[mem] = True
+                continue
+            D = np.array([np.mean([X1[j] - X0[j] for j in nbr[i] if done[j]], axis=0) for i in att])
+            A, B = X0[att], X0[att] + D
+            Xm = X0[mem]
+            ca, cb = A.mean(axis=0), B.mean(axis=0)
+            R = None
+            if len(att) >= 3:
+                U, S, Vt = np.linalg.svd((A - ca).T @ (B - cb))
+                if S[1] > 0.05 * S[0] and S[1] > 1e-4:                      # (nodes on a line leave the turn about it open: the part would spin)
+                    R = Vt.T @ np.diag([1.0, 1.0, np.sign(np.linalg.det(Vt.T @ U.T)) or 1.0]) @ U.T
+                    if math.degrees(math.acos(max(-1.0, min(1.0, (np.trace(R) - 1) / 2)))) > MAX_TURN:
+                        R = None
+            Xr = (Xm - ca) @ R.T + cb if R is not None else Xm + D.mean(axis=0)
+            row = {m: k for k, m in enumerate(mem)}
+            att_rows = [row[i] for i in att]
+            stats["rigid"] += 1
+            a = pick.get(q)
+            hinged = False
+            if a is not None and a.get("hinge"):                       # a hinge is a place the part really turns about: its nodes there go onto the SVJ's point
+                near = [r for r in att_rows if np.linalg.norm(Xr[r] - np.array(a["point"])) <= ANCHOR_CLUSTER]
+                if near:
+                    t = np.array(a["point"]) - Xr[near].mean(axis=0)
+                    if np.linalg.norm(t) <= ANCHOR_MAX:
+                        Xr = Xr + t
+                        stats["anchored"] += 1
+                        hinged = True
+                    else:
+                        notes.append(f"{q}: its hinge nodes are {np.linalg.norm(t) * 100:.0f} cm from the SVJ's {a['id']}: the point is not used")
+            js = by_outer.get(q, [])
+            snap_rows, snaps = [], []
+            if js:
+                R_out = np.array([row[j] for j in js])
+                role = role_of(q)
+                tris_p = []
+                if a is not None:                                    # the mesh piece the SVJ's fixing point is at (the names in a mesh may not be the constraints')
+                    cand = [(n_, np.asarray(t_).reshape(-1, 3, 3)) for lst in (pieces or {}).values() for n_, t_ in lst]
+                    dist = [float(np.linalg.norm(t_.reshape(-1, 3) - np.array(a["point"]), axis=1).min()) for _, t_ in cand]
+                    if dist and min(dist) <= 0.15:
+                        tris_p = [cand[int(np.argmin(dist))][1]]
+                if not tris_p:
+                    tris_p = part_pieces(Xr[R_out], role, pieces) if role else []
+                if tris_p:
+                    pp, pn = surface_samples(np.concatenate(tris_p), SPACING)
+                    ptree = cKDTree(pp)
+                    if not hinged:                                    # a part with a piece of its own is first put on it (a few passes of the mean offset)
+                        for _ in range(3):
+                            d_, k_ = ptree.query(Xr[R_out])
+                            s_ = pp[k_] + pn[k_] * OFFSET - Xr[R_out]
+                            ok_ = np.linalg.norm(s_, axis=1) <= 0.4
+                            if ok_.sum() < 3:
+                                break
+                            t = s_[ok_].mean(axis=0)
+                            if np.linalg.norm(t) > 0.35:
+                                t = t * (0.35 / np.linalg.norm(t))
+                            Xr = Xr + t
+                    Q = Xr[R_out]
+                    d_, k_ = ptree.query(Q)
+                    tgt, lim = pp[k_] + pn[k_] * OFFSET, SNAP_PIECE
+                else:
+                    closure = bool(role) or a is not None             # a closure or a mounted part with no piece of its own (a hatch that is part of the shell): put on the surface by the
+                    if closure and not hinged:                        # mean offset of its nodes to it (a few passes), as one with a piece is, then snapped
+                        for _ in range(3):
+                            d_, k_ = tree.query(Xr[R_out])
+                            s_ = pts[k_] + nrm[k_] * OFFSET - Xr[R_out]
+                            ok_ = np.linalg.norm(s_, axis=1) <= 0.4
+                            if ok_.sum() < 3:
+                                break
+                            t = s_[ok_].mean(axis=0)
+                            if np.linalg.norm(t) > 0.35:
+                                t = t * (0.35 / np.linalg.norm(t))
+                            Xr = Xr + t
+                    Q = Xr[R_out]
+                    d_, k_ = tree.query(Q)
+                    tgt, lim = pts[k_] + nrm[k_] * OFFSET, (SNAP_PIECE if closure else SNAP_MESH)
+                s = tgt - Q
+                ok = np.linalg.norm(s, axis=1) <= lim
+                snap_rows, snaps = R_out[ok], s[ok]
+            if len(snap_rows) >= 4 or (len(snap_rows) >= 1 and len(att_rows) >= 3):
+                ctrl = np.vstack([Xr[att_rows], Xr[snap_rows]])
+                cd = np.vstack([np.zeros((len(att_rows), 3)), snaps])
+                dq = rbf_map(ctrl, cd, SMOOTH)(Xr)
+                nq = np.linalg.norm(dq, axis=1)
+                Xr = Xr + dq * np.minimum(1.0, SNAP_PIECE * 1.5 / np.maximum(nq, 1e-9))[:, None]     # (few, nearly flat control points extrapolate wildly)
+                stats["local"] += 1
+            if os.environ.get("BEAMFORGE_PW_DEBUG"):
+                ang = float(np.degrees(np.arccos(np.clip((np.trace(R) - 1) / 2, -1, 1)))) if R is not None else 0.0
+                notes.append(f"PW {q}: att {len(att)} D {np.linalg.norm(D, axis=1).mean() * 100:.0f} cm rot {ang:.1f} deg anchor {a['id'] if a else '-'} "
+                             f"snaps {len(snap_rows)} moved {np.linalg.norm(Xr - X0[mem], axis=1).mean() * 100:.0f} cm vs shell map {np.linalg.norm(Xr - X1[mem], axis=1).mean() * 100:.0f} cm")
+            X1[mem] = Xr
+            done[mem] = True
+        if not pending:
+            break
+    for q in pending:                                                 # nothing to hang on: the shell's map has it
+        notes.append(f"{q}: no node of it hangs on a placed part; moved by the body's map")
+    return X1, stats, notes
+
+
+def morph(out, base, parts, skin, beams, beam_parts, tri, smooth=SMOOTH, slides=None, pieces=None, anchors=None, piecewise=True):
     """Morph the nodes `out` ({id: [x, y, z]}, the wheelbase stage's result; changed in place) onto the body mesh `tri` (n, 3, 3 triangles in
     BeamNG coordinates). base: the nodes as the base has them (the beams' lengths to keep to); parts: {node: part}; skin: {node: part} (the collision
     skin); beams: [[a, b]] with beam_parts. Returns {"report": [...], "notes": [...], "changes": [...]}; {"error": text} when it cannot run."""
@@ -224,7 +419,7 @@ def morph(out, base, parts, skin, beams, beam_parts, tri, smooth=SMOOTH, slides=
     err0 = skin_error(out, outer, tree, pts, nrm)
     _, k = tree.query(P)
     target = pts[k] + nrm[k] * OFFSET
-    own = 0
+    own, own_js = 0, set()
     if pieces:                           # a closure's or panel's nodes go to its own piece of the mesh, not to whatever surface is nearest
         by_part = {}
         for j, n in enumerate(outer):
@@ -241,10 +436,22 @@ def morph(out, base, parts, skin, beams, beam_parts, tri, smooth=SMOOTH, slides=
                 if d_ <= PIECE_PULL:
                     target[j] = pp[k_] + pn[k_] * OFFSET
                     own += 1
+                    own_js.add(j)
     disp = np.clip(target - P, -MAX_PULL, MAX_PULL)
     held = [i for i, n in enumerate(ids) if GEAR.search(parts.get(n) or "") and n not in set(outer)]
-    ctrl = np.vstack([P, X0[held]])
-    cd = np.vstack([disp, np.zeros((len(held), 3))])
+    notes_pw, pw = [], None
+    by_outer = {}
+    for j, n in enumerate(outer):
+        by_outer.setdefault(parts.get(n) or "", []).append(j)
+    shell = shell_parts(by_outer) if piecewise else set()
+    if piecewise and shell:
+        # the body shell and the pieces with a mesh piece of their own make the smooth map (what the shell's nodes follow); every other piece is fitted on its own
+        js = sorted({j for p in shell for j in by_outer[p]} | own_js)
+        ctrl = np.vstack([P[js], X0[held]])
+        cd = np.vstack([disp[js], np.zeros((len(held), 3))])
+    else:
+        ctrl = np.vstack([P, X0[held]])
+        cd = np.vstack([disp, np.zeros((len(held), 3))])
     f = rbf_map(ctrl, cd, smooth)
     X1 = X0 + f(X0)
     # the body's beams: the ones whose lengths must stay in bounds
@@ -252,6 +459,9 @@ def morph(out, base, parts, skin, beams, beam_parts, tri, smooth=SMOOTH, slides=
     bl = [(a, b) for (a, b), p in zip(beams, beam_parts) if a in idx and b in idx and (not GEAR.search(p or "") or not (idx[a] in held_set and idx[b] in held_set))]
     ia = np.array([idx[a] for a, _ in bl])
     ib = np.array([idx[b] for _, b in bl])
+    if piecewise and shell:
+        X1, pw, notes_pw = piecewise_map(ids, idx, X0, X1, outer, parts, ia, ib, shell, pieces, anchors, tree, pts, nrm)
+        disp = X1[out_idx] - P                                          # (the relax below pulls each skin node to where its piece put it)
     B0 = np.array([base[n] if n in base else out[n] for n in ids])
     L0 = np.linalg.norm(B0[ib] - B0[ia], axis=1)
     ok = L0 > 0.03
@@ -282,9 +492,11 @@ def morph(out, base, parts, skin, beams, beam_parts, tri, smooth=SMOOTH, slides=
                         "target": 0.0, "after": round(float(np.abs(err1).mean()), 4)},
                        {"stage": "morph", "label": "Outer skin within 2 cm", "unit": "share", "base": round(float((np.abs(err0) <= 0.02).mean()), 3),
                         "target": 1.0, "after": round(float((np.abs(err1) <= 0.02).mean()), 3)}],
-            "notes": [], "changes": [f"body morphed onto the mesh: {len(outer)} outer skin nodes, mean distance to the mesh {np.abs(err0).mean() * 100:.1f} cm -> "
+            "notes": notes_pw, "changes": [f"body morphed onto the mesh: {len(outer)} outer skin nodes, mean distance to the mesh {np.abs(err0).mean() * 100:.1f} cm -> "
                                      f"{np.abs(err1).mean() * 100:.1f} cm; {len(bl)} body beams now {ratio.min():.2f} to {ratio.max():.2f} of their length "
                                      f"(median {np.median(ratio):.2f}); the beams' stiffness and the nodes' weights follow"
-                                     + (f"; {own} closure and panel nodes took the target from their own mesh piece" if own else "")],
+                                     + (f"; {own} closure and panel nodes took the target from their own mesh piece" if own else "")
+                                     + (f"; piece by piece: {pw['rigid']} parts moved with the nodes they hang on (rigid), {pw['local']} of them also fitted to their piece, "
+                                        f"{pw['anchored']} held at an SVJ fixing point" if pw else "")],
             "stats": {"skin": len(outer), "before": float(np.abs(err0).mean()), "after": float(np.abs(err1).mean()),
                       "beam_min": float(ratio.min()), "beam_max": float(ratio.max())}}

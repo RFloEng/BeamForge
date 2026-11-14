@@ -15,6 +15,7 @@ damper beam's length over the step is its motion ratio.
 
 import json
 import math
+import os
 import re
 
 from . import beamng, values
@@ -351,6 +352,9 @@ def tube_links(model, configured, section_of, bl=None, springs=None, weights=Non
             room = lk[n] * m_new[n] - others
             if tot > room:
                 scale[n] = max(0.0, room / tot)
+                if os.environ.get("BEAMFORGE_PW_DEBUG"):
+                    print(f"CAP {w['name']} node {n} part {geo.get('parts', {}).get(n)} mass {m_new[n]:.2f} kg limit k/m {lk[n]:.3g} room {room / 1e6:.2f} MN/m "
+                          f"others {others / 1e6:.2f} want {tot / 1e6:.2f} -> x{scale[n]:.2f}")
         capped = bool(scale)
         newk = {}
         for b in links:

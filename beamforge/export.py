@@ -476,6 +476,7 @@ SVJ_KIND = {"door": "door", "hood": "hood", "bonnet": "hood", "trunk": "trunk", 
             "bumper_f": "bumper_F", "bumper_front": "bumper_F", "bumper_r": "bumper_R", "bumper_rear": "bumper_R"}
 # the movable parts' kinds (unified.movable_parts) that are panels of the kinds above
 MOVABLE_PANEL = {"door": "door", "hood": "hood", "trunk": "trunk", "mirror": "mirror", "spoiler": "spoiler"}
+MIRROR_NODE = re.compile(r"mirror", re.I)     # (a mirror the SVJ hangs on the chassis node, as RBR does: on the car it is on the door, so it goes to the base's mirror)
 PANEL_MIN = 0.4     # m: the bounding-box diagonal of the smallest thing taken as a panel
 SWAPPABLE = ("bumper_R", "spoiler")
 PANEL_MIN_OF = {"mirror": 0.1, "glass": 0.15}      # (a mirror is small)
@@ -511,9 +512,12 @@ def _panels(v, svj, files, place, chassis):
               if m["visual"] and m["kind"] in MOVABLE_PANEL and gltf.has_node(data, m["visual"], glb)}
     names = list(dict.fromkeys(gltf.named(data, SVJ_PANEL, glb, skip=PANEL_SKIP) + list(moving)))
     by_name = not names                                    # no SVJ panel nodes: the modders' names
-    for name in names or gltf.named(data, PANEL_ANY, glb, skip=PANEL_SKIP):
+    mirrors = [] if by_name else [n for n in gltf.named(data, MIRROR_NODE, glb, skip=PANEL_SKIP) if n not in names]
+    for name in (names + mirrors) or gltf.named(data, PANEL_ANY, glb, skip=PANEL_SKIP):
         hinge = moving.get(name)
-        if by_name:
+        if name in mirrors:
+            kind, _, base_re = next(k for k in PANELS if k[0] == "mirror")
+        elif by_name:
             kind, _, base_re = next(k for k in PANELS if k[1].search(name))
         else:
             ident = name.split("::")[-1].lower()
@@ -585,6 +589,14 @@ def _own_body(path, node):
     return not whole or got >= gltf.BODY_SHARE * whole
 
 
+GLASS_REACH = 0.12     # m: a pane belongs to a base glass when its centre is within this of the box of the glass's nodes
+
+
+def _near_box(c, pts, reach):
+    """Whether point c is within `reach` of the axis-aligned box of the points pts."""
+    return all(min(p[i] for p in pts) - reach <= c[i] <= max(p[i] for p in pts) + reach for i in range(3))
+
+
 def _glass(v, svj, path, place, body, own=False):
     """The body mesh's window glass as attach rows of its own: [{"path", "node": None, "mesh_ref",
     "part", "groups", "prims": [primitive index in the body], "exclude", "glass_of": base mesh}], each
@@ -621,7 +633,10 @@ def _glass(v, svj, path, place, body, own=False):
             continue
         c = centre([svjmod.from_sae([x + o for x, o in zip(svjmod.gltf_to_sae(pos[j], axes), off)], place["yf"], place["ground"])
                     for j in set(idx)])
-        best = min(cands, key=lambda f: math.dist(c, centre([p for g in f["groups"] for p in members[g]])))
+        near = [f for f in cands if _near_box(c, [p for g in f["groups"] for p in members[g]], GLASS_REACH)]
+        if not near:                                       # a pane no base glass is at (a fixed rear window, a lamp's lens): it stays in the body, not on the nearest glass,
+            continue                                       # which would carry it with a door or the windscreen
+        best = min(near, key=lambda f: math.dist(c, centre([p for g in f["groups"] for p in members[g]])))
         r = rows.setdefault((best["part"], best["mesh"]), {
             "path": f"chassis.glass.{best['part']}", "node": body["node"] if own else None, "mesh_ref": body["mesh_ref"], "part": best["part"],
             "groups": list(best["groups"]), "prims": [], "exclude": list(names), "glass_of": best["mesh"]})

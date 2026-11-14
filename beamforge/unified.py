@@ -392,10 +392,15 @@ def corner_view(doc):
 
 def adopt(doc):
     """Give a unified file (is_unified) its derived corner section, in place; returns the notes. The section is marked
-    x_beamforge_corner_view (a derived view, never written back). Any other file is left as it is."""
+    x_beamforge_corner_view (a derived view, never written back). Any other file is left as it is, but for its frame: a file in ISO 8855 axes
+    (spec v0.109 and later: Y left, Z up) is first converted in place to SAE J670, the frame everything here reads (frame.py)."""
+    from . import frame
+    note = frame.to_sae(doc)
     if not is_unified(doc):
-        return []
+        return [note] if note else []
     view, notes = corner_view(doc)
+    if note:
+        notes = [note] + notes
     doc["suspension"] = view
     doc["x_beamforge_corner_view"] = {"from": "wheel_stations", "notes": notes}
     return notes

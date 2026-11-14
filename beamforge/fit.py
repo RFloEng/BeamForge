@@ -263,7 +263,8 @@ def fit(nodes, parts, wheels, svj, mesh=None, stages=("wheelbase", "body"), beam
     morph_changes = []
     if "morph" in stages:
         from . import morph
-        res = morph.morph(out, nodes, parts, skin, beams or [], beam_parts or [], mesh_tris, slides=slides, pieces=mesh_pieces)
+        res = morph.morph(out, nodes, parts, skin, beams or [], beam_parts or [], mesh_tris, slides=slides, pieces=mesh_pieces,
+                          anchors=morph.anchors_from_svj(svj, yf, ax["ground"]), piecewise=not os.environ.get("BEAMFORGE_NO_PIECEWISE"))
         if "error" in res:
             notes.append(res["error"])
         else:
