@@ -464,12 +464,6 @@ grip also comes from its tyre nodes and beams), so `--grip-scale` sets how many 
 game's race tyres sit at 1.3-2.2, a road tyre's about 1.1). The same ranking chooses the tyre part when a car is made (`values.suggest_parts`), when
 the SVJ has a Magic Formula set; otherwise the tyre is chosen by size as before.
 
-`--ac-tyres <car>/data/tyres.ini --compound FRONT --rim 17` does the same for an Assetto Corsa tyre (`beamforge/actyre.py`): the tyre model of AC's physics
-(load-sensitive peak grip from DY_REF / LS_EXP or DY_CURVE, camber, speed sensitivity, combined slip, falloff) is evaluated as lateral and longitudinal
-force curves in the same terms as the SVJ's Magic Formula tyre and ranked against the game's. It follows the equations of the rustyAC port
-(github.com/thesupersupersigma/rustyAC) and is steady state: no temperature, pressure, wear or relaxation, and the peak slip angle is the file's
-FRICTION_LIMIT_ANGLE (the game derives it from a brush table), so treat the grip level as approximate and the load sensitivity as the useful part.
-
 ## 8. Testing in the game
 
 1. **Close the game.**

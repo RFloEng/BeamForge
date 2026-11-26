@@ -1,10 +1,7 @@
 """The game's tyres against an SVJ's Pacejka tyre: which vanilla tyre is nearest by size and by what it does.
 
     python tools/tyre_testbed.py [--vehicles <BeamNG>/content/vehicles] [--models sunburst2,vivace]
-        [--svj car.svj.json [--corner FL] | --ac-tyres car/data/tyres.ini [--compound FRONT] --rim 17] [--rim 17] [--top 10] [--png out.png]
-        [--csv library.csv] [--grip-scale 1.0]
-
---ac-tyres ranks the game's tyres against an Assetto Corsa tyre (its data/tyres.ini through beamforge/actyre.py; the .lut curves next to it are read).
+        [--svj car.svj.json [--corner FL] [--rim 17] [--top 10] [--png out.png]] [--csv library.csv] [--grip-scale 1.0]
 
 Without --svj: the library by class (how many tyres, their grip range at 4000 N, their radii and rims), and --csv writes
 every tyre with its characteristics. With --svj: the SVJ tyre's numbers (peak mu, load sensitivity, cornering stiffness,
@@ -21,7 +18,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from beamforge import actyre, beamng, tyrelab, tyres  # noqa: E402
+from beamforge import beamng, tyrelab, tyres  # noqa: E402
 
 TEXT = (".jbeam", ".pc", ".json")
 
@@ -66,8 +63,6 @@ def main(argv=None):
     ap.add_argument("--vehicles", default=os.environ.get("BEAMNG_VEHICLES"), help="the game's content/vehicles folder")
     ap.add_argument("--models", help="only these vehicles' tyres (comma separated); default all of them (and common)")
     ap.add_argument("--svj", help="an .svj.json to rank the tyres against")
-    ap.add_argument("--ac-tyres", help="an Assetto Corsa data/tyres.ini to rank the tyres against, in place of --svj (needs --rim)")
-    ap.add_argument("--compound", default="FRONT", help="the tyres.ini compound section (FRONT, REAR, FRONT_1 ...)")
     ap.add_argument("--corner", help="the SVJ corner whose tyre set to use (default the first set)")
     ap.add_argument("--rim", type=int, help="rim diameter in inches (default the SVJ's)")
     ap.add_argument("--axle", choices=("front", "rear"))
@@ -106,24 +101,14 @@ def main(argv=None):
                             p["sliding"], p["shape"][1], p["shape"][5], pr.get("frictionCoef"), pr.get("noLoadCoef"), pr.get("fullLoadCoef"),
                             pr.get("loadSensitivitySlope"), pr.get("softnessCoef"), pr.get("treadCoef")])
         print("library written to", a.csv)
-    if not a.svj and not a.ac_tyres:
+    if not a.svj:
         return 0
-    if a.ac_tyres:
-        if not a.rim:
-            ap.error("--rim is needed with --ac-tyres (the file does not give the rim)")
-        folder = os.path.dirname(os.path.abspath(a.ac_tyres))
-        ini = actyre.parse_ini(open(a.ac_tyres, encoding="utf-8", errors="replace").read())
-        luts = {n: open(os.path.join(folder, n), encoding="utf-8", errors="replace").read() for n in os.listdir(folder) if n.lower().endswith(".lut")}
-        sp = actyre.profile(actyre.params(ini, a.compound, luts), a.rim)
-        sp["size"] = f"AC {sp['name']}"
-        sp["width_mm"] = sp["width_mm"] or 225
-        sp["radius"] = sp["radius"] or 0.3
-    else:
-        sp = tyrelab.svj_profile(json.load(open(a.svj, encoding="utf-8")), a.corner)
+    svj = json.load(open(a.svj, encoding="utf-8"))
+    sp = tyrelab.svj_profile(svj, a.corner)
     if not sp:
         print("the SVJ has no Magic Formula tyre set: nothing to compare against")
         return 1
-    print(f"\nSource tyre {sp['name']} ({sp['size']}): width {sp['width_mm']} mm, radius {sp['radius']:.3f} m, rim {sp['rim_in']} in, class {sp['class']}")
+    print(f"\nSVJ tyre {sp['name']} ({sp['size']}): width {sp['width_mm']} mm, radius {sp['radius']:.3f} m, rim {sp['rim_in']} in, class {sp['class']}")
     print(f"  at {sp['fz0']:.0f} N: peak mu lateral {sp['grip_y']}, longitudinal {sp['grip_x']}; cornering stiffness {sp['stiffness']} /rad; "
           f"peak at {sp['peak_deg']} deg; load sensitivity (2000 / 6000 N relative): {sp['shape'][1]} / {sp['shape'][5]}")
     best = tyrelab.rank(sp, lib, a.rim, a.axle, a.top, grip_scale=a.grip_scale)
